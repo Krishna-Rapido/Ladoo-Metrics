@@ -1,0 +1,198 @@
+{
+    "paired_tests": [
+        {
+            "goal": "Compare two related samples (pre vs post) when differences are approximately normal",
+            "model": "Paired t-test",
+            "python_code": "from scipy import stats\nstat, p = stats.ttest_rel(pre, post)",
+            "required_parameters": [
+                "pre: array-like of pre values",
+                "post: array-like of post values"
+            ]
+        },
+        {
+            "goal": "Compare two related samples (pre vs post) when differences are not normal or ordinal",
+            "model": "Wilcoxon signed-rank test",
+            "python_code": "from scipy import stats\nstat, p = stats.wilcoxon(pre, post)",
+            "required_parameters": [
+                "pre: array-like of pre values",
+                "post: array-like of post values"
+            ]
+        },
+        {
+            "goal": "Test if paired differences are symmetrically distributed around zero",
+            "model": "Sign test",
+            "python_code": "import pingouin as pg\nstat, p = pg.sign_test(pre, post)",
+            "required_parameters": [
+                "pre: array-like of pre values",
+                "post: array-like of post values"
+            ]
+        }
+    ],
+    "group_comparisons": [
+        {
+            "goal": "Compare test vs control across time (pre vs post) using two-way ANOVA",
+            "model": "Two-way ANOVA (time × group)",
+            "python_code": "import statsmodels.api as sm\nfrom statsmodels.formula.api import ols\nmodel = ols('value ~ C(time)*C(group)', data=df).fit()\nsm.stats.anova_lm(model, typ=2)",
+            "required_parameters": [
+                "df: DataFrame with columns value, time, group"
+            ]
+        },
+        {
+            "goal": "Difference-in-Differences for test vs control",
+            "model": "OLS regression with interaction term",
+            "python_code": "from statsmodels.formula.api import ols\nmodel = ols('y ~ C(group)*C(post)', data=df).fit(cov_type='HC3')\nprint(model.summary())",
+            "required_parameters": [
+                "df: DataFrame with columns y, group (0/1), post (0 pre, 1 post)"
+            ]
+        },
+        {
+            "goal": "Account for repeated measures and individual heterogeneity",
+            "model": "Linear Mixed-Effects Model (LMM)",
+            "python_code": "from statsmodels.formula.api import mixedlm\nmodel = mixedlm('y ~ time*group', df, groups=df['subject']).fit()\nprint(model.summary())",
+            "required_parameters": [
+                "df: DataFrame with y, time, group, subject columns"
+            ]
+        }
+    ],
+    "time_series": [
+        {
+            "goal": "Model pre vs post intervention in a single group time-series",
+            "model": "Interrupted Time-Series (ITS) regression",
+            "python_code": "import statsmodels.api as sm\nX = sm.add_constant(df[['time', 'post', 'time_after_post']])\nmodel = sm.OLS(df['y'], X).fit()\nprint(model.summary())",
+            "required_parameters": [
+                "df: DataFrame with y, time, post indicator, time_after_post"
+            ]
+        },
+        {
+            "goal": "Assess causal impact of an intervention using control time-series",
+            "model": "Bayesian Structural Time-Series",
+            "python_code": "from causalimpact import CausalImpact\nci = CausalImpact(data, pre_period, post_period)\nprint(ci.summary())",
+            "required_parameters": [
+                "data: DataFrame with response & predictors",
+                "pre_period: [start, end]",
+                "post_period: [start, end]"
+            ]
+        },
+        {
+            "goal": "Handle autocorrelated residuals in regression",
+            "model": "GLSAR or HAC-corrected regression",
+            "python_code": "from statsmodels.api import GLSAR\nmodel = GLSAR(y, X, rho=1)\nres = model.iterative_fit(10)\nprint(res.summary())",
+            "required_parameters": [
+                "y: dependent variable series",
+                "X: design matrix with predictors"
+            ]
+        }
+    ],
+    "variance_distribution_tests": [
+        {
+            "goal": "Test for changes in variance of paired differences",
+            "model": "Pitman–Morgan test / homoscedasticity test",
+            "python_code": "import pingouin as pg\npg.homoscedasticity(data=df, dv='value', group='time')",
+            "required_parameters": [
+                "df: DataFrame with value and time columns"
+            ]
+        },
+        {
+            "goal": "Compare pre vs post distributional shape (non-parametric)",
+            "model": "Paired distribution test (permutation or KS)",
+            "python_code": "from scipy.stats import ks_2samp\nstat, p = ks_2samp(pre, post)",
+            "required_parameters": [
+                "pre: array-like pre values",
+                "post: array-like post values"
+            ]
+        }
+    ],
+    "effect_size": [
+        {
+            "goal": "Compute Cohen's d for paired samples",
+            "model": "Effect size metric",
+            "python_code": "import pingouin as pg\nd = pg.compute_effsize(pre, post, paired=True)",
+            "required_parameters": [
+                "pre: array-like pre values",
+                "post: array-like post values"
+            ]
+        },
+        {
+            "goal": "Compute Hedges' g (small sample correction)",
+            "model": "Effect size metric",
+            "python_code": "d = pg.compute_effsize(pre, post, paired=True, eftype='hedges')",
+            "required_parameters": [
+                "pre: array-like pre values",
+                "post: array-like post values"
+            ]
+        },
+        {
+            "goal": "Compute Cliff's delta (non-parametric effect size)",
+            "model": "Effect size metric",
+            "python_code": "d = pg.compute_effsize(pre, post, paired=True, eftype='cliff')",
+            "required_parameters": [
+                "pre: array-like pre values",
+                "post: array-like post values"
+            ]
+        }
+    ],
+    "power_and_sample_size": [
+        {
+            "goal": "Compute sample size for desired power in paired t-test",
+            "model": "TTestPower",
+            "python_code": "from statsmodels.stats.power import TTestPower\nanalysis = TTestPower()\nn_required = analysis.solve_power(effect_size=0.5, alpha=0.05, power=0.8)",
+            "required_parameters": [
+                "effect_size: expected Cohen's d",
+                "alpha: significance level",
+                "power: desired statistical power"
+            ]
+        },
+        {
+            "goal": "Compute power for two-sample comparisons (e.g., DiD)",
+            "model": "TTestIndPower",
+            "python_code": "from statsmodels.stats.power import TTestIndPower\nanalysis = TTestIndPower()\npower = analysis.solve_power(effect_size=0.5, nobs1=50, alpha=0.05)",
+            "required_parameters": [
+                "effect_size",
+                "nobs1",
+                "alpha"
+            ]
+        },
+        {
+            "goal": "Compute power for ANOVA / F-test",
+            "model": "FTestAnovaPower",
+            "python_code": "from statsmodels.stats.power import FTestAnovaPower\nanalysis = FTestAnovaPower()\nn_required = analysis.solve_power(effect_size=0.25, alpha=0.05, power=0.8, k_groups=2)",
+            "required_parameters": [
+                "effect_size",
+                "alpha",
+                "power",
+                "k_groups: number of groups"
+            ]
+        }
+    ],
+    "confidence_intervals": [
+        {
+            "goal": "Get 95% CI for paired mean difference",
+            "model": "Paired t-test with CI",
+            "python_code": "import pingouin as pg\npg.ttest(pre, post, paired=True)['CI95%']",
+            "required_parameters": [
+                "pre: array-like pre values",
+                "post: array-like post values"
+            ]
+        },
+        {
+            "goal": "Bootstrap CI for effect or mean difference",
+            "model": "Bootstrapping",
+            "python_code": "pg.bootstrap_ci(data=diffs, func=np.mean, confidence=0.95)",
+            "required_parameters": [
+                "diffs: array of paired differences",
+                "confidence: confidence level"
+            ]
+        }
+    ],
+    "multiple_testing": [
+        {
+            "goal": "Adjust p-values across many metrics",
+            "model": "Multiple testing correction (FDR, Bonferroni)",
+            "python_code": "from statsmodels.stats.multitest import multipletests\nadjusted_p = multipletests(p_values, method='fdr_bh')",
+            "required_parameters": [
+                "p_values: list/array of raw p-values",
+                "method: correction method (e.g., 'fdr_bh', 'bonferroni')"
+            ]
+        }
+    ]
+}
