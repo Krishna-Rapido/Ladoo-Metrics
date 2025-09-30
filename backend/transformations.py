@@ -71,6 +71,42 @@ def subset_by_cohorts(
     return df[df[cohort_col].isin(cohorts_set)].copy()
 
 
+def get_cohort(base: pd.DataFrame, cohort: str, confirmed: str = '', cohort_col: str = "cohort") -> pd.DataFrame:
+    """
+    Filter data by cohort and optionally by confirmation status.
+    
+    Parameters
+    ----------
+    base : pd.DataFrame
+        The base dataframe to filter
+    cohort : str
+        The cohort value to filter by
+    confirmed : str, optional
+        The confirmation column to filter by (non-null values)
+    cohort_col : str, default "cohort"
+        The name of the cohort column
+        
+    Returns
+    -------
+    pd.DataFrame
+        Filtered dataframe
+    """
+    if cohort_col not in base.columns:
+        raise ValueError(f"cohort column '{cohort_col}' not found")
+    
+    # First filter by cohort
+    cohort_filtered = base[base[cohort_col] == cohort].copy()
+    
+    # If confirmation filter is specified, apply it
+    if confirmed:
+        if confirmed not in base.columns:
+            raise ValueError(f"confirmation column '{confirmed}' not found")
+        # Filter for non-null values in the confirmation column
+        cohort_filtered = cohort_filtered[~cohort_filtered[confirmed].isna()]
+    
+    return cohort_filtered
+
+
 def aggregate_time_series(
     df: pd.DataFrame,
     group_by: list[str],

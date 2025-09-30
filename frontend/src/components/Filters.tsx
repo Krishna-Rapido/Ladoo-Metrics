@@ -166,8 +166,19 @@ export function Filters({ value, onChange, onApply }: { value: FiltersState; onC
                         onChange={(e) => onChange({ ...value, confirmed: e.target.value })}
                     >
                         <option value="">No Confirmation Filter</option>
-                        <option value="confirmed_only">Confirmed Only</option>
-                        <option value="unconfirmed_only">Unconfirmed Only</option>
+                        <option value="visitedCaps">Visited Caps</option>
+                        <option value="exploredCaptains">Explored Captains</option>
+                        <option value="exploredCaptains_Subs">Explored Captains - Subs</option>
+                        <option value="exploredCaptains_EPKM">Explored Captains - EPKM</option>
+                        <option value="exploredCaptains_FlatCommission">Explored Captains - Flat Commission</option>
+                        <option value="exploredCaptains_CM">Explored Captains - CM</option>
+                        <option value="confirmedCaptains">Confirmed Captains</option>
+                        <option value="confirmedCaptains_Subs">Confirmed Captains - Subs</option>
+                        <option value="confirmedCaptains_Subs_purchased">Confirmed Captains - Subs Purchased</option>
+                        <option value="confirmedCaptains_Subs_purchased_weekend">Confirmed Captains - Subs Purchased Weekend</option>
+                        <option value="confirmedCaptains_EPKM">Confirmed Captains - EPKM</option>
+                        <option value="confirmedCaptains_FlatCommission">Confirmed Captains - Flat Commission</option>
+                        <option value="confirmedCaptains_CM">Confirmed Captains - CM</option>
                     </select>
                 </div>
 

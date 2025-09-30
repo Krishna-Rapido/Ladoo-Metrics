@@ -28,6 +28,7 @@ from transformations import (
     normalized_growth,
     rolling_average,
     subset_by_cohorts,
+    get_cohort,
     compute_cohort_funnel_timeseries,
 )
 
@@ -198,9 +199,25 @@ def compute_metrics(payload: MetricsRequest, df: pd.DataFrame = Depends(get_sess
 @app.post("/funnel", response_model=FunnelResponse, responses={400: {"model": ErrorResponse}})
 def funnel(payload: FunnelRequest, df: pd.DataFrame = Depends(get_session_df)) -> FunnelResponse:
     working = df.copy()
-    cohorts = [c for c in [payload.test_cohort, payload.control_cohort] if c]
-    if cohorts:
-        working = subset_by_cohorts(working, cohorts)
+    
+    # Apply confirmation filtering if specified
+    confirmed_filter = getattr(payload, 'confirmed', None) or ''
+    
+    # Filter for test and control cohorts with optional confirmation filtering
+    if payload.test_cohort and payload.control_cohort:
+        test_data = get_cohort(working, payload.test_cohort, confirmed_filter)
+        control_data = get_cohort(working, payload.control_cohort, confirmed_filter)
+        working = pd.concat([test_data, control_data], ignore_index=True)
+    elif payload.test_cohort:
+        working = get_cohort(working, payload.test_cohort, confirmed_filter)
+    elif payload.control_cohort:
+        working = get_cohort(working, payload.control_cohort, confirmed_filter)
+    else:
+        # If no specific cohorts, just apply confirmation filter if specified
+        if confirmed_filter:
+            if confirmed_filter not in working.columns:
+                raise HTTPException(status_code=400, detail=f"Confirmation column '{confirmed_filter}' not found")
+            working = working[~working[confirmed_filter].isna()]
 
     ts = compute_cohort_funnel_timeseries(working)
     metrics_available = [c for c in ts.columns if c not in {"date", "cohort"}]

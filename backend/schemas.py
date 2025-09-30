@@ -65,6 +65,7 @@ class FunnelRequest(BaseModel):
     test_cohort: Optional[str] = None
     control_cohort: Optional[str] = None
     metric: Optional[str] = None  # which metric to plot (any of stages/ratios)
+    confirmed: Optional[str] = None  # confirmation column filter
 
 
 class FunnelPoint(BaseModel):

@@ -79,6 +79,7 @@ function App() {
           test_cohort: filters.test_cohort,
           control_cohort: filters.control_cohort,
           metric: m,
+          confirmed: filters.confirmed,
         });
         next[m] = res;
       }

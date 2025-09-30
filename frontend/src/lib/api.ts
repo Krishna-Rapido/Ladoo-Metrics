@@ -50,6 +50,7 @@ export type FunnelRequest = {
     test_cohort?: string;
     control_cohort?: string;
     metric?: string;
+    confirmed?: string;
 };
 
 export type FunnelPoint = { date: string; cohort: string; metric: string; value: number };
