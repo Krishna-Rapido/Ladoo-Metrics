@@ -223,10 +223,27 @@ def funnel(payload: FunnelRequest, df: pd.DataFrame = Depends(get_session_df)) -
     metrics_available = [c for c in ts.columns if c not in {"date", "cohort"}]
     if not metrics_available:
         raise HTTPException(status_code=400, detail="No metrics available in dataset")
-    # Validate requested metric if provided
-    if payload.metric and payload.metric not in metrics_available:
-        raise HTTPException(status_code=400, detail=f"Requested metric '{payload.metric}' not available. Choose from: {metrics_available}")
+
+    # If requested metric not in precomputed set, try computing it via aggregation
     metric = payload.metric or metrics_available[0]
+    if payload.metric and payload.metric not in metrics_available:
+        from transformations import compute_metric_timeseries_by_cohort
+        agg = payload.agg or "sum"
+        try:
+            extra = compute_metric_timeseries_by_cohort(working, payload.metric, agg)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        # Merge with existing to reuse date filtering & response shape
+        ts = ts.copy()
+        merged = ts.merge(extra, on=["date", "cohort"], how="outer", suffixes=("", "_extra"))
+        # If both existed, prefer the non-null new computation
+        if f"{metric}_extra" in merged.columns and metric in merged.columns:
+            merged[metric] = merged[metric].fillna(merged[f"{metric}_extra"]).astype(float)
+            merged = merged.drop(columns=[f"{metric}_extra"]) 
+        elif f"{metric}_extra" in merged.columns and metric not in merged.columns:
+            merged = merged.rename(columns={f"{metric}_extra": metric})
+        ts = merged
+        metrics_available = [c for c in ts.columns if c not in {"date", "cohort"}]
 
     pre_df = ts
     post_df = ts

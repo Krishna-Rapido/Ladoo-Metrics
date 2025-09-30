@@ -51,6 +51,7 @@ export type FunnelRequest = {
     control_cohort?: string;
     metric?: string;
     confirmed?: string;
+    agg?: 'sum' | 'mean' | 'count';
 };
 
 export type FunnelPoint = { date: string; cohort: string; metric: string; value: number };

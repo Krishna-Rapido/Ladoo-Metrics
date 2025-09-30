@@ -280,4 +280,56 @@ def compute_cohort_funnel_timeseries(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def compute_metric_timeseries_by_cohort(
+    base: pd.DataFrame,
+    value_col: str,
+    agg: Literal["sum", "mean", "count"] = "sum",
+) -> pd.DataFrame:
+    """Compute per-day, per-cohort timeseries for an arbitrary column with an aggregation.
+
+    Ensures a `date` column exists (derived from `time` if needed) and groups
+    by ["date", "cohort"]. Returns a DataFrame with columns ["date", "cohort", value_col].
+    """
+    df = base.copy()
+    if "cohort" not in df.columns:
+        raise ValueError("Missing 'cohort' column")
+
+    # Ensure a date column is present
+    if "date" not in df.columns:
+        if "time" in df.columns:
+            df["date"] = pd.to_datetime(df["time"].astype(str), format="%Y%m%d", errors="coerce")
+        else:
+            raise ValueError("Expected 'date' or 'time' column")
+    df["date"] = coerce_datetime(df["date"])  # ensure datetime
+
+    # For numeric aggs, coerce to numeric to avoid type issues
+    if agg in ("sum", "mean"):
+        if value_col not in df.columns:
+            raise ValueError(f"Column '{value_col}' not found in data")
+        df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
+
+    group_cols = ["date", "cohort"]
+    if value_col not in df.columns:
+        raise ValueError(f"Column '{value_col}' not found in data")
+
+    if agg == "count":
+        grouped = (
+            df.groupby(group_cols, dropna=False)[value_col]
+            .count()
+            .reset_index()
+            .rename(columns={value_col: value_col})
+        )
+    else:
+        grouped = (
+            df.groupby(group_cols, dropna=False)[value_col]
+            .agg(agg)
+            .reset_index()
+            .rename(columns={value_col: value_col})
+        )
+
+    # Ensure numeric output
+    grouped[value_col] = pd.to_numeric(grouped[value_col], errors="coerce").fillna(0.0)
+    grouped = grouped.sort_values(["cohort", "date"]).reset_index(drop=True)
+    return grouped
+
 

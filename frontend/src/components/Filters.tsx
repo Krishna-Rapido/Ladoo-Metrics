@@ -12,7 +12,17 @@ export type FiltersState = {
     confirmed?: string; // optional confirmation filter flag/value
 };
 
-export function Filters({ value, onChange, onApply }: { value: FiltersState; onChange: (v: FiltersState) => void; onApply?: () => void }) {
+export function Filters({
+    value,
+    onChange,
+    onApply,
+    onAddMetricsToSelection
+}: {
+    value: FiltersState;
+    onChange: (v: FiltersState) => void;
+    onApply?: () => void;
+    onAddMetricsToSelection?: (metrics: string[]) => void;
+}) {
     const [meta, setMeta] = useState<MetaResponse | null>(null);
 
     useEffect(() => {
@@ -136,23 +146,44 @@ export function Filters({ value, onChange, onApply }: { value: FiltersState; onC
                             <option key={m} value={m}>{m.replace(/_/g, ' ')}</option>
                         ))}
                     </select>
+
+                    {/* Selected Metrics Pills */}
                     {value.metrics && value.metrics.length > 0 && (
-                        <div className="metric-pills">
-                            {value.metrics.map((m) => (
-                                <span key={m} className="metric-pill">
-                                    {m.replace(/_/g, ' ')}
-                                    <button
-                                        className="metric-pill-remove"
-                                        onClick={() => onChange({
-                                            ...value,
-                                            metrics: value.metrics?.filter(metric => metric !== m)
-                                        })}
-                                        aria-label={`Remove ${m}`}
-                                    >
-                                        ×
-                                    </button>
-                                </span>
-                            ))}
+                        <div className="space-y-3 mt-4">
+                            <div className="metric-pills">
+                                {value.metrics.map((m) => (
+                                    <span key={m} className="metric-pill">
+                                        {m.replace(/_/g, ' ')}
+                                        <button
+                                            className="metric-pill-remove"
+                                            onClick={() => onChange({
+                                                ...value,
+                                                metrics: value.metrics?.filter(metric => metric !== m)
+                                            })}
+                                            aria-label={`Remove ${m}`}
+                                        >
+                                            ×
+                                        </button>
+                                    </span>
+                                ))}
+                            </div>
+
+                            {/* Add to Selection Button */}
+                            <div className="flex justify-end">
+                                <button
+                                    type="button"
+                                    className="btn btn-primary"
+                                    onClick={() => {
+                                        if (onAddMetricsToSelection && value.metrics) {
+                                            onAddMetricsToSelection(value.metrics);
+                                            onChange({ ...value, metrics: [] }); // Clear selection after adding
+                                        }
+                                    }}
+                                    disabled={!value.metrics || value.metrics.length === 0}
+                                >
+                                    Add {value.metrics?.length || 0} Metric{(value.metrics?.length || 0) !== 1 ? 's' : ''} to Selection
+                                </button>
+                            </div>
                         </div>
                     )}
                 </div>

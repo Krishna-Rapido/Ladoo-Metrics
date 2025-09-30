@@ -58,8 +58,20 @@ function App() {
   const [filters, setFilters] = useState<FiltersState>({});
   const [funnels, setFunnels] = useState<Record<string, FunnelResponse>>({});
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>([]);
+  const [additionalMetrics, setAdditionalMetrics] = useState<string[]>([]);
+  const [aggByMetric, setAggByMetric] = useState<Record<string, 'sum' | 'mean' | 'count'>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Handle adding metrics from Available Metrics to Additional Metrics
+  const handleAddMetricsToSelection = (metricsToAdd: string[]) => {
+    const newMetrics = metricsToAdd.filter(metric => !additionalMetrics.includes(metric));
+    setAdditionalMetrics(prev => [...prev, ...newMetrics]);
+  };
+
+  const handleAggChange = (metric: string, agg: 'sum' | 'mean' | 'count') => {
+    setAggByMetric((prev) => ({ ...prev, [metric]: agg }));
+  };
 
   async function loadFunnel() {
     if (!filters.test_cohort || !filters.control_cohort) return;
@@ -80,6 +92,7 @@ function App() {
           control_cohort: filters.control_cohort,
           metric: m,
           confirmed: filters.confirmed,
+          agg: additionalMetrics.includes(m) ? (aggByMetric[m] ?? 'sum') : undefined,
         });
         next[m] = res;
       }
@@ -115,7 +128,12 @@ function App() {
           <>
             {/* Filters Card */}
             <div className="glass-card slide-in">
-              <Filters value={filters} onChange={setFilters} onApply={loadFunnel} />
+              <Filters
+                value={filters}
+                onChange={setFilters}
+                onApply={loadFunnel}
+                onAddMetricsToSelection={handleAddMetricsToSelection}
+              />
             </div>
 
             {/* Metrics Selection Card */}
@@ -127,7 +145,15 @@ function App() {
                   <p className="card-subtitle">Select the metrics you want to analyze and compare</p>
                 </div>
               </div>
-              <MetricBar selected={selectedMetrics} onChange={setSelectedMetrics} onPlot={loadFunnel} />
+              <MetricBar
+                selected={selectedMetrics}
+                onChange={setSelectedMetrics}
+                onPlot={loadFunnel}
+                additionalMetrics={additionalMetrics}
+                onAdditionalMetricsChange={setAdditionalMetrics}
+                aggByMetric={aggByMetric}
+                onAggChange={handleAggChange}
+              />
             </div>
           </>
         )}

@@ -66,6 +66,7 @@ class FunnelRequest(BaseModel):
     control_cohort: Optional[str] = None
     metric: Optional[str] = None  # which metric to plot (any of stages/ratios)
     confirmed: Optional[str] = None  # confirmation column filter
+    agg: Optional[Literal["sum", "mean", "count"]] = None  # optional aggregation for arbitrary metric
 
 
 class FunnelPoint(BaseModel):

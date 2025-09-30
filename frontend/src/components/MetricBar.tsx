@@ -28,13 +28,25 @@ export function MetricBar({
     selected,
     onChange,
     onPlot,
+    additionalMetrics = [],
+    onAdditionalMetricsChange,
+    aggByMetric = {},
+    onAggChange,
 }: {
     selected: string[];
     onChange: (next: string[]) => void;
     onPlot: () => void;
+    additionalMetrics?: string[];
+    onAdditionalMetricsChange?: (metrics: string[]) => void;
+    aggByMetric?: Record<string, 'sum' | 'mean' | 'count'>;
+    onAggChange?: (metric: string, agg: 'sum' | 'mean' | 'count') => void;
 }) {
     const [current, setCurrent] = useState<string>(BASE_METRICS[0]);
-    const options = useMemo(() => ({ base: BASE_METRICS, ratios: RATIO_METRICS }), []);
+    const options = useMemo(() => ({
+        base: BASE_METRICS,
+        ratios: RATIO_METRICS,
+        additional: additionalMetrics
+    }), [additionalMetrics]);
 
     function addMetric(metric: string) {
         if (!metric) return;
@@ -65,6 +77,13 @@ export function MetricBar({
                             <option key={m} value={m}>{m.replace(/_/g, ' ')}</option>
                         ))}
                     </optgroup>
+                    {options.additional.length > 0 && (
+                        <optgroup label="Additional Metrics">
+                            {options.additional.map((m) => (
+                                <option key={m} value={m}>{m.replace(/_/g, ' ')}</option>
+                            ))}
+                        </optgroup>
+                    )}
                 </select>
                 <button
                     className="btn btn-secondary"
@@ -76,9 +95,88 @@ export function MetricBar({
                 </button>
             </div>
 
+            {/* Additional Metrics Section */}
+            {additionalMetrics.length > 0 && (
+                <div>
+                    <label className="input-label">Additional Metrics from Available List</label>
+                    <div className="metric-pills">
+                        {additionalMetrics.map((m) => (
+                            <span key={m} className="metric-pill" style={{ background: 'rgba(34, 197, 94, 0.1)', borderColor: 'rgba(34, 197, 94, 0.2)', color: '#15803d' }}>
+                                {m.replace(/_/g, ' ')}
+                                <div className="flex items-center gap-2 ml-2">
+                                    <select
+                                        className="glass-select"
+                                        style={{ minWidth: '120px' }}
+                                        value={aggByMetric[m] ?? 'sum'}
+                                        onChange={(e) => onAggChange && onAggChange(m, e.target.value as 'sum' | 'mean' | 'count')}
+                                        title="Aggregation"
+                                    >
+                                        <option value="sum">sum</option>
+                                        <option value="mean">mean</option>
+                                        <option value="count">count</option>
+                                    </select>
+                                    <button
+                                        className="text-xs px-1 py-0.5 bg-green-200 hover:bg-green-300 text-green-800 rounded transition-colors"
+                                        onClick={() => addMetric(m)}
+                                        disabled={selected.includes(m)}
+                                        title="Add to plotting selection"
+                                    >
+                                        +
+                                    </button>
+                                    <button
+                                        className="metric-pill-remove"
+                                        onClick={() => {
+                                            // Remove from additional metrics
+                                            if (onAdditionalMetricsChange) {
+                                                const newAdditional = additionalMetrics.filter(metric => metric !== m);
+                                                onAdditionalMetricsChange(newAdditional);
+                                            }
+                                            // Also remove from selected if it's there
+                                            removeMetric(m);
+                                        }}
+                                        aria-label={`Remove ${m}`}
+                                    >
+                                        ×
+                                    </button>
+                                </div>
+                            </span>
+                        ))}
+                    </div>
+
+                    {/* Bulk Actions for Additional Metrics */}
+                    <div className="flex gap-2 mt-3">
+                        <button
+                            className="btn btn-secondary"
+                            onClick={() => {
+                                const metricsToAdd = additionalMetrics.filter(m => !selected.includes(m));
+                                onChange([...selected, ...metricsToAdd]);
+                            }}
+                            disabled={additionalMetrics.every(m => selected.includes(m))}
+                            title="Add all additional metrics to plotting selection"
+                        >
+                            Add All to Selection
+                        </button>
+                        <button
+                            className="btn btn-secondary"
+                            onClick={() => {
+                                if (onAdditionalMetricsChange) {
+                                    onAdditionalMetricsChange([]);
+                                }
+                                // Remove any additional metrics from selected as well
+                                const newSelected = selected.filter(m => !additionalMetrics.includes(m));
+                                onChange(newSelected);
+                            }}
+                            title="Clear all additional metrics"
+                        >
+                            Clear All Additional
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {selected.length > 0 && (
                 <div>
-                    <label className="input-label">Selected Metrics</label>
+                    <label className="input-label">Selected Metrics for Plotting</label>
                     <div className="metric-pills">
                         {selected.map((m) => (
                             <span key={m} className="metric-pill">
@@ -108,7 +206,7 @@ export function MetricBar({
                 )}
                 <button
                     className="btn btn-primary"
-                    onClick={onPlot}
+                    onClick={() => onPlot()}
                     disabled={selected.length === 0}
                     title="Generate charts for selected metrics"
                 >
