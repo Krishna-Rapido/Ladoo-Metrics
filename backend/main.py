@@ -71,12 +71,14 @@ async def upload_csv(file: UploadFile = File(...)) -> UploadResponse:
 
     df = df.copy()
     # Coerce a unified date column
+    # df['date'] = df['time'].astype(str)
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
     else:
         df["date"] = pd.to_datetime(df["time"].astype(str), format="%Y%m%d", errors="coerce")
     if df["date"].isna().any():
-        raise HTTPException(status_code=400, detail="Invalid date/time values found")
+        x = df["date"].isna().sum()
+        raise HTTPException(status_code=400, detail=f"Invalid date/time values found = {x}")
     df["cohort"] = df["cohort"].astype(str)
     # Best-effort numeric coercion for other columns
     for c in df.columns:
