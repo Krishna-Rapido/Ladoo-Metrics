@@ -50,7 +50,9 @@ export type FunnelRequest = {
     test_cohort?: string;
     control_cohort?: string;
     metric?: string;
-    confirmed?: string;
+    confirmed?: string; // legacy
+    test_confirmed?: string;
+    control_confirmed?: string;
     agg?: 'sum' | 'mean' | 'count';
 };
 

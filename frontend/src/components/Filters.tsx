@@ -9,7 +9,9 @@ export type FiltersState = {
     control_cohort?: string;
     metric?: string;
     metrics?: string[]; // multi-select
-    confirmed?: string; // optional confirmation filter flag/value
+    confirmed?: string; // legacy single confirmation filter
+    test_confirmed?: string; // per-test confirmation filter
+    control_confirmed?: string; // per-control confirmation filter
 };
 
 export function Filters({
@@ -188,30 +190,56 @@ export function Filters({
                     )}
                 </div>
 
-                {/* Confirmation Filter */}
-                <div className="input-group">
-                    <label className="input-label">Confirmation Filter (Optional)</label>
-                    <select
-                        className="glass-select"
-                        value={value.confirmed ?? ''}
-                        onChange={(e) => onChange({ ...value, confirmed: e.target.value })}
-                    >
-                        <option value="">No Confirmation Filter</option>
-                        <option value="visitedCaps">Visited Caps</option>
-                        <option value="exploredCaptains">Explored Captains</option>
-                        <option value="exploredCaptains_Subs">Explored Captains - Subs</option>
-                        <option value="exploredCaptains_EPKM">Explored Captains - EPKM</option>
-                        <option value="exploredCaptains_FlatCommission">Explored Captains - Flat Commission</option>
-                        <option value="exploredCaptains_CM">Explored Captains - CM</option>
-                        <option value="confirmedCaptains">Confirmed Captains</option>
-                        <option value="confirmedCaptains_Subs">Confirmed Captains - Subs</option>
-                        <option value="confirmedCaptains_Subs_purchased">Confirmed Captains - Subs Purchased</option>
-                        <option value="confirmedCaptains_Subs_purchased_weekend">Confirmed Captains - Subs Purchased Weekend</option>
-                        <option value="confirmedCaptains_EPKM">Confirmed Captains - EPKM</option>
-                        <option value="confirmedCaptains_FlatCommission">Confirmed Captains - Flat Commission</option>
-                        <option value="confirmedCaptains_CM">Confirmed Captains - CM</option>
-                        <option value="clickedCaptain">Clicked Captains</option>
-                    </select>
+                {/* Confirmation Filters */}
+                <div className="grid-2">
+                    <div className="input-group">
+                        <label className="input-label">Test Confirmation Filter (Optional)</label>
+                        <select
+                            className="glass-select"
+                            value={value.test_confirmed ?? ''}
+                            onChange={(e) => onChange({ ...value, test_confirmed: e.target.value })}
+                        >
+                            <option value="">No Confirmation Filter</option>
+                            <option value="visitedCaps">Visited Caps</option>
+                            <option value="exploredCaptains">Explored Captains</option>
+                            <option value="exploredCaptains_Subs">Explored Captains - Subs</option>
+                            <option value="exploredCaptains_EPKM">Explored Captains - EPKM</option>
+                            <option value="exploredCaptains_FlatCommission">Explored Captains - Flat Commission</option>
+                            <option value="exploredCaptains_CM">Explored Captains - CM</option>
+                            <option value="confirmedCaptains">Confirmed Captains</option>
+                            <option value="confirmedCaptains_Subs">Confirmed Captains - Subs</option>
+                            <option value="confirmedCaptains_Subs_purchased">Confirmed Captains - Subs Purchased</option>
+                            <option value="confirmedCaptains_Subs_purchased_weekend">Confirmed Captains - Subs Purchased Weekend</option>
+                            <option value="confirmedCaptains_EPKM">Confirmed Captains - EPKM</option>
+                            <option value="confirmedCaptains_FlatCommission">Confirmed Captains - Flat Commission</option>
+                            <option value="confirmedCaptains_CM">Confirmed Captains - CM</option>
+                            <option value="clickedCaptain">Clicked Captains</option>
+                        </select>
+                    </div>
+                    <div className="input-group">
+                        <label className="input-label">Control Confirmation Filter (Optional)</label>
+                        <select
+                            className="glass-select"
+                            value={value.control_confirmed ?? ''}
+                            onChange={(e) => onChange({ ...value, control_confirmed: e.target.value })}
+                        >
+                            <option value="">No Confirmation Filter</option>
+                            <option value="visitedCaps">Visited Caps</option>
+                            <option value="exploredCaptains">Explored Captains</option>
+                            <option value="exploredCaptains_Subs">Explored Captains - Subs</option>
+                            <option value="exploredCaptains_EPKM">Explored Captains - EPKM</option>
+                            <option value="exploredCaptains_FlatCommission">Explored Captains - Flat Commission</option>
+                            <option value="exploredCaptains_CM">Explored Captains - CM</option>
+                            <option value="confirmedCaptains">Confirmed Captains</option>
+                            <option value="confirmedCaptains_Subs">Confirmed Captains - Subs</option>
+                            <option value="confirmedCaptains_Subs_purchased">Confirmed Captains - Subs Purchased</option>
+                            <option value="confirmedCaptains_Subs_purchased_weekend">Confirmed Captains - Subs Purchased Weekend</option>
+                            <option value="confirmedCaptains_EPKM">Confirmed Captains - EPKM</option>
+                            <option value="confirmedCaptains_FlatCommission">Confirmed Captains - Flat Commission</option>
+                            <option value="confirmedCaptains_CM">Confirmed Captains - CM</option>
+                            <option value="clickedCaptain">Clicked Captains</option>
+                        </select>
+                    </div>
                 </div>
 
                 {/* Action Buttons */}

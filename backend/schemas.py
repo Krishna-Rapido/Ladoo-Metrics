@@ -65,7 +65,9 @@ class FunnelRequest(BaseModel):
     test_cohort: Optional[str] = None
     control_cohort: Optional[str] = None
     metric: Optional[str] = None  # which metric to plot (any of stages/ratios)
-    confirmed: Optional[str] = None  # confirmation column filter
+    confirmed: Optional[str] = None  # legacy single confirmation filter
+    test_confirmed: Optional[str] = None  # per-test confirmation filter
+    control_confirmed: Optional[str] = None  # per-control confirmation filter
     agg: Optional[Literal["sum", "mean", "count"]] = None  # optional aggregation for arbitrary metric
 
 

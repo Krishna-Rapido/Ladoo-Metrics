@@ -202,24 +202,30 @@ def compute_metrics(payload: MetricsRequest, df: pd.DataFrame = Depends(get_sess
 def funnel(payload: FunnelRequest, df: pd.DataFrame = Depends(get_session_df)) -> FunnelResponse:
     working = df.copy()
     
-    # Apply confirmation filtering if specified
-    confirmed_filter = getattr(payload, 'confirmed', None) or ''
+    # Apply confirmation filtering if specified (support per-test/control and legacy)
+    test_confirmed = getattr(payload, 'test_confirmed', None) or getattr(payload, 'confirmed', None) or ''
+    control_confirmed = getattr(payload, 'control_confirmed', None) or getattr(payload, 'confirmed', None) or ''
     
     # Filter for test and control cohorts with optional confirmation filtering
     if payload.test_cohort and payload.control_cohort:
-        test_data = get_cohort(working, payload.test_cohort, confirmed_filter)
-        control_data = get_cohort(working, payload.control_cohort, confirmed_filter)
+        test_data = get_cohort(working, payload.test_cohort, test_confirmed).copy()
+        control_data = get_cohort(working, payload.control_cohort, control_confirmed).copy()
+        # Label cohorts explicitly so identical cohort names remain distinct
+        test_data["cohort"] = test_data["cohort"].astype(str).apply(lambda c: f"TEST: {c}")
+        control_data["cohort"] = control_data["cohort"].astype(str).apply(lambda c: f"CONTROL: {c}")
         working = pd.concat([test_data, control_data], ignore_index=True)
     elif payload.test_cohort:
-        working = get_cohort(working, payload.test_cohort, confirmed_filter)
+        working = get_cohort(working, payload.test_cohort, test_confirmed).copy()
+        working["cohort"] = working["cohort"].astype(str).apply(lambda c: f"TEST: {c}")
     elif payload.control_cohort:
-        working = get_cohort(working, payload.control_cohort, confirmed_filter)
+        working = get_cohort(working, payload.control_cohort, control_confirmed).copy()
+        working["cohort"] = working["cohort"].astype(str).apply(lambda c: f"CONTROL: {c}")
     else:
         # If no specific cohorts, just apply confirmation filter if specified
-        if confirmed_filter:
-            if confirmed_filter not in working.columns:
-                raise HTTPException(status_code=400, detail=f"Confirmation column '{confirmed_filter}' not found")
-            working = working[~working[confirmed_filter].isna()]
+        if test_confirmed:
+            if test_confirmed not in working.columns:
+                raise HTTPException(status_code=400, detail=f"Confirmation column '{test_confirmed}' not found")
+            working = working[~working[test_confirmed].isna()]
 
     ts = compute_cohort_funnel_timeseries(working)
     metrics_available = [c for c in ts.columns if c not in {"date", "cohort"}]
