@@ -210,6 +210,7 @@ export function Filters({
                         <option value="confirmedCaptains_EPKM">Confirmed Captains - EPKM</option>
                         <option value="confirmedCaptains_FlatCommission">Confirmed Captains - Flat Commission</option>
                         <option value="confirmedCaptains_CM">Confirmed Captains - CM</option>
+                        <option value="clickedCaptain">Clicked Captains</option>
                     </select>
                 </div>
 
