@@ -65,6 +65,31 @@ export type FunnelResponse = {
     post_summary: Record<string, number>;
 };
 
+export type CohortAggregationRow = {
+    cohort: string;
+    totalExpCaps: number;
+    visitedCaps: number;
+    clickedCaptain: number;
+    exploredCaptains: number;
+    exploredCaptains_Subs: number;
+    exploredCaptains_EPKM: number;
+    exploredCaptains_FlatCommission: number;
+    exploredCaptains_CM: number;
+    confirmedCaptains: number;
+    confirmedCaptains_Subs: number;
+    confirmedCaptains_Subs_purchased: number;
+    confirmedCaptains_Subs_purchased_weekend: number;
+    confirmedCaptains_EPKM: number;
+    confirmedCaptains_FlatCommission: number;
+    confirmedCaptains_CM: number;
+    Visit2Click: number;
+    Base2Visit: number;
+};
+
+export type CohortAggregationResponse = {
+    data: CohortAggregationRow[];
+};
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
 function getSessionId(): string | null {
@@ -132,6 +157,14 @@ export async function clearSession(): Promise<void> {
     });
     if (!res.ok) throw new Error(await res.text());
     localStorage.removeItem('session_id');
+}
+
+export async function fetchCohortAggregation(): Promise<CohortAggregationResponse> {
+    const res = await fetch(`${BASE_URL}/cohort-aggregation`, {
+        headers: sessionHeaders(),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
 }
 
 // Statistical Tests API

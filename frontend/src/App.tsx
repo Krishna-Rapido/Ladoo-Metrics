@@ -7,8 +7,9 @@ import type { FiltersState } from './components/Filters';
 import { Charts } from './components/Charts';
 import { MetricBar } from './components/MetricBar';
 import { StatisticalTests } from './components/StatisticalTests';
-import { fetchFunnel } from './lib/api';
-import type { FunnelResponse, UploadResponse } from './lib/api';
+import { CohortDataGrid } from './components/CohortDataGrid';
+import { fetchFunnel, fetchCohortAggregation } from './lib/api';
+import type { FunnelResponse, UploadResponse, CohortAggregationResponse } from './lib/api';
 
 // Simple Error Boundary Component
 class ErrorBoundary extends Component<
@@ -57,6 +58,7 @@ function App() {
   const [uploaded, setUploaded] = useState<UploadResponse | null>(null);
   const [filters, setFilters] = useState<FiltersState>({});
   const [funnels, setFunnels] = useState<Record<string, FunnelResponse>>({});
+  const [cohortAggregation, setCohortAggregation] = useState<CohortAggregationResponse | null>(null);
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>([]);
   const [additionalMetrics, setAdditionalMetrics] = useState<string[]>([]);
   const [aggByMetric, setAggByMetric] = useState<Record<string, 'sum' | 'mean' | 'count'>>({});
@@ -71,6 +73,21 @@ function App() {
 
   const handleAggChange = (metric: string, agg: 'sum' | 'mean' | 'count') => {
     setAggByMetric((prev) => ({ ...prev, [metric]: agg }));
+  };
+
+  // Load cohort aggregation data
+  const loadCohortAggregation = async () => {
+    if (!uploaded) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetchCohortAggregation();
+      setCohortAggregation(res);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to load cohort aggregation');
+    } finally {
+      setLoading(false);
+    }
   };
 
   async function loadFunnel() {
@@ -132,6 +149,35 @@ function App() {
           </div>
         ) : (
           <>
+            {/* Cohort Aggregation Table - Always Visible */}
+            <div className="glass-card slide-in">
+              <div className="card-header">
+                <span className="card-icon">📋</span>
+                <div>
+                  <h2 className="card-title">Cohort Aggregation Table</h2>
+                  <p className="card-subtitle">Cohort-level aggregated metrics and ratios</p>
+                </div>
+              </div>
+              <div className="mt-6">
+                {cohortAggregation ? (
+                  <CohortDataGrid
+                    data={cohortAggregation.data}
+                    title="Cohort Aggregation Data"
+                  />
+                ) : (
+                  <div className="text-center py-8">
+                    <button
+                      className="btn btn-primary"
+                      onClick={loadCohortAggregation}
+                      disabled={loading}
+                    >
+                      {loading ? 'Loading...' : 'Load Cohort Aggregation Data'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
             {/* Filters Card */}
             <div className="glass-card slide-in">
               <Filters
@@ -161,71 +207,70 @@ function App() {
                 onAggChange={handleAggChange}
               />
             </div>
-          </>
-        )}
 
-        {/* Loading State */}
-        {loading && (
-          <div className="glass-card slide-in">
-            <div className="flex items-center justify-center py-8">
-              <div className="loading-spinner"></div>
-              <span className="ml-3 text-slate-600">Loading analysis...</span>
-            </div>
-          </div>
-        )}
-
-        {/* Error State */}
-        {error && (
-          <div className="glass-card slide-in" style={{ borderColor: '#fecaca', background: 'rgba(254, 226, 226, 0.9)' }}>
-            <div className="flex items-center gap-3">
-              <span className="text-2xl">⚠️</span>
-              <div>
-                <h3 className="font-semibold text-red-800">Error</h3>
-                <p className="text-red-700">{error}</p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Charts Section */}
-        {Object.entries(funnels).map(([metric, funnel]) => {
-          const testLabel = filters.test_cohort ? `TEST: ${filters.test_cohort}` : undefined;
-          const controlLabel = filters.control_cohort ? `CONTROL: ${filters.control_cohort}` : undefined;
-          return (
-            <div key={metric} className="glass-card slide-in">
-              <div className="card-header">
-                <span className="card-icon">📊</span>
-                <div>
-                  <h2 className="card-title">{metric.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} Over Time</h2>
-                  <p className="card-subtitle">Comparison of test vs control cohorts across pre and post periods</p>
+            {/* Loading State */}
+            {loading && (
+              <div className="glass-card slide-in">
+                <div className="flex items-center justify-center py-8">
+                  <div className="loading-spinner"></div>
+                  <span className="ml-3 text-slate-600">Loading analysis...</span>
                 </div>
               </div>
-              <div className="chart-container">
-                <Charts
-                  preData={funnel.pre_series.map(p => ({ date: p.date, cohort: p.cohort, value: p.value }))}
-                  postData={funnel.post_series.map(p => ({ date: p.date, cohort: p.cohort, value: p.value }))}
-                  testCohort={testLabel}
-                  controlCohort={controlLabel}
-                  title={metric}
-                  legendSuffix={metric.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                />
-              </div>
+            )}
 
-              {/* Statistical Analysis Section */}
-              <div className="mt-8 pt-6 border-t border-gray-200">
-                <ErrorBoundary>
-                  <StatisticalTests
-                    preData={funnel.pre_series.map(p => ({ date: p.date, cohort: p.cohort, value: p.value }))}
-                    postData={funnel.post_series.map(p => ({ date: p.date, cohort: p.cohort, value: p.value }))}
-                    testCohort={testLabel}
-                    controlCohort={controlLabel}
-                    metric={metric}
-                  />
-                </ErrorBoundary>
+            {/* Error State */}
+            {error && (
+              <div className="glass-card slide-in" style={{ borderColor: '#fecaca', background: 'rgba(254, 226, 226, 0.9)' }}>
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">⚠️</span>
+                  <div>
+                    <h3 className="font-semibold text-red-800">Error</h3>
+                    <p className="text-red-700">{error}</p>
+                  </div>
+                </div>
               </div>
-            </div>
-          );
-        })}
+            )}
+
+            {/* Charts Section */}
+            {Object.entries(funnels).map(([metric, funnel]) => {
+              const testLabel = filters.test_cohort ? `TEST: ${filters.test_cohort}` : undefined;
+              const controlLabel = filters.control_cohort ? `CONTROL: ${filters.control_cohort}` : undefined;
+              return (
+                <div key={metric} className="glass-card slide-in">
+                  <div className="card-header">
+                    <span className="card-icon">📊</span>
+                    <div>
+                      <h2 className="card-title">{metric.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} Over Time</h2>
+                      <p className="card-subtitle">Comparison of test vs control cohorts across pre and post periods</p>
+                    </div>
+                  </div>
+                  <div className="chart-container">
+                    <Charts
+                      preData={funnel.pre_series.map(p => ({ date: p.date, cohort: p.cohort, value: p.value }))}
+                      postData={funnel.post_series.map(p => ({ date: p.date, cohort: p.cohort, value: p.value }))}
+                      testCohort={testLabel}
+                      controlCohort={controlLabel}
+                      legendSuffix={metric.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                    />
+                  </div>
+
+                  {/* Statistical Analysis Section */}
+                  <div className="mt-8 pt-6 border-t border-gray-200">
+                    <ErrorBoundary>
+                      <StatisticalTests
+                        preData={funnel.pre_series.map(p => ({ date: p.date, cohort: p.cohort, value: p.value }))}
+                        postData={funnel.post_series.map(p => ({ date: p.date, cohort: p.cohort, value: p.value }))}
+                        testCohort={testLabel}
+                        controlCohort={controlLabel}
+                        metric={metric}
+                      />
+                    </ErrorBoundary>
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
       </div>
     </div>
   );

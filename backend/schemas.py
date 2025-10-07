@@ -115,3 +115,28 @@ class StatTestResult(BaseModel):
     raw_output: Optional[Dict[str, Any]] = None
 
 
+class CohortAggregationRow(BaseModel):
+    cohort: str
+    totalExpCaps: float
+    visitedCaps: float
+    clickedCaptain: float
+    exploredCaptains: float
+    exploredCaptains_Subs: float
+    exploredCaptains_EPKM: float
+    exploredCaptains_FlatCommission: float
+    exploredCaptains_CM: float
+    confirmedCaptains: float
+    confirmedCaptains_Subs: float
+    confirmedCaptains_Subs_purchased: float
+    confirmedCaptains_Subs_purchased_weekend: float
+    confirmedCaptains_EPKM: float
+    confirmedCaptains_FlatCommission: float
+    confirmedCaptains_CM: float
+    Visit2Click: float
+    Base2Visit: float
+
+
+class CohortAggregationResponse(BaseModel):
+    data: List[CohortAggregationRow]
+
+

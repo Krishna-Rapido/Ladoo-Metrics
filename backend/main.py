@@ -21,6 +21,8 @@ from schemas import (
     FunnelPoint,
     StatTestRequest,
     StatTestResult,
+    CohortAggregationResponse,
+    CohortAggregationRow,
 )
 from transformations import (
     aggregate_time_series,
@@ -281,6 +283,83 @@ def funnel(payload: FunnelRequest, df: pd.DataFrame = Depends(get_session_df)) -
     )
 
 
+@app.get("/cohort-aggregation", response_model=CohortAggregationResponse, responses={400: {"model": ErrorResponse}})
+def get_cohort_aggregation(df: pd.DataFrame = Depends(get_session_df)) -> CohortAggregationResponse:
+    """Get cohort-level aggregation data as shown in the example"""
+    working = df.copy()
+
+    # Check if required columns exist
+    required_columns = [
+        "totalExpCaps", "visitedCaps", "clickedCaptain", "exploredCaptains",
+        "exploredCaptains_Subs", "exploredCaptains_EPKM", "exploredCaptains_FlatCommission",
+        "exploredCaptains_CM", "confirmedCaptains", "confirmedCaptains_Subs",
+        "confirmedCaptains_Subs_purchased", "confirmedCaptains_Subs_purchased_weekend",
+        "confirmedCaptains_EPKM", "confirmedCaptains_FlatCommission", "confirmedCaptains_CM"
+    ]
+
+    missing_columns = [col for col in required_columns if col not in working.columns]
+    if missing_columns:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required columns for cohort aggregation: {missing_columns}. "
+                   f"Available columns: {list(working.columns)}"
+        )
+
+    # Perform the aggregation as specified in the example
+    result = working.groupby(["cohort"]).agg({
+        "totalExpCaps": "nunique",
+        "visitedCaps": "nunique",
+        'clickedCaptain': 'nunique',
+        'exploredCaptains': 'nunique',
+        'exploredCaptains_Subs': 'nunique',
+        'exploredCaptains_EPKM': 'nunique',
+        'exploredCaptains_FlatCommission': 'nunique',
+        'exploredCaptains_CM': 'nunique',
+        'confirmedCaptains': 'nunique',
+        'confirmedCaptains_Subs': 'nunique',
+        'confirmedCaptains_Subs_purchased': 'nunique',
+        'confirmedCaptains_Subs_purchased_weekend': 'nunique',
+        'confirmedCaptains_EPKM': 'nunique',
+        'confirmedCaptains_FlatCommission': 'nunique',
+        'confirmedCaptains_CM': 'nunique'
+
+    }).reset_index().sort_values("exploredCaptains", ascending=False)
+
+    # Calculate the ratio columns
+    result['Visit2Click'] = result['clickedCaptain'] / result['visitedCaps']
+    result['Base2Visit'] = result['visitedCaps'] / result['totalExpCaps']
+
+    # Handle division by zero
+    result['Visit2Click'] = result['Visit2Click'].fillna(0)
+    result['Base2Visit'] = result['Base2Visit'].fillna(0)
+
+    # Convert to list of CohortAggregationRow objects
+    data = []
+    for _, row in result.iterrows():
+        data.append(CohortAggregationRow(
+            cohort=str(row['cohort']),
+            totalExpCaps=float(row['totalExpCaps']),
+            visitedCaps=float(row['visitedCaps']),
+            clickedCaptain=float(row['clickedCaptain']),
+            exploredCaptains=float(row['exploredCaptains']),
+            exploredCaptains_Subs=float(row['exploredCaptains_Subs']),
+            exploredCaptains_EPKM=float(row['exploredCaptains_EPKM']),
+            exploredCaptains_FlatCommission=float(row['exploredCaptains_FlatCommission']),
+            exploredCaptains_CM=float(row['exploredCaptains_CM']),
+            confirmedCaptains=float(row['confirmedCaptains']),
+            confirmedCaptains_Subs=float(row['confirmedCaptains_Subs']),
+            confirmedCaptains_Subs_purchased=float(row['confirmedCaptains_Subs_purchased']),
+            confirmedCaptains_Subs_purchased_weekend=float(row['confirmedCaptains_Subs_purchased_weekend']),
+            confirmedCaptains_EPKM=float(row['confirmedCaptains_EPKM']),
+            confirmedCaptains_FlatCommission=float(row['confirmedCaptains_FlatCommission']),
+            confirmedCaptains_CM=float(row['confirmedCaptains_CM']),
+            Visit2Click=float(row['Visit2Click']),
+            Base2Visit=float(row['Base2Visit']),
+        ))
+
+    return CohortAggregationResponse(data=data)
+
+
 @app.delete("/session")
 def clear_session(x_session_id: Optional[str] = Header(default=None)):
     if x_session_id and x_session_id in SESSION_STORE:
@@ -306,6 +385,75 @@ def run_statistical_test_endpoint(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/cohort-aggregation")
+def get_cohort_aggregation(df: pd.DataFrame = Depends(get_session_df)):
+    """Compute cohort-level aggregations and return as styled HTML table"""
+    try:
+        # Define columns to aggregate with nunique
+        agg_cols = [
+            "totalExpCaps", "visitedCaps", "clickedCaptain", "exploredCaptains",
+            "exploredCaptains_Subs", "exploredCaptains_EPKM", "exploredCaptains_FlatCommission",
+            "exploredCaptains_CM", "confirmedCaptains", "confirmedCaptains_Subs",
+            "confirmedCaptains_Subs_purchased", "confirmedCaptains_Subs_purchased_weekend",
+            "confirmedCaptains_EPKM", "confirmedCaptains_FlatCommission", "confirmedCaptains_CM"
+        ]
+
+        # Filter to only existing columns
+        agg_dict = {col: "nunique" for col in agg_cols if col in df.columns}
+
+        if not agg_dict:
+            # Return empty styled table
+            empty_df = pd.DataFrame({"cohort": []})
+            return empty_df.to_html(
+                table_id="cohort-table",
+                classes="table table-striped table-hover",
+                index=False,
+                justify="center"
+            )
+
+        # Aggregate by cohort
+        result = df.groupby("cohort").agg(agg_dict).reset_index()
+
+        # Add computed ratio columns if base columns exist
+        if "clickedCaptain" in result.columns and "visitedCaps" in result.columns:
+            result["Visit2Click"] = result["clickedCaptain"] / result["visitedCaps"].replace(0, pd.NA)
+        if "visitedCaps" in result.columns and "totalExpCaps" in result.columns:
+            result["Base2Visit"] = result["visitedCaps"] / result["totalExpCaps"].replace(0, pd.NA)
+
+        # Sort by exploredCaptains if available
+        if "exploredCaptains" in result.columns:
+            result = result.sort_values("exploredCaptains", ascending=False)
+
+        # Fill NaN with 0 for display
+        result = result.fillna(0)
+
+        # Helper for pretty numeric formatting
+        def _fmt(val):
+            try:
+                if isinstance(val, (int, float)):
+                    if isinstance(val, float) and not val.is_integer():
+                        return f"{val:,.2f}"
+                    return f"{int(val):,}"
+                return str(val)
+            except Exception:
+                return str(val)
+
+        # Generate styled HTML table
+        html_table = result.to_html(
+            table_id="cohort-table",
+            classes="table table-striped table-hover table-responsive",
+            index=False,
+            justify="center",
+            escape=False,
+            formatters={col: _fmt for col in result.columns}
+        )
+
+        return html_table
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute cohort aggregation: {str(e)}")
 
 
 if __name__ == "__main__":
