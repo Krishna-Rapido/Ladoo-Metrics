@@ -2,12 +2,11 @@ import { Line, LineChart, CartesianGrid, XAxis, YAxis, Tooltip, Legend, Responsi
 
 export type SeriesPoint = { date: string; cohort: string; value: number };
 
-export function Charts({ preData, postData, testCohort, controlCohort, title, legendSuffix }: {
+export function Charts({ preData, postData, testCohort, controlCohort, legendSuffix }: {
     preData: SeriesPoint[];
     postData: SeriesPoint[];
     testCohort?: string;
     controlCohort?: string;
-    title?: string;
     legendSuffix?: string;
 }) {
     // Merge dates and align values per series

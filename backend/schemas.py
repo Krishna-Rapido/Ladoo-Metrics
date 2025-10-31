@@ -65,7 +65,9 @@ class FunnelRequest(BaseModel):
     test_cohort: Optional[str] = None
     control_cohort: Optional[str] = None
     metric: Optional[str] = None  # which metric to plot (any of stages/ratios)
-    confirmed: Optional[str] = None  # confirmation column filter
+    confirmed: Optional[str] = None  # legacy single confirmation filter
+    test_confirmed: Optional[str] = None  # per-test confirmation filter
+    control_confirmed: Optional[str] = None  # per-control confirmation filter
     agg: Optional[Literal["sum", "mean", "count"]] = None  # optional aggregation for arbitrary metric
 
 
@@ -111,5 +113,64 @@ class StatTestResult(BaseModel):
     summary: str
     parameters_used: Dict[str, Any] = Field(default_factory=dict)
     raw_output: Optional[Dict[str, Any]] = None
+
+
+class CohortAggregationRow(BaseModel):
+    cohort: str
+    totalExpCaps: float
+    visitedCaps: float
+    clickedCaptain: float
+    pitch_centre_card_clicked: float
+    pitch_centre_card_visible: float
+    exploredCaptains: float
+    exploredCaptains_Subs: float
+    exploredCaptains_EPKM: float
+    exploredCaptains_FlatCommission: float
+    exploredCaptains_CM: float
+    confirmedCaptains: float
+    confirmedCaptains_Subs: float
+    confirmedCaptains_Subs_purchased: float
+    confirmedCaptains_Subs_purchased_weekend: float
+    confirmedCaptains_EPKM: float
+    confirmedCaptains_FlatCommission: float
+    confirmedCaptains_CM: float
+    Visit2Click: float
+    Base2Visit: float
+    Click2Confirm: float
+
+
+class CohortAggregationResponse(BaseModel):
+    data: List[CohortAggregationRow]
+
+
+# Captain-Level Aggregation Schemas
+class MetricAggregation(BaseModel):
+    column: str
+    agg_func: Literal["sum", "mean", "count", "nunique", "median", "std", "min", "max"]
+
+
+class CaptainLevelRequest(BaseModel):
+    pre_period: Optional[DateRange] = None
+    post_period: Optional[DateRange] = None
+    test_cohort: str
+    control_cohort: str
+    test_confirmed: Optional[str] = None
+    control_confirmed: Optional[str] = None
+    group_by_column: str  # e.g., consistency_segment
+    metric_aggregations: List[MetricAggregation]  # list of metrics to aggregate
+
+
+class CaptainLevelAggregationRow(BaseModel):
+    period: str  # "pre" or "post"
+    cohort_type: str  # "test" or "control"
+    date: Optional[str] = None  # YYYY-MM-DD
+    group_value: str  # value from group_by_column (e.g., specific consistency_segment)
+    aggregations: Dict[str, float]  # {metric_agg: value}
+
+
+class CaptainLevelResponse(BaseModel):
+    data: List[CaptainLevelAggregationRow]
+    group_by_column: str
+    metrics: List[str]
 
 

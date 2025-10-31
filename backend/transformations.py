@@ -242,6 +242,16 @@ def get_ao2n_funnel_data(base: pd.DataFrame) -> pd.DataFrame:
             raise ValueError("Expected 'date' or 'time' column")
     df["date"] = coerce_datetime(df["date"])  # ensure datetime
 
+    # If we have per-captain daily rows, keep only the last record per (captain_id, date)
+    # before aggregating so daily metrics like ao_days are not double-counted.
+    if "captain_id" in df.columns:
+        df = (
+            df.sort_values(["captain_id", "date"])  # ensure stable ordering
+              .groupby(["captain_id", "date"], as_index=False, group_keys=False)
+              .tail(1)
+              .reset_index(drop=True)
+        )
+
     agg_map: Dict[str, str] = {}
     if "captain_id" in df.columns:
         agg_map["captain_id"] = "nunique"

@@ -21,6 +21,11 @@ from schemas import (
     FunnelPoint,
     StatTestRequest,
     StatTestResult,
+    CohortAggregationResponse,
+    CohortAggregationRow,
+    CaptainLevelRequest,
+    CaptainLevelResponse,
+    CaptainLevelAggregationRow,
 )
 from transformations import (
     aggregate_time_series,
@@ -71,12 +76,14 @@ async def upload_csv(file: UploadFile = File(...)) -> UploadResponse:
 
     df = df.copy()
     # Coerce a unified date column
+    # df['date'] = df['time'].astype(str)
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
     else:
         df["date"] = pd.to_datetime(df["time"].astype(str), format="%Y%m%d", errors="coerce")
     if df["date"].isna().any():
-        raise HTTPException(status_code=400, detail="Invalid date/time values found")
+        x = df["date"].isna().sum()
+        raise HTTPException(status_code=400, detail=f"Invalid date/time values found = {x}")
     df["cohort"] = df["cohort"].astype(str)
     # Best-effort numeric coercion for other columns
     for c in df.columns:
@@ -200,24 +207,30 @@ def compute_metrics(payload: MetricsRequest, df: pd.DataFrame = Depends(get_sess
 def funnel(payload: FunnelRequest, df: pd.DataFrame = Depends(get_session_df)) -> FunnelResponse:
     working = df.copy()
     
-    # Apply confirmation filtering if specified
-    confirmed_filter = getattr(payload, 'confirmed', None) or ''
+    # Apply confirmation filtering if specified (support per-test/control and legacy)
+    test_confirmed = getattr(payload, 'test_confirmed', None) or getattr(payload, 'confirmed', None) or ''
+    control_confirmed = getattr(payload, 'control_confirmed', None) or getattr(payload, 'confirmed', None) or ''
     
     # Filter for test and control cohorts with optional confirmation filtering
     if payload.test_cohort and payload.control_cohort:
-        test_data = get_cohort(working, payload.test_cohort, confirmed_filter)
-        control_data = get_cohort(working, payload.control_cohort, confirmed_filter)
+        test_data = get_cohort(working, payload.test_cohort, test_confirmed).copy()
+        control_data = get_cohort(working, payload.control_cohort, control_confirmed).copy()
+        # Label cohorts explicitly so identical cohort names remain distinct
+        test_data["cohort"] = test_data["cohort"].astype(str).apply(lambda c: f"TEST: {c}")
+        control_data["cohort"] = control_data["cohort"].astype(str).apply(lambda c: f"CONTROL: {c}")
         working = pd.concat([test_data, control_data], ignore_index=True)
     elif payload.test_cohort:
-        working = get_cohort(working, payload.test_cohort, confirmed_filter)
+        working = get_cohort(working, payload.test_cohort, test_confirmed).copy()
+        working["cohort"] = working["cohort"].astype(str).apply(lambda c: f"TEST: {c}")
     elif payload.control_cohort:
-        working = get_cohort(working, payload.control_cohort, confirmed_filter)
+        working = get_cohort(working, payload.control_cohort, control_confirmed).copy()
+        working["cohort"] = working["cohort"].astype(str).apply(lambda c: f"CONTROL: {c}")
     else:
         # If no specific cohorts, just apply confirmation filter if specified
-        if confirmed_filter:
-            if confirmed_filter not in working.columns:
-                raise HTTPException(status_code=400, detail=f"Confirmation column '{confirmed_filter}' not found")
-            working = working[~working[confirmed_filter].isna()]
+        if test_confirmed:
+            if test_confirmed not in working.columns:
+                raise HTTPException(status_code=400, detail=f"Confirmation column '{test_confirmed}' not found")
+            working = working[~working[test_confirmed].isna()]
 
     ts = compute_cohort_funnel_timeseries(working)
     metrics_available = [c for c in ts.columns if c not in {"date", "cohort"}]
@@ -273,6 +286,91 @@ def funnel(payload: FunnelRequest, df: pd.DataFrame = Depends(get_session_df)) -
     )
 
 
+@app.get("/cohort-aggregation", response_model=CohortAggregationResponse, responses={400: {"model": ErrorResponse}})
+def get_cohort_aggregation(df: pd.DataFrame = Depends(get_session_df)) -> CohortAggregationResponse:
+    """Get cohort-level aggregation data as shown in the example"""
+    working = df.copy()
+
+    # Check if required columns exist
+    required_columns = [
+        "totalExpCaps", "visitedCaps", "clickedCaptain", "count_captain_pitch_centre_card_clicked_city","count_captain_pitch_centre_card_visible_city", "exploredCaptains",
+        "exploredCaptains_Subs", "exploredCaptains_EPKM", "exploredCaptains_FlatCommission",
+        "exploredCaptains_CM", "confirmedCaptains", "confirmedCaptains_Subs",
+        "confirmedCaptains_Subs_purchased", "confirmedCaptains_Subs_purchased_weekend",
+        "confirmedCaptains_EPKM", "confirmedCaptains_FlatCommission", "confirmedCaptains_CM"
+    ]
+
+    missing_columns = [col for col in required_columns if col not in working.columns]
+    if missing_columns:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required columns for cohort aggregation: {missing_columns}. "
+                   f"Available columns: {list(working.columns)}"
+        )
+
+    # Perform the aggregation as specified in the example
+    result = working.groupby(["cohort"]).agg({
+        "totalExpCaps": "nunique",
+        "visitedCaps": "nunique",
+        'clickedCaptain': 'nunique',
+        'count_captain_pitch_centre_card_clicked_city': 'sum',
+        'count_captain_pitch_centre_card_visible_city': 'sum',
+        'exploredCaptains': 'nunique',
+        'exploredCaptains_Subs': 'nunique',
+        'exploredCaptains_EPKM': 'nunique',
+        'exploredCaptains_FlatCommission': 'nunique',
+        'exploredCaptains_CM': 'nunique',
+        'confirmedCaptains': 'nunique',
+        'confirmedCaptains_Subs': 'nunique',
+        'confirmedCaptains_Subs_purchased': 'nunique',
+        'confirmedCaptains_Subs_purchased_weekend': 'nunique',
+        'confirmedCaptains_EPKM': 'nunique',
+        'confirmedCaptains_FlatCommission': 'nunique',
+        'confirmedCaptains_CM': 'nunique'
+
+    }).reset_index().sort_values("exploredCaptains", ascending=False)
+
+    # Calculate the ratio columns
+    result['Visit2Click'] = result['clickedCaptain'] / result['visitedCaps']
+    result['Base2Visit'] = result['visitedCaps'] / result['totalExpCaps']
+    # To fix division by zero, use np.where to safely compute Click2Confirm
+    import numpy as np
+    result['Click2Confirm'] = np.where(result['clickedCaptain'] == 0, 0, result['confirmedCaptains'] / result['clickedCaptain'])
+
+    # Handle division by zero
+    result['Visit2Click'] = result['Visit2Click'].fillna(0)
+    result['Base2Visit'] = result['Base2Visit'].fillna(0)
+    result['Click2Confirm'] = result['Click2Confirm'].fillna(0)
+    # Convert to list of CohortAggregationRow objects
+    data = []
+    for _, row in result.iterrows():
+        data.append(CohortAggregationRow(
+            cohort=str(row['cohort']),
+            totalExpCaps=float(row['totalExpCaps']),
+            visitedCaps=float(row['visitedCaps']),
+            clickedCaptain=float(row['clickedCaptain']),
+            pitch_centre_card_clicked=float(row['count_captain_pitch_centre_card_clicked_city']),
+            pitch_centre_card_visible=float(row['count_captain_pitch_centre_card_visible_city']),
+            exploredCaptains=float(row['exploredCaptains']),
+            exploredCaptains_Subs=float(row['exploredCaptains_Subs']),
+            exploredCaptains_EPKM=float(row['exploredCaptains_EPKM']),
+            exploredCaptains_FlatCommission=float(row['exploredCaptains_FlatCommission']),
+            exploredCaptains_CM=float(row['exploredCaptains_CM']),
+            confirmedCaptains=float(row['confirmedCaptains']),
+            confirmedCaptains_Subs=float(row['confirmedCaptains_Subs']),
+            confirmedCaptains_Subs_purchased=float(row['confirmedCaptains_Subs_purchased']),
+            confirmedCaptains_Subs_purchased_weekend=float(row['confirmedCaptains_Subs_purchased_weekend']),
+            confirmedCaptains_EPKM=float(row['confirmedCaptains_EPKM']),
+            confirmedCaptains_FlatCommission=float(row['confirmedCaptains_FlatCommission']),
+            confirmedCaptains_CM=float(row['confirmedCaptains_CM']),
+            Visit2Click=float(row['Visit2Click']),
+            Base2Visit=float(row['Base2Visit']),
+            Click2Confirm=float(row['Click2Confirm']),
+        ))
+
+    return CohortAggregationResponse(data=data)
+
+
 @app.delete("/session")
 def clear_session(x_session_id: Optional[str] = Header(default=None)):
     if x_session_id and x_session_id in SESSION_STORE:
@@ -293,6 +391,157 @@ def run_statistical_test_endpoint(
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/captain-level-aggregation", response_model=CaptainLevelResponse, responses={400: {"model": ErrorResponse}})
+def captain_level_aggregation(
+    payload: CaptainLevelRequest,
+    df: pd.DataFrame = Depends(get_session_df)
+) -> CaptainLevelResponse:
+    """
+    Captain-level aggregation grouped by time and a categorical column.
+    Filters data by cohort and confirmation level, then aggregates metrics.
+    """
+    working = df.copy()
+    
+    # Ensure date column is present
+    if "date" not in working.columns:
+        raise HTTPException(status_code=400, detail="Dataset must have 'date' column")
+    
+    # Ensure group_by_column exists
+    if payload.group_by_column not in working.columns:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Group by column '{payload.group_by_column}' not found in dataset"
+        )
+    
+    # Validate all metric columns exist
+    for metric_agg in payload.metric_aggregations:
+        if metric_agg.column not in working.columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Metric column '{metric_agg.column}' not found in dataset"
+            )
+    
+    def filter_captain_level(cohort_name: str, confirmation_filter: Optional[str]) -> pd.DataFrame:
+        """Filter data by cohort and optional confirmation level"""
+        cohort_df = working[working["cohort"] == cohort_name].copy()
+        if confirmation_filter and confirmation_filter in cohort_df.columns:
+            cohort_df = cohort_df[~cohort_df[confirmation_filter].isna()]
+        return cohort_df
+    
+    # Get test and control data
+    test_df = filter_captain_level(payload.test_cohort, payload.test_confirmed)
+    control_df = filter_captain_level(payload.control_cohort, payload.control_confirmed)
+    
+    if test_df.empty:
+        raise HTTPException(status_code=400, detail=f"No data found for test cohort '{payload.test_cohort}'")
+    if control_df.empty:
+        raise HTTPException(status_code=400, detail=f"No data found for control cohort '{payload.control_cohort}'")
+    
+    # Helper to aggregate data
+    def aggregate_data(data: pd.DataFrame, period: str, cohort_type: str) -> list[CaptainLevelAggregationRow]:
+        """Group by date and group_by_column, then aggregate metrics"""
+        if data.empty:
+            return []
+        
+        # Build aggregation dict - map column names to aggregation functions
+        agg_dict = {}
+        agg_key_mapping = {}  # Maps original column to our custom key
+        
+        for metric_agg in payload.metric_aggregations:
+            col_name = metric_agg.column
+            agg_func = metric_agg.agg_func
+            agg_key = f"{col_name}_{agg_func}"
+            
+            # For pandas groupby, we need column name as key
+            if col_name not in agg_dict:
+                agg_dict[col_name] = []
+            agg_dict[col_name].append(agg_func)
+            
+            # Store mapping for later renaming
+            agg_key_mapping[f"{col_name}_{agg_func}"] = agg_key
+        
+        # Group by date and the categorical column
+        grouped = data.groupby(["date", payload.group_by_column]).agg(agg_dict).reset_index()
+        
+        # Flatten multi-level column names if they exist
+        if isinstance(grouped.columns, pd.MultiIndex):
+            new_cols = ["date", payload.group_by_column]
+            for col in grouped.columns[2:]:  # Skip date and group_by_column
+                if col[1]:  # If there's an aggregation function
+                    new_cols.append(f"{col[0]}_{col[1]}")
+                else:
+                    new_cols.append(col[0])
+            grouped.columns = new_cols
+        
+        # Convert to response format
+        rows = []
+        for _, row in grouped.iterrows():
+            aggregations = {}
+            for orig_key, custom_key in agg_key_mapping.items():
+                val = row.get(orig_key)
+                aggregations[custom_key] = float(val) if pd.notna(val) else 0.0
+            
+            rows.append(CaptainLevelAggregationRow(
+                period=period,
+                cohort_type=cohort_type,
+                date=pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
+                group_value=str(row[payload.group_by_column]),
+                aggregations=aggregations
+            ))
+        
+        return rows
+    
+    # Filter by date ranges
+    pre_test = test_df
+    post_test = test_df
+    pre_control = control_df
+    post_control = control_df
+    
+    if payload.pre_period:
+        pre_test = filter_by_date_range(
+            test_df,
+            payload.pre_period.start_date,
+            payload.pre_period.end_date,
+            date_col="date"
+        )
+        pre_control = filter_by_date_range(
+            control_df,
+            payload.pre_period.start_date,
+            payload.pre_period.end_date,
+            date_col="date"
+        )
+    
+    if payload.post_period:
+        post_test = filter_by_date_range(
+            test_df,
+            payload.post_period.start_date,
+            payload.post_period.end_date,
+            date_col="date"
+        )
+        post_control = filter_by_date_range(
+            control_df,
+            payload.post_period.start_date,
+            payload.post_period.end_date,
+            date_col="date"
+        )
+    
+    # Aggregate all combinations
+    result_data = []
+    result_data.extend(aggregate_data(pre_test, "pre", "test"))
+    result_data.extend(aggregate_data(post_test, "post", "test"))
+    result_data.extend(aggregate_data(pre_control, "pre", "control"))
+    result_data.extend(aggregate_data(post_control, "post", "control"))
+    
+    # Extract metric names
+    metrics = [f"{m.column}_{m.agg_func}" for m in payload.metric_aggregations]
+    
+    return CaptainLevelResponse(
+        data=result_data,
+        group_by_column=payload.group_by_column,
+        metrics=metrics
+    )
 
 
 @app.get("/health")

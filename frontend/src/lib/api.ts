@@ -50,7 +50,9 @@ export type FunnelRequest = {
     test_cohort?: string;
     control_cohort?: string;
     metric?: string;
-    confirmed?: string;
+    confirmed?: string; // legacy
+    test_confirmed?: string;
+    control_confirmed?: string;
     agg?: 'sum' | 'mean' | 'count';
 };
 
@@ -61,6 +63,34 @@ export type FunnelResponse = {
     post_series: FunnelPoint[];
     pre_summary: Record<string, number>;
     post_summary: Record<string, number>;
+};
+
+export type CohortAggregationRow = {
+    cohort: string;
+    totalExpCaps: number;
+    visitedCaps: number;
+    clickedCaptain: number;
+    pitch_centre_card_clicked: number;
+    pitch_centre_card_visible: number;
+    exploredCaptains: number;
+    exploredCaptains_Subs: number;
+    exploredCaptains_EPKM: number;
+    exploredCaptains_FlatCommission: number;
+    exploredCaptains_CM: number;
+    confirmedCaptains: number;
+    confirmedCaptains_Subs: number;
+    confirmedCaptains_Subs_purchased: number;
+    confirmedCaptains_Subs_purchased_weekend: number;
+    confirmedCaptains_EPKM: number;
+    confirmedCaptains_FlatCommission: number;
+    confirmedCaptains_CM: number;
+    Visit2Click: number;
+    Base2Visit: number;
+    Click2Confirm: number;
+};
+
+export type CohortAggregationResponse = {
+    data: CohortAggregationRow[];
 };
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
@@ -132,6 +162,14 @@ export async function clearSession(): Promise<void> {
     localStorage.removeItem('session_id');
 }
 
+export async function fetchCohortAggregation(): Promise<CohortAggregationResponse> {
+    const res = await fetch(`${BASE_URL}/cohort-aggregation`, {
+        headers: sessionHeaders(),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+}
+
 // Statistical Tests API
 export type StatTestRequest = {
     test_category: string;
@@ -170,6 +208,52 @@ export async function runStatisticalTest(req: StatTestRequest): Promise<StatTest
     if (!res.ok) {
         const error = await res.text();
         throw new Error(error || 'Statistical test failed');
+    }
+    return await res.json();
+}
+
+// Captain-Level Aggregation API
+export type MetricAggregation = {
+    column: string;
+    agg_func: 'sum' | 'mean' | 'count' | 'nunique' | 'median' | 'std' | 'min' | 'max';
+};
+
+export type CaptainLevelRequest = {
+    pre_period?: DateRange;
+    post_period?: DateRange;
+    test_cohort: string;
+    control_cohort: string;
+    test_confirmed?: string;
+    control_confirmed?: string;
+    group_by_column: string;
+    metric_aggregations: MetricAggregation[];
+};
+
+export type CaptainLevelAggregationRow = {
+    period: string;  // "pre" or "post"
+    cohort_type: string;  // "test" or "control"
+    date?: string;
+    group_value: string;
+    aggregations: Record<string, number>;
+};
+
+export type CaptainLevelResponse = {
+    data: CaptainLevelAggregationRow[];
+    group_by_column: string;
+    metrics: string[];
+};
+
+export async function fetchCaptainLevelAggregation(req: CaptainLevelRequest): Promise<CaptainLevelResponse> {
+    const headers = sessionHeaders();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/captain-level-aggregation`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Captain-level aggregation failed');
     }
     return await res.json();
 }
