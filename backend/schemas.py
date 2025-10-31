@@ -136,9 +136,41 @@ class CohortAggregationRow(BaseModel):
     confirmedCaptains_CM: float
     Visit2Click: float
     Base2Visit: float
+    Click2Confirm: float
 
 
 class CohortAggregationResponse(BaseModel):
     data: List[CohortAggregationRow]
+
+
+# Captain-Level Aggregation Schemas
+class MetricAggregation(BaseModel):
+    column: str
+    agg_func: Literal["sum", "mean", "count", "nunique", "median", "std", "min", "max"]
+
+
+class CaptainLevelRequest(BaseModel):
+    pre_period: Optional[DateRange] = None
+    post_period: Optional[DateRange] = None
+    test_cohort: str
+    control_cohort: str
+    test_confirmed: Optional[str] = None
+    control_confirmed: Optional[str] = None
+    group_by_column: str  # e.g., consistency_segment
+    metric_aggregations: List[MetricAggregation]  # list of metrics to aggregate
+
+
+class CaptainLevelAggregationRow(BaseModel):
+    period: str  # "pre" or "post"
+    cohort_type: str  # "test" or "control"
+    date: Optional[str] = None  # YYYY-MM-DD
+    group_value: str  # value from group_by_column (e.g., specific consistency_segment)
+    aggregations: Dict[str, float]  # {metric_agg: value}
+
+
+class CaptainLevelResponse(BaseModel):
+    data: List[CaptainLevelAggregationRow]
+    group_by_column: str
+    metrics: List[str]
 
 

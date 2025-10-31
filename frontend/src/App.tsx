@@ -9,8 +9,9 @@ import { MetricBar } from './components/MetricBar';
 import { StatisticalTests } from './components/StatisticalTests';
 import { CohortDataGrid } from './components/CohortDataGrid';
 import { SummaryStatsTable } from './components/SummaryStatsTable';
-import { fetchFunnel, fetchCohortAggregation } from './lib/api';
-import type { FunnelResponse, UploadResponse, CohortAggregationResponse } from './lib/api';
+import { CaptainLevelCharts } from './components/CaptainLevelCharts';
+import { fetchFunnel, fetchCohortAggregation, fetchCaptainLevelAggregation } from './lib/api';
+import type { FunnelResponse, UploadResponse, CohortAggregationResponse, CaptainLevelResponse } from './lib/api';
 
 // Simple Error Boundary Component
 class ErrorBoundary extends Component<
@@ -60,6 +61,7 @@ function App() {
   const [filters, setFilters] = useState<FiltersState>({});
   const [funnels, setFunnels] = useState<Record<string, FunnelResponse>>({});
   const [cohortAggregation, setCohortAggregation] = useState<CohortAggregationResponse | null>(null);
+  const [captainLevelData, setCaptainLevelData] = useState<CaptainLevelResponse | null>(null);
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>([]);
   const [additionalMetrics, setAdditionalMetrics] = useState<string[]>([]);
   const [aggByMetric, setAggByMetric] = useState<Record<string, 'sum' | 'mean' | 'count'>>({});
@@ -204,12 +206,39 @@ function App() {
     }
   }
 
+  // Load captain-level aggregation
+  const loadCaptainLevelAggregation = async () => {
+    if (!filters.test_cohort || !filters.control_cohort || !filters.captain_group_by || !filters.captain_metrics || filters.captain_metrics.length === 0) {
+      setError('Please select test cohort, control cohort, group by column, and at least one metric to aggregate');
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetchCaptainLevelAggregation({
+        pre_period: filters.pre_period,
+        post_period: filters.post_period,
+        test_cohort: filters.test_cohort,
+        control_cohort: filters.control_cohort,
+        test_confirmed: filters.test_confirmed,
+        control_confirmed: filters.control_confirmed,
+        group_by_column: filters.captain_group_by,
+        metric_aggregations: filters.captain_metrics,
+      });
+      setCaptainLevelData(res);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to load captain-level aggregation');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen">
       <div className="app-container">
         {/* Title Bar */}
         <div className="title-bar">
-          <h1 className="title-text">Cohort Comparison Dashboard</h1>
+          <h1 className="title-text">BYOB Ladoo Metrics</h1>
         </div>
 
         {/* Data Upload Card */}
@@ -262,6 +291,7 @@ function App() {
                 onChange={setFilters}
                 onApply={loadFunnel}
                 onAddMetricsToSelection={handleAddMetricsToSelection}
+                onApplyCaptainLevel={loadCaptainLevelAggregation}
               />
             </div>
 
@@ -305,6 +335,13 @@ function App() {
                     <p className="text-red-700">{error}</p>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Captain-Level Charts Section */}
+            {captainLevelData && (
+              <div className="glass-card slide-in">
+                <CaptainLevelCharts data={captainLevelData} />
               </div>
             )}
 

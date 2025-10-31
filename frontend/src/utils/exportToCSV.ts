@@ -62,3 +62,4 @@ export async function copyToClipboard(dataframe: DataFrameJSON): Promise<void> {
     await navigator.clipboard.writeText(csv);
 }
 
+

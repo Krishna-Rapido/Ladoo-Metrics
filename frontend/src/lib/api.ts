@@ -86,6 +86,7 @@ export type CohortAggregationRow = {
     confirmedCaptains_CM: number;
     Visit2Click: number;
     Base2Visit: number;
+    Click2Confirm: number;
 };
 
 export type CohortAggregationResponse = {
@@ -207,6 +208,52 @@ export async function runStatisticalTest(req: StatTestRequest): Promise<StatTest
     if (!res.ok) {
         const error = await res.text();
         throw new Error(error || 'Statistical test failed');
+    }
+    return await res.json();
+}
+
+// Captain-Level Aggregation API
+export type MetricAggregation = {
+    column: string;
+    agg_func: 'sum' | 'mean' | 'count' | 'nunique' | 'median' | 'std' | 'min' | 'max';
+};
+
+export type CaptainLevelRequest = {
+    pre_period?: DateRange;
+    post_period?: DateRange;
+    test_cohort: string;
+    control_cohort: string;
+    test_confirmed?: string;
+    control_confirmed?: string;
+    group_by_column: string;
+    metric_aggregations: MetricAggregation[];
+};
+
+export type CaptainLevelAggregationRow = {
+    period: string;  // "pre" or "post"
+    cohort_type: string;  // "test" or "control"
+    date?: string;
+    group_value: string;
+    aggregations: Record<string, number>;
+};
+
+export type CaptainLevelResponse = {
+    data: CaptainLevelAggregationRow[];
+    group_by_column: string;
+    metrics: string[];
+};
+
+export async function fetchCaptainLevelAggregation(req: CaptainLevelRequest): Promise<CaptainLevelResponse> {
+    const headers = sessionHeaders();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/captain-level-aggregation`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Captain-level aggregation failed');
     }
     return await res.json();
 }

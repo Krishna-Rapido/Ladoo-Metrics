@@ -29,6 +29,7 @@ interface CohortAggregationData {
     confirmedCaptains_CM: number;
     Visit2Click: number;
     Base2Visit: number;
+    Click2Confirm: number;
 }
 
 interface CohortDataGridProps {
@@ -45,6 +46,43 @@ export function CohortDataGrid({ data, title }: CohortDataGridProps) {
             filter: true,
             width: 180,
             pinned: 'left'
+        },
+        {
+            field: 'Base2Visit',
+            headerName: 'Base→Visit %',
+            sortable: true,
+            filter: 'agNumberColumnFilter',
+            width: 120,
+            valueFormatter: (params) => {
+                const num = parseFloat(params.value);
+                return isNaN(num) ? '0.00%' : (num * 100).toFixed(2) + '%';
+            },
+            cellClass: 'text-right'
+        },
+        {
+            field: 'Visit2Click',
+            headerName: 'Visit→Click %',
+            sortable: true,
+            filter: 'agNumberColumnFilter',
+            width: 120,
+            valueFormatter: (params) => {
+                const num = parseFloat(params.value);
+                return isNaN(num) ? '0.00%' : (num * 100).toFixed(2) + '%';
+            },
+            cellClass: 'text-right'
+        },
+
+        {
+            field: 'Click2Confirm',
+            headerName: 'Click→Confirm %',
+            sortable: true,
+            filter: 'agNumberColumnFilter',
+            width: 120,
+            valueFormatter: (params) => {
+                const num = parseFloat(params.value);
+                return isNaN(num) ? '0.00%' : (num * 100).toFixed(2) + '%';
+            },
+            cellClass: 'text-right'
         },
         {
             field: 'totalExpCaps',
@@ -72,10 +110,22 @@ export function CohortDataGrid({ data, title }: CohortDataGridProps) {
         },
         {
             field: 'clickedCaptain',
-            headerName: 'CT Clicked',
+            headerName: 'Clicked ',
             sortable: true,
             filter: 'agNumberColumnFilter',
             width: 100,
+            valueFormatter: (params) => {
+                const num = parseFloat(params.value);
+                return isNaN(num) ? '0' : num.toLocaleString('en-US');
+            },
+            cellClass: 'text-right'
+        },
+        {
+            field: 'confirmedCaptains',
+            headerName: 'Confirmed',
+            sortable: true,
+            filter: 'agNumberColumnFilter',
+            width: 110,
             valueFormatter: (params) => {
                 const num = parseFloat(params.value);
                 return isNaN(num) ? '0' : num.toLocaleString('en-US');
@@ -94,6 +144,7 @@ export function CohortDataGrid({ data, title }: CohortDataGridProps) {
             },
             cellClass: 'text-right'
         },
+
         {
             field: 'pitch_centre_card_visible',
             headerName: 'PC Visible',
@@ -118,42 +169,7 @@ export function CohortDataGrid({ data, title }: CohortDataGridProps) {
             },
             cellClass: 'text-right'
         },
-        {
-            field: 'confirmedCaptains',
-            headerName: 'Confirmed',
-            sortable: true,
-            filter: 'agNumberColumnFilter',
-            width: 110,
-            valueFormatter: (params) => {
-                const num = parseFloat(params.value);
-                return isNaN(num) ? '0' : num.toLocaleString('en-US');
-            },
-            cellClass: 'text-right'
-        },
-        {
-            field: 'Visit2Click',
-            headerName: 'Visit→Click %',
-            sortable: true,
-            filter: 'agNumberColumnFilter',
-            width: 120,
-            valueFormatter: (params) => {
-                const num = parseFloat(params.value);
-                return isNaN(num) ? '0.00%' : (num * 100).toFixed(2) + '%';
-            },
-            cellClass: 'text-right'
-        },
-        {
-            field: 'Base2Visit',
-            headerName: 'Base→Visit %',
-            sortable: true,
-            filter: 'agNumberColumnFilter',
-            width: 120,
-            valueFormatter: (params) => {
-                const num = parseFloat(params.value);
-                return isNaN(num) ? '0.00%' : (num * 100).toFixed(2) + '%';
-            },
-            cellClass: 'text-right'
-        },
+
         // Additional columns for completeness
         {
             field: 'exploredCaptains_Subs',
