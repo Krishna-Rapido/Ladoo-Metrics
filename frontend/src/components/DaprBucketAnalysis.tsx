@@ -2,11 +2,13 @@ import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getDaprBucket, type DaprBucketResponse } from '../lib/api';
 import { FunnelDataGrid } from './FunnelDataGrid';
+import { ChartBuilder } from './ChartBuilder';
 
 export function DaprBucketAnalysis() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [data, setData] = useState<DaprBucketResponse | null>(null);
+    const [showChart, setShowChart] = useState(false);
 
     // Parameters
     const [username, setUsername] = useState('krishna.poddar@rapido.bike');
@@ -184,26 +186,46 @@ export function DaprBucketAnalysis() {
                 <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="glass-card"
+                    className="space-y-6"
                 >
-                    <div className="card-header">
-                        <span className="card-icon">📊</span>
-                        <div>
-                            <h3 className="card-title">Analysis Results</h3>
-                            <p className="card-subtitle">
-                                {data.num_rows.toLocaleString()} rows × {data.columns.length} columns
-                            </p>
+                    <div className="glass-card">
+                        <div className="card-header">
+                            <span className="card-icon">📊</span>
+                            <div className="flex-1">
+                                <h3 className="card-title">Analysis Results</h3>
+                                <p className="card-subtitle">
+                                    {data.num_rows.toLocaleString()} rows × {data.columns.length} columns
+                                </p>
+                            </div>
+                            <button
+                                onClick={() => setShowChart(!showChart)}
+                                className={`btn ${showChart ? 'btn-primary' : 'btn-secondary'}`}
+                            >
+                                <span>{showChart ? '📊' : '📈'}</span>
+                                <span>{showChart ? 'Hide Chart' : 'Visualize Data'}</span>
+                            </button>
+                        </div>
+
+                        <div className="mt-6">
+                            <FunnelDataGrid
+                                data={data.data}
+                                title=""
+                                description=""
+                                fileName="dapr_bucket_distribution"
+                            />
                         </div>
                     </div>
 
-                    <div className="mt-6">
-                        <FunnelDataGrid
-                            data={data.data}
-                            title=""
-                            description=""
-                            fileName="dapr_bucket_distribution"
-                        />
-                    </div>
+                    {/* Chart Builder */}
+                    {showChart && (
+                        <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            exit={{ opacity: 0, height: 0 }}
+                        >
+                            <ChartBuilder data={data.data} title="DAPR Bucket Visualization" />
+                        </motion.div>
+                    )}
                 </motion.div>
             )}
 

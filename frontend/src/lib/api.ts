@@ -464,3 +464,36 @@ export async function getFe2Net(req: Fe2NetRequest): Promise<Fe2NetResponse> {
     }
     return await res.json();
 }
+
+export type RtuPerformanceRequest = {
+    username: string;
+    start_date?: string;
+    end_date?: string;
+    city?: string;
+    perf_cut?: number;
+    consistency_cut?: number;
+    time_level?: string;
+    tod_level?: string;
+    service_category?: string;
+};
+
+export type RtuPerformanceResponse = {
+    num_rows: number;
+    columns: string[];
+    data: Record<string, any>[];
+};
+
+export async function getRtuPerformance(req: RtuPerformanceRequest): Promise<RtuPerformanceResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/captain-dashboards/rtu-performance`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to fetch RTU Performance data');
+    }
+    return await res.json();
+}

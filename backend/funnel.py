@@ -11,8 +11,8 @@ from pyhive import presto
 def get_presto_connection(username: str):
     """Create a Presto connection with the given username"""
     return presto.connect(
-        host='presto-gateway.processing.data.production.internal',
-        port='80',
+    host='presto-gateway.processing.data.production.internal',
+    port='80',
         username=username
     )
 
@@ -66,7 +66,7 @@ def get_ao_funnel(captain_id_df: pd.DataFrame, username: str, start_date: str = 
     query = f"""
 
 
-        with service_mapping as (
+    with service_mapping as (
                     select captain_id,  geo_city geo_city, substr(replace(time_value,'-',''),1,8) as run_date,
                         case 
                             when count_net_days_last_28_days >= 15 then 'daily'
@@ -374,4 +374,282 @@ and substr(replace(time_value,'-',''),1,10) <= '{end_date}'
 order by 3 asc
     """
     df = pd.read_sql_query(query, presto_connection)
+    return df
+
+def performance_metrics(username: str, start_date: str, end_date: str, city: str, perf_cut: int, consistency_cut: int, time_level: str, tod_level: str, service_category: str):
+    """
+    Fetch RTU performance metrics from Presto
+    
+    Args:
+        username: Presto username for connection
+        start_date: Start date in YYYYMMDD format
+        end_date: End date in YYYYMMDD format
+        city: City name (e.g., 'delhi', 'hyderabad')
+        perf_cut: Performance cut threshold
+        consistency_cut: Consistency cut threshold
+        time_level: Time aggregation level ('daily', 'weekly', 'monthly')
+        tod_level: Time of day level ('daily', 'afternoon', 'evening', 'morning', 'night', 'all')
+        service_category: Service category (e.g., 'auto', 'bike')
+    
+    Returns:
+        DataFrame with RTU performance metrics
+    """
+    presto_connection = get_presto_connection(username)
+    query = f"""
+    with 
+service_mapping as (
+                 
+                 select captain_id,  geo_city city, date_format(date_parse(substr(replace(time_value,'-',''),1,8), '%Y%m%d') + interval '1' day,'%Y%m%d') as run_date,
+                    row_number() over(partition by captain_id order by time_value asc) as rank,
+                    case 
+                        -- when count_net_days_last_28_days >= 21 then 'dailydaily'
+                        when count_net_days_last_28_days >= 15 then 'daily'
+                        when count_net_days_last_28_days<= 14 and count_net_days_last_28_days >= 1 and count_net_weeks_last_28_days>=3 then 'weekly'
+                        when count_net_days_last_28_days<= 14 and count_net_days_last_28_days >= 1 and count_net_weeks_last_28_days<3 then 'monthly'
+                        when count_net_days_last_28_days =0 and captain_net_days_last_83_days > 0 then 'quarterly'
+                    else 'rest' end as consistency_segment, 
+                    case 
+                        when count_net_days_last_28_days>0 and count_total_rides_last_28_days/cast(count_net_days_last_28_days as double) > 15 then 'UHP'
+                        when count_net_days_last_28_days>0 and count_total_rides_last_28_days/cast(count_net_days_last_28_days as double) > 10 then 'HP'
+                        when count_net_days_last_28_days>0 and count_total_rides_last_28_days/cast(count_net_days_last_28_days as double) > 5 then 'MP'
+                        when count_net_days_last_28_days>0 and count_total_rides_last_28_days/cast(count_net_days_last_28_days as double) > 0 then 'LP'
+                    else 'ZP' end as performance_segment
+                from mne.ms_1842554619_2584218394
+                where lower(service_category) like lower(concat('%','{service_category}','%'))
+                and time_level = 'daily'
+                and cast(date_format(date_parse(substr(replace(time_value,'-',''),1,8), '%Y%m%d') + interval '1' day,'%Y%m%d') as varchar) >= '{start_date}' 
+                and cast(date_format(date_parse(substr(replace(time_value,'-',''),1,8), '%Y%m%d') + interval '1' day,'%Y%m%d') as varchar) <= '{end_date}'
+                and lower(geo_city) in (select lower(city_display_name) from datasets.service_level_mapping_qc where lower(city_display_name) = '{city}')
+                and lower(service_category) like concat('%', lower('{service_category}'), '%')
+),
+ base as (
+    select lower(a.city) as city,
+    b.consistency_segment,
+    b.performance_segment,
+    
+    a.captain_id,
+    case 
+        when lower('{time_level}')='weekly' then concat(cast(year(date_parse(a.yyyymmdd, '%Y%m%d')) as varchar),'_',cast(week(date_parse(a.yyyymmdd, '%Y%m%d')) as varchar))
+        when lower('{time_level}')='monthly' then concat(cast(year(date_parse(a.yyyymmdd,'%Y%m%d')) as varchar),'_',cast(month(date_parse(a.yyyymmdd,'%Y%m%d')) as varchar))
+        when lower('{time_level}')='daily' then yyyymmdd
+    end as time,
+    sum(
+    case
+        when lower('{tod_level}') = 'daily' then coalesce(count_captain_num_online_daily_city, 0)
+        when lower('{tod_level}') = 'afternoon' then coalesce(count_num_online_afternoon_daily_city, 0)
+        when lower('{tod_level}') = 'evening' then coalesce(count_num_online_evening_peak_daily_city, 0)
+        when lower('{tod_level}') = 'morning' then coalesce(count_num_online_morning_peak_daily_city, 0)
+        when lower('{tod_level}') = 'night' then coalesce(count_num_online_rest_midnight_daily_city, 0)
+        when lower('{tod_level}') = 'all' then coalesce(count_captain_num_online_daily_city, 0)
+    end
+   ) as online_events,
+   count(distinct case when coalesce(count_captain_num_online_daily_city, 0) > 0 then yyyymmdd end) as online_days,
+   count(distinct case when (coalesce(count_captain_net_rides_taxi_all_day_city, 0) + coalesce(count_captain_c2c_orders_all_day_city, 0) + coalesce(count_captain_delivery_orders_all_day_city, 0)) > 0 then yyyymmdd end) as net_days,
+   sum(
+    case
+        when lower('{tod_level}') = 'daily' then coalesce(count_captain_net_rides_taxi_all_day_city, 0)
+        when lower('{tod_level}') = 'afternoon' then coalesce(count_captain_net_rides_delivery_afternoon_city, 0)
+        when lower('{tod_level}') = 'evening' then coalesce(count_captain_net_rides_taxi_evening_peak_city, 0)
+        when lower('{tod_level}') = 'morning' then coalesce(count_captain_net_rides_taxi_morning_peak_city, 0)
+        when lower('{tod_level}') = 'night' then coalesce(count_captain_net_rides_taxi_rest_midnight_city, 0)
+        when lower('{tod_level}') = 'all' then coalesce(count_captain_net_rides_taxi_all_day_city, 0)
+    end
+   ) as net_rides_taxi,
+   sum(
+    case
+        when lower('{tod_level}') = 'daily' then coalesce(count_captain_c2c_orders_all_day_city, 0)
+        when lower('{tod_level}') = 'afternoon' then coalesce(count_captain_net_rides_c2c_afternoon_city, 0)
+        when lower('{tod_level}') = 'evening' then coalesce(count_captain_net_rides_c2c_evening_peak_city, 0)
+        when lower('{tod_level}') = 'morning' then coalesce(count_captain_net_rides_c2c_morning_peak_city, 0)
+        when lower('{tod_level}') = 'night' then coalesce(count_captain_c2c_orders_all_day_city, 0)
+        when lower('{tod_level}') = 'all' then coalesce(count_captain_c2c_orders_all_day_city, 0)
+    end
+   ) as net_rides_c2c,
+   sum(
+    case
+        when lower('{tod_level}') = 'daily' then coalesce(count_captain_delivery_orders_all_day_city, 0)
+        when lower('{tod_level}') = 'afternoon' then coalesce(count_captain_net_rides_delivery_afternoon_city, 0)
+        when lower('{tod_level}') = 'evening' then coalesce(count_captain_net_rides_delivery_evening_peak_city, 0)
+        when lower('{tod_level}') = 'morning' then coalesce(count_captain_net_rides_delivery_morning_peak_city, 0)
+        when lower('{tod_level}') = 'night' then coalesce(count_captain_net_rides_taxi_all_day_city, 0)
+        when lower('{tod_level}') = 'all' then coalesce(count_captain_net_rides_taxi_all_day_city, 0)
+    end
+   ) as net_rides_delivery,
+   count(distinct case when (coalesce(count_captain_accepted_pings_taxi_all_day_city, 0) + coalesce(count_captain_accepted_pings_delivery_all_day_city, 0)) > 0 then yyyymmdd end) as accepted_days,
+   avg(
+    case
+        when lower('{tod_level}') = 'daily' then (coalesce(count_captain_accepted_orders_all_day_taxi, 0) + coalesce(count_captain_accepted_orders_all_day_c2c, 0) + coalesce(count_captain_accepted_orders_all_day_delivery, 0))
+        when lower('{tod_level}') = 'afternoon' then (coalesce(count_captain_accepted_orders_afternoon_taxi, 0))
+        when lower('{tod_level}') = 'evening' then (coalesce(count_captain_accepted_orders_evening_peak_c2c, 0) + coalesce(count_captain_accepted_orders_evening_peak_delivery, 0) + coalesce(count_captain_accepted_orders_evening_peak_taxi, 0))
+        when lower('{tod_level}') = 'morning' then (coalesce(count_captain_accepted_pings_morning_peak_delivery, 0) + coalesce(count_captain_accepted_pings_morning_peak_c2c, 0) + coalesce(count_captain_accepted_orders_morning_peak_taxi, 0))
+        when lower('{tod_level}') = 'night' then coalesce(count_num_online_rest_midnight_daily_city, 0)
+        when lower('{tod_level}') = 'all' then (coalesce(count_captain_accepted_orders_all_day_taxi, 0) + coalesce(count_captain_accepted_orders_all_day_c2c, 0) + coalesce(count_captain_accepted_orders_all_day_delivery, 0))
+    end
+   ) as accepted_orders,
+   sum(coalesce(count_captain_accepted_orders_all_day_taxi, 0)) as accepted_orders_sum, -- Renamed to avoid duplicate alias
+   count(distinct case when (coalesce(count_captain_gross_pings_taxi_all_day_city, 0) + coalesce(count_captain_gross_pings_delivery_all_day_city, 0)) > 0 then yyyymmdd end) as gross_days,
+   count(distinct case when coalesce(count_captain_number_app_open_captains_daily_all_day_city, 0) > 0 then yyyymmdd end) as ao_days,
+   avg(case when coalesce(count_captain_num_online_daily_city, 0) > 0 and (coalesce(count_captain_accepted_pings_taxi_all_day_city, 0) + coalesce(count_captain_accepted_pings_delivery_all_day_city, 0)) = 0 then coalesce(sum_captain_total_lh_daily_city, 0) end) as total_lh_nonO2a,
+   sum(case when coalesce(count_captain_num_online_daily_city, 0) > 0 then coalesce(sum_captain_total_lh_daily_city, 0) else 0 end) as total_lh_sum,
+   avg(case when coalesce(count_captain_num_online_daily_city, 0) > 0 then coalesce(sum_captain_total_lh_daily_city, 0) end) as total_lh,
+   max(case when coalesce(count_captain_num_online_daily_city, 0) > 0 then coalesce(sum_captain_total_lh_daily_city, 0) end) as max_lh_per_day,
+   avg(case when coalesce(count_captain_num_online_daily_city, 0) > 0 then coalesce(sum_captain_total_lh_morning_peak_daily_city, 0) end) as total_lh_morning_peak,
+   avg(case when coalesce(count_captain_num_online_daily_city, 0) > 0 then coalesce(sum_captain_total_lh_afternoon_daily_city, 0) end) as total_lh_afternoon,
+   avg(case when coalesce(count_captain_num_online_daily_city, 0) > 0 then coalesce(sum_captain_total_lh_evening_peak_daily_city, 0) end) as total_lh_evening_peak,
+   avg(case when coalesce(count_captain_num_online_daily_city, 0) > 0 then coalesce(sum_captain_idle_lh_daily_city, 0) end) as idle_lh,
+   sum(coalesce(count_captain_gross_pings_link_all_day_city, 0)) as total_pings_link,
+   avg(case when (coalesce(count_captain_accepted_pings_taxi_all_day_city, 0) + coalesce(count_captain_accepted_pings_delivery_all_day_city, 0)) > 0 then (coalesce(count_captain_gross_pings_taxi_all_day_city, 0) + coalesce(count_captain_gross_pings_delivery_all_day_city, 0)) end) as gross_pings,
+   avg(case when (coalesce(count_captain_accepted_pings_taxi_all_day_city, 0) + coalesce(count_captain_accepted_pings_delivery_all_day_city, 0)) > 0 then (coalesce(count_captain_accepted_pings_taxi_all_day_city, 0) + coalesce(count_captain_accepted_pings_delivery_all_day_city, 0)) end) as accepted_pings,
+   sum(coalesce(count_captain_net_rides_taxi_all_day_city, 0) + coalesce(count_captain_c2c_orders_all_day_city, 0) + coalesce(count_captain_delivery_orders_all_day_city, 0)) / nullif(cast(sum(coalesce(count_captain_accepted_pings_taxi_all_day_city, 0) + coalesce(count_captain_accepted_pings_delivery_all_day_city, 0)) as double), 0) as dapr,
+   sum(coalesce(sum_captain_take_daily_city,0)) as take_amount,
+   sum(coalesce(sum_captain_cm_daily_city,0)) as cm_amount,
+   sum(coalesce(sum_captain_order_earnings_daily_city,0)) as order_earnings_amount,
+   sum(coalesce(sum_captain_subs_orders_daily_city,0)) as subs_orders,
+   sum(coalesce(sum_captain_final_captain_earnings_daily_city,0)) as final_earnings_amount,
+   sum(coalesce(sum_captain_gmv_daily_city,0)) as gmv_amount,
+   sum(coalesce(sum_captain_special_incentives_daily_city, 0)) incentive_amount
+    from metrics.captain_base_metrics_enriched a
+    left join service_mapping b
+        on a.captain_id=b.captain_id
+        and yyyymmdd=run_date
+    where substr(replace(yyyymmdd, '-', ''), 1,8) >= '{start_date}' 
+        and substr(replace(yyyymmdd, '-', ''), 1,8) <= '{end_date}'
+        and lower(a.city) in (select lower(city_display_name) from datasets.service_level_mapping_qc where lower(city_display_name) = '{city}')
+        and lower(service_category) like concat('%','{service_category}', '%')
+    group by 1,2,3,4,5
+),
+finalTbl as (select 
+     
+    case 
+       when {perf_cut}=1 and {consistency_cut}=1 then concat(coalesce(city,'NA'),'_pef_',coalesce(performance_segment,'NA'),'_cons_',coalesce(consistency_segment,'NA'))
+       when {perf_cut}=0 and {consistency_cut}=1 then concat(coalesce(city,'NA'),'_cons_',coalesce(consistency_segment,'NA')) 
+       when {perf_cut}=1 and {consistency_cut}=0 then concat(coalesce(city,'NA'),'_pef_',coalesce(performance_segment,'NA'))
+       when {perf_cut}=0 and {consistency_cut}=0 then coalesce(city,'NA') 
+       end as groupedValue,
+    time,
+    -- approx_percentile(base.gross_days, 0.1) gross_days_10,
+    -- approx_percentile(base.gross_days, 0.25) gross_days_25,
+    -- approx_percentile(base.gross_days, 0.5) gross_days_50,
+    -- approx_percentile(base.gross_days, 0.75) gross_days_75,
+    -- approx_percentile(base.gross_days, 0.9) gross_days_90,
+    -- approx_percentile(base.accepted_days, 0.1) accepted_days_10,
+    -- approx_percentile(base.accepted_days, 0.25) accepted_days_25,
+    -- approx_percentile(base.accepted_days, 0.5) accepted_days_50,
+    -- approx_percentile(base.accepted_days, 0.75) accepted_days_75,
+    -- approx_percentile(base.accepted_days, 0.9) accepted_days_90,
+    
+    -- approx_percentile(case when online_events>0 then coalesce(base.total_lh/cast(online_events as double),0)*60 end, 0.1) lh_session_10,
+    -- approx_percentile(case when online_events>0 then coalesce(base.total_lh/cast(online_events as double),0)*60 end, 0.25) lh_session_25,
+    -- approx_percentile(case when online_events>0 then coalesce(base.total_lh/cast(online_events as double),0)*60 end, 0.5) lh_session_50,
+    -- approx_percentile(case when online_events>0 then coalesce(base.total_lh/cast(online_events as double),0)*60 end, 0.75) lh_session_75,
+    -- approx_percentile(case when online_events>0 then coalesce(base.total_lh/cast(online_events as double),0)*60 end, 0.9) lh_session_90,
+    
+    -- approx_percentile(case when online_events>0 then coalesce(base.total_pings_link/cast(online_events as double),0) end, 0.1) pings_per_session_10,
+    -- approx_percentile(case when online_events>0 then coalesce(base.total_pings_link/cast(online_events as double),0) end, 0.25) pings_per_session_25,
+    -- approx_percentile(case when online_events>0 then coalesce(base.total_pings_link/cast(online_events as double),0) end, 0.5) pings_per_session_50,
+    -- approx_percentile(case when online_events>0 then coalesce(base.total_pings_link/cast(online_events as double),0) end, 0.75) pings_per_session_75,
+    -- approx_percentile(case when online_events>0 then coalesce(base.total_pings_link/cast(online_events as double),0) end, 0.9) pings_per_session_90,
+    
+    -- approx_percentile(case when total_lh>0 then coalesce(base.total_pings_link/cast(total_lh as double),0) end, 0.1) pings_per_hour_10,
+    -- approx_percentile(case when total_lh>0 then coalesce(base.total_pings_link/cast(total_lh as double),0) end, 0.25) pings_per_hour_25,
+    -- approx_percentile(case when total_lh>0 then coalesce(base.total_pings_link/cast(total_lh as double),0) end, 0.5) pings_per_hour_50,
+    -- approx_percentile(case when total_lh>0 then coalesce(base.total_pings_link/cast(total_lh as double),0) end, 0.75) pings_per_hour_75,
+    -- approx_percentile(case when total_lh>0 then coalesce(base.total_pings_link/cast(total_lh as double),0) end, 0.9) pings_per_hour_90,
+    -- count(distinct case when non_gig_segment_nonO2a_daily =1 then captain_id end) as non_gig_segment_nonO2a_daily,
+    -- count(distinct case when rha_segment_nonO2a_daily =1 then captain_id end) as rha_segment_nonO2a_daily,
+    -- count(distinct case when non_gig_segment_O2a_daily =1 then captain_id end) as non_gig_segment_O2a_daily,
+    -- count(distinct case when rha_gig_segment_O2a_daily =1 then captain_id end) as rha_segment_O2a_daily,
+    count(distinct case when base.ao_days>0 then captain_id end) as ao_captains,
+    count(distinct case when base.online_days>0 then captain_id end) as online_captains,
+    count(distinct case when base.gross_days>0 then captain_id end) as gross_captains,
+    count(distinct case when base.accepted_days>0 then captain_id end) as acc_captains,
+    count(distinct case when base.net_days>0 then captain_id end) as net_captains,
+    (
+        count(distinct case when base.online_days>0 and base.ao_days>0 then captain_id end)/
+        cast(count(distinct case when base.ao_days>0 then captain_id end) as double)
+    ) ao2o,
+    (
+        count(distinct case when base.net_days>0 and base.accepted_days>0  and  base.online_days>0 then captain_id end)/
+          cast(count(distinct case when base.online_days>0 then captain_id end) as double)
+    ) o2n,
+    (
+        count(distinct case when base.gross_days>0 and base.online_days>0  then captain_id end)/
+        cast(count(distinct case when base.online_days>0 then captain_id end) as double)
+    ) o2g,
+    (
+        count(distinct case when base.accepted_days>0 and base.gross_days>0 then captain_id end)/
+        cast(count(distinct case when base.gross_days>0 then captain_id end) as double)
+    ) g2a,
+    (
+        count(distinct case when base.net_days>0 and base.accepted_days>0 then captain_id end)/
+        cast(count(distinct case when base.accepted_days>0 then captain_id end) as double)
+    ) a2n,
+    
+    (
+        count(distinct case when base.gross_days>0 and base.ao_days>0  then captain_id end)/
+        cast(count(distinct case when base.ao_days>0 then captain_id end) as double)
+    ) gross_per_ao,
+    (
+        count(distinct case when base.accepted_days>0 and base.ao_days>0 then captain_id end)/
+        cast(count(distinct case when base.ao_days>0 then captain_id end) as double)
+    ) acc_per_ao,
+    (
+        count(distinct case when base.net_days>0 and base.ao_days>0 then captain_id end)/
+        cast(count(distinct case when base.ao_days>0 then captain_id end) as double)
+    ) net_per_ao,
+    avg(case when base.gross_pings>0 then base.gross_pings end) as avg_gross_pings_when_gross,
+    -- avg(case when base.gross_pings>0 and base.accepted_pings=0 then base.gross_pings end) as avg_gross_pings_when_non_acc,
+    -- avg(case when base.gross_pings>0 and base.accepted_pings>0 then base.gross_pings end) as avg_gross_pings_when_acc,
+    avg(case when base.accepted_pings>0 then base.accepted_pings end) as avg_accepted_pings_when_acc,
+    avg(case when base.accepted_pings>0 then base.dapr end) as avg_dapr_weekly,
+    avg(case when base.net_rides_delivery+base.net_rides_taxi+base.net_rides_c2c>0 then base.net_rides_taxi end) as avg_RPR_daily,
+    avg(case when base.net_rides_delivery+base.net_rides_taxi+base.net_rides_c2c>0 then base.net_rides_delivery end) as avg_RPR_delivery_daily,
+    avg(case when base.net_rides_delivery+base.net_rides_taxi+base.net_rides_c2c>0 then base.net_rides_c2c end) as avg_RPR_c2c_daily,
+    avg(case when base.ao_days>0 then base.ao_days end) as ao_days,
+    avg(case when base.online_days>0 then base.online_days end) as online_days,
+    avg(case when base.gross_days>0 then base.gross_days end) as gross_days,
+    avg(case when base.accepted_days>0 then base.accepted_days end) as acc_days,
+    avg(case when base.net_days>0 then base.net_days end) as net_days,
+    avg(case when base.online_days>0 then base.total_lh end) as total_lh,
+    -- avg(case when base.online_days>0 and base.gross_pings>0 and base.accepted_pings=0 then base.total_lh end) as avg_lh_when_non_acc,
+    -- avg(case when base.online_days>0 and base.gross_pings>0 and base.accepted_pings>0 then base.total_lh end) as avg_lh_when_acc,
+    avg(case when base.max_lh_per_day>0 then max_lh_per_day end ) max_lh_per_day,
+    -- avg(case when base.net_days>0 then base.total_lh_nonO2a end) as total_lh_nonO2a,
+    avg(case when base.net_days>0 then base.total_lh_morning_peak end) as total_lh_morning_peak,
+    avg(case when base.net_days>0 then base.total_lh_afternoon end) as total_lh_afternoon,
+    avg(case when base.net_days>0 then base.total_lh_evening_peak end) as total_lh_evening_peak,
+    avg(case when base.online_days>0 then base.idle_lh end) as idle_lh,
+    avg(case when base.total_lh>0 then 1-base.idle_lh/cast(base.total_lh as double) end) as avg_util,
+    --avg(gmv_amount/cast(base.net_rides_delivery+base.net_rides_taxi+base.net_rides_c2c as double)) as gmv_per_ride ,
+    --avg(take_amount /cast(gmv_amount as double)) as take_per ,
+    --avg(cm_amount /cast(gmv_amount as double)) as cm_per ,
+    --avg(final_earnings_amount /cast(gmv_amount as double)) as final_earnings_per ,
+    --avg(incentive_amount/cast(gmv_amount as double)) as incentives_per ,
+    --avg(order_earnings_amount / cast(base.net_rides_delivery+base.net_rides_taxi+base.net_rides_c2c as double)) as order_earnings_per_ride ,
+    --avg(final_earnings_amount / cast(base.net_rides_delivery+base.net_rides_taxi+base.net_rides_c2c as double)) as final_earnings_per_ride ,
+    --avg(gmv_amount/cast(base.net_rides_delivery+base.net_rides_taxi+base.net_rides_c2c as double)) as gmv_per_ride ,
+     
+    sum(gmv_amount) / cast(sum(base.net_rides_delivery+base.net_rides_taxi+base.net_rides_c2c) as double) as gmv_per_ride ,
+    sum(take_amount) / cast(sum(gmv_amount) as double) as take_per ,
+    sum(cm_amount) / cast(sum(gmv_amount) as double) as cm_per ,
+    sum(final_earnings_amount) / cast(sum(gmv_amount) as double) as final_earnings_per ,
+    sum(incentive_amount) / cast(sum(gmv_amount) as double) as incentives_per ,
+    sum(order_earnings_amount) / cast(sum(base.net_rides_delivery+base.net_rides_taxi+base.net_rides_c2c) as double) as order_earnings_per_ride ,
+    sum(final_earnings_amount) / cast(sum(base.net_rides_delivery+base.net_rides_taxi+base.net_rides_c2c) as double) as final_earnings_per_ride ,
+    
+    
+    avg(subs_orders) as avg_subs_orders,
+    count(distinct case when incentive_amount>0 then base.captain_id end) as incentives_ach_caps ,
+    avg(case when incentive_amount>0 then base.incentive_amount end) as avg_incentives_per_ach_cap ,
+    count(distinct case when base.subs_orders>0 then base.captain_id end) as subs_net_captains
+    -- avg(case when base.online_days>0 and base.gross_pings>0 and base.accepted_pings=0 then 1-base.idle_lh/cast(base.total_lh as double) end) as avg_util_when_non_acc,
+    -- avg(case when base.online_days>0 and base.gross_pings>0 and base.accepted_pings>0 then 1-base.idle_lh/cast(base.total_lh as double) end) as avg_util_when_acc
+from   base
+group by 1,2
+)
+select '{time_level}' as time_level,'{tod_level}' as tod_level,*
+from finalTbl 
+order by time, groupedValue
+    """
+    df = pd.read_sql(query, presto_connection)
     return df

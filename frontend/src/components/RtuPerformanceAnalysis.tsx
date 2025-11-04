@@ -1,40 +1,44 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getFe2Net, type Fe2NetResponse } from '../lib/api';
+import { getRtuPerformance, type RtuPerformanceResponse } from '../lib/api';
 import { FunnelDataGrid } from './FunnelDataGrid';
 import { ChartBuilder } from './ChartBuilder';
 
-export function Fe2NetAnalysis() {
+export function RtuPerformanceAnalysis() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [data, setData] = useState<Fe2NetResponse | null>(null);
+    const [data, setData] = useState<RtuPerformanceResponse | null>(null);
     const [showChart, setShowChart] = useState(false);
 
     // Parameters
     const [username, setUsername] = useState('krishna.poddar@rapido.bike');
-    const [startDate, setStartDate] = useState('20250801');
-    const [endDate, setEndDate] = useState('20251031');
-    const [city, setCity] = useState('delhi');
-    const [serviceCategory, setServiceCategory] = useState('bike_taxi');
-    const [geoLevel, setGeoLevel] = useState('city');
+    const [startDate, setStartDate] = useState('20251015');
+    const [endDate, setEndDate] = useState('20251130');
+    const [city, setCity] = useState('hyderabad');
+    const [perfCut, setPerfCut] = useState(0);
+    const [consistencyCut, setConsistencyCut] = useState(1);
     const [timeLevel, setTimeLevel] = useState('daily');
+    const [todLevel, setTodLevel] = useState('daily');
+    const [serviceCategory, setServiceCategory] = useState('auto');
 
     const handleRunAnalysis = async () => {
         setLoading(true);
         setError(null);
         try {
-            const res = await getFe2Net({
+            const res = await getRtuPerformance({
                 username,
                 start_date: startDate,
                 end_date: endDate,
                 city,
-                service_category: serviceCategory,
-                geo_level: geoLevel,
+                perf_cut: perfCut,
+                consistency_cut: consistencyCut,
                 time_level: timeLevel,
+                tod_level: todLevel,
+                service_category: serviceCategory,
             });
             setData(res);
         } catch (e: any) {
-            setError(e.message ?? 'Failed to fetch FE2Net data');
+            setError(e.message ?? 'Failed to fetch RTU Performance data');
         } finally {
             setLoading(false);
         }
@@ -48,7 +52,7 @@ export function Fe2NetAnalysis() {
                     <span className="card-icon">⚙️</span>
                     <div>
                         <h3 className="card-title">Analysis Parameters</h3>
-                        <p className="card-subtitle">Configure parameters for FE2Net funnel analysis</p>
+                        <p className="card-subtitle">Configure parameters for RTU Performance analysis</p>
                     </div>
                 </div>
 
@@ -63,7 +67,7 @@ export function Fe2NetAnalysis() {
                             value={startDate}
                             onChange={(e) => setStartDate(e.target.value)}
                             className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                            placeholder="20250801"
+                            placeholder="20251015"
                         />
                     </div>
                     <div>
@@ -75,7 +79,7 @@ export function Fe2NetAnalysis() {
                             value={endDate}
                             onChange={(e) => setEndDate(e.target.value)}
                             className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                            placeholder="20251031"
+                            placeholder="20251130"
                         />
                     </div>
                     <div>
@@ -87,7 +91,29 @@ export function Fe2NetAnalysis() {
                             value={city}
                             onChange={(e) => setCity(e.target.value)}
                             className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                            placeholder="delhi"
+                            placeholder="hyderabad"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                            Performance Cut
+                        </label>
+                        <input
+                            type="number"
+                            value={perfCut}
+                            onChange={(e) => setPerfCut(parseInt(e.target.value))}
+                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                            Consistency Cut
+                        </label>
+                        <input
+                            type="number"
+                            value={consistencyCut}
+                            onChange={(e) => setConsistencyCut(parseInt(e.target.value))}
+                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
                         />
                     </div>
                     <div>
@@ -99,22 +125,8 @@ export function Fe2NetAnalysis() {
                             value={serviceCategory}
                             onChange={(e) => setServiceCategory(e.target.value)}
                             className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                            placeholder="bike_taxi"
+                            placeholder="auto"
                         />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-2">
-                            Geo Level
-                        </label>
-                        <select
-                            value={geoLevel}
-                            onChange={(e) => setGeoLevel(e.target.value)}
-                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                        >
-                            <option value="city">City</option>
-                            <option value="zone">Zone</option>
-                            <option value="cluster">Cluster</option>
-                        </select>
                     </div>
                     <div>
                         <label className="block text-sm font-medium text-slate-700 mb-2">
@@ -130,7 +142,24 @@ export function Fe2NetAnalysis() {
                             <option value="monthly">Monthly</option>
                         </select>
                     </div>
-                    <div className="col-span-3">
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                            Time of Day Level
+                        </label>
+                        <select
+                            value={todLevel}
+                            onChange={(e) => setTodLevel(e.target.value)}
+                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        >
+                            <option value="daily">Daily</option>
+                            <option value="afternoon">Afternoon</option>
+                            <option value="evening">Evening</option>
+                            <option value="morning">Morning</option>
+                            <option value="night">Night</option>
+                            <option value="all">All</option>
+                        </select>
+                    </div>
+                    <div>
                         <label className="block text-sm font-medium text-slate-700 mb-2">
                             Presto Username
                         </label>
@@ -158,7 +187,7 @@ export function Fe2NetAnalysis() {
                         ) : (
                             <>
                                 <span>▶</span>
-                                <span>Run FE2Net Analysis</span>
+                                <span>Run RTU Performance Analysis</span>
                             </>
                         )}
                     </button>
@@ -215,7 +244,7 @@ export function Fe2NetAnalysis() {
                                 data={data.data}
                                 title=""
                                 description=""
-                                fileName="fe2net_funnel"
+                                fileName="rtu_performance"
                             />
                         </div>
                     </div>
@@ -227,7 +256,7 @@ export function Fe2NetAnalysis() {
                             animate={{ opacity: 1, height: 'auto' }}
                             exit={{ opacity: 0, height: 0 }}
                         >
-                            <ChartBuilder data={data.data} title="FE2Net Funnel Visualization" />
+                            <ChartBuilder data={data.data} title="RTU Performance Visualization" />
                         </motion.div>
                     )}
                 </motion.div>
@@ -240,7 +269,7 @@ export function Fe2NetAnalysis() {
                         <p className="text-5xl mb-4">📊</p>
                         <p className="text-lg font-medium text-slate-700">Ready to Analyze</p>
                         <p className="text-sm mt-2">
-                            Configure parameters above and click "Run FE2Net Analysis"
+                            Configure parameters above and click "Run RTU Performance Analysis"
                         </p>
                     </div>
                 </div>

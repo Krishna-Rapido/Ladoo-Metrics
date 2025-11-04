@@ -35,6 +35,8 @@ from schemas import (
     DaprBucketResponse,
     Fe2NetRequest,
     Fe2NetResponse,
+    RtuPerformanceRequest,
+    RtuPerformanceResponse,
 )
 from transformations import (
     aggregate_time_series,
@@ -848,6 +850,37 @@ async def get_fe2net(payload: Fe2NetRequest) -> Fe2NetResponse:
     data = result_df.to_dict('records')
     
     return Fe2NetResponse(
+        num_rows=len(result_df),
+        columns=list(result_df.columns),
+        data=data
+    )
+
+
+@app.post("/captain-dashboards/rtu-performance", response_model=RtuPerformanceResponse, responses={400: {"model": ErrorResponse}})
+async def get_rtu_performance(payload: RtuPerformanceRequest) -> RtuPerformanceResponse:
+    """
+    Fetch RTU Performance metrics from Presto
+    """
+    try:
+        from funnel import performance_metrics
+        result_df = performance_metrics(
+            payload.username,
+            payload.start_date,
+            payload.end_date,
+            payload.city,
+            payload.perf_cut,
+            payload.consistency_cut,
+            payload.time_level,
+            payload.tod_level,
+            payload.service_category
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch RTU Performance data: {exc}")
+    
+    # Convert all data to records
+    data = result_df.to_dict('records')
+    
+    return RtuPerformanceResponse(
         num_rows=len(result_df),
         columns=list(result_df.columns),
         data=data

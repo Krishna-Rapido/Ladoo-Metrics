@@ -242,3 +242,21 @@ class Fe2NetResponse(BaseModel):
     data: List[Dict[str, Any]]  # Full result set
 
 
+class RtuPerformanceRequest(BaseModel):
+    username: str
+    start_date: str = "20251015"
+    end_date: str = "20251130"
+    city: str = "hyderabad"
+    perf_cut: int = 0
+    consistency_cut: int = 1
+    time_level: str = "daily"
+    tod_level: str = "daily"
+    service_category: str = "auto"
+
+
+class RtuPerformanceResponse(BaseModel):
+    num_rows: int
+    columns: List[str]
+    data: List[Dict[str, Any]]  # Full result set
+
+
