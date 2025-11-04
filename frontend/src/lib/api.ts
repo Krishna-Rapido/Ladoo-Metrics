@@ -257,3 +257,333 @@ export async function fetchCaptainLevelAggregation(req: CaptainLevelRequest): Pr
     }
     return await res.json();
 }
+
+// ============================================================================
+// FUNNEL ANALYSIS API
+// ============================================================================
+
+export type MobileNumberUploadResponse = {
+    funnel_session_id: string;
+    num_rows: number;
+    columns: string[];
+    has_cohort: boolean;
+    preview: Record<string, any>[];
+    duplicates_removed?: number;
+};
+
+export type CaptainIdRequest = {
+    username: string;
+};
+
+export type CaptainIdResponse = {
+    num_rows: number;
+    num_captains_found: number;
+    preview: Record<string, any>[];
+};
+
+export type AOFunnelRequest = {
+    username: string;
+    start_date?: string;
+    end_date?: string;
+    time_level?: 'daily' | 'weekly' | 'monthly';
+    tod_level?: 'daily' | 'afternoon' | 'evening' | 'morning' | 'night' | 'all';
+};
+
+export type AOFunnelResponse = {
+    num_rows: number;
+    columns: string[];
+    preview: Record<string, any>[];
+    metrics: string[];
+    unique_captain_ids: number;
+};
+
+function getFunnelSessionId(): string | null {
+    return localStorage.getItem('funnel_session_id');
+}
+
+function setFunnelSessionId(id: string) {
+    localStorage.setItem('funnel_session_id', id);
+}
+
+function funnelSessionHeaders(): Headers {
+    const h = new Headers();
+    const session = getFunnelSessionId();
+    if (session) h.set('x-funnel-session-id', session);
+    return h;
+}
+
+export async function uploadMobileNumbers(file: File): Promise<MobileNumberUploadResponse> {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`${BASE_URL}/funnel-analysis/upload-mobile-numbers`, {
+        method: 'POST',
+        body: form,
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Mobile numbers upload failed');
+    }
+    const data = (await res.json()) as MobileNumberUploadResponse;
+    setFunnelSessionId(data.funnel_session_id);
+    return data;
+}
+
+export async function getCaptainIds(username: string): Promise<CaptainIdResponse> {
+    const headers = funnelSessionHeaders();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/funnel-analysis/get-captain-ids`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ username }),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to fetch captain IDs');
+    }
+    return await res.json();
+}
+
+export async function getAOFunnel(req: AOFunnelRequest): Promise<AOFunnelResponse> {
+    const headers = funnelSessionHeaders();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/funnel-analysis/get-ao-funnel`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to fetch AO funnel data');
+    }
+    return await res.json();
+}
+
+export async function clearFunnelSession(): Promise<void> {
+    const res = await fetch(`${BASE_URL}/funnel-analysis/session`, {
+        method: 'DELETE',
+        headers: funnelSessionHeaders(),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    localStorage.removeItem('funnel_session_id');
+}
+
+export async function exportFunnelCsv(): Promise<void> {
+    const res = await fetch(`${BASE_URL}/funnel-analysis/export-csv`, {
+        method: 'GET',
+        headers: funnelSessionHeaders(),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to export CSV');
+    }
+
+    // Download the file
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'funnel_data.csv';
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+}
+
+export async function useFunnelForAnalysis(): Promise<UploadResponse> {
+    const res = await fetch(`${BASE_URL}/funnel-analysis/use-for-analysis`, {
+        method: 'POST',
+        headers: funnelSessionHeaders(),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to transfer funnel data to analysis session');
+    }
+    const data = (await res.json()) as UploadResponse;
+    setSessionId(data.session_id);
+    return data;
+}
+
+export type DaprBucketRequest = {
+    username: string;
+    start_date?: string;
+    end_date?: string;
+    city?: string;
+    service_category?: string;
+    low_dapr?: number;
+    high_dapr?: number;
+};
+
+export type DaprBucketResponse = {
+    num_rows: number;
+    columns: string[];
+    data: Record<string, any>[];
+};
+
+export async function getDaprBucket(req: DaprBucketRequest): Promise<DaprBucketResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/funnel-analysis/dapr-bucket`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to fetch DAPR bucket data');
+    }
+    return await res.json();
+}
+
+export type Fe2NetRequest = {
+    username: string;
+    start_date?: string;
+    end_date?: string;
+    city?: string;
+    service_category?: string;
+    geo_level?: string;
+    time_level?: string;
+};
+
+export type Fe2NetResponse = {
+    num_rows: number;
+    columns: string[];
+    data: Record<string, any>[];
+};
+
+export async function getFe2Net(req: Fe2NetRequest): Promise<Fe2NetResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/captain-dashboards/fe2net`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to fetch FE2Net data');
+    }
+    return await res.json();
+}
+
+export type RtuPerformanceRequest = {
+    username: string;
+    start_date?: string;
+    end_date?: string;
+    city?: string;
+    perf_cut?: number;
+    consistency_cut?: number;
+    time_level?: string;
+    tod_level?: string;
+    service_category?: string;
+};
+
+export type RtuPerformanceResponse = {
+    num_rows: number;
+    columns: string[];
+    data: Record<string, any>[];
+};
+
+export async function getRtuPerformance(req: RtuPerformanceRequest): Promise<RtuPerformanceResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/captain-dashboards/rtu-performance`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to fetch RTU Performance data');
+    }
+    return await res.json();
+}
+
+export type R2ARequest = {
+    username: string;
+    start_date?: string;
+    end_date?: string;
+    city?: string;
+    service?: string;
+    time_level?: string;
+};
+
+export type R2AResponse = {
+    num_rows: number;
+    columns: string[];
+    data: Record<string, any>[];
+};
+
+export async function getR2A(req: R2ARequest): Promise<R2AResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/captain-dashboards/r2a`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to fetch R2A data');
+    }
+    return await res.json();
+}
+
+export type R2APercentageRequest = {
+    username: string;
+    start_date?: string;
+    end_date?: string;
+    city?: string;
+    service?: string;
+    time_level?: string;
+};
+
+export type R2APercentageResponse = {
+    num_rows: number;
+    columns: string[];
+    data: Record<string, any>[];
+};
+
+export async function getR2APercentage(req: R2APercentageRequest): Promise<R2APercentageResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/captain-dashboards/r2a-percentage`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to fetch R2A% data');
+    }
+    return await res.json();
+}
+
+export type A2PhhSummaryRequest = {
+    username: string;
+    start_date?: string;
+    end_date?: string;
+    city?: string;
+    service?: string;
+    time_level?: string;
+};
+
+export type A2PhhSummaryResponse = {
+    num_rows: number;
+    columns: string[];
+    data: Record<string, any>[];
+};
+
+export async function getA2PhhSummary(req: A2PhhSummaryRequest): Promise<A2PhhSummaryResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/captain-dashboards/a2phh-summary`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to fetch A2PHH Summary data');
+    }
+    return await res.json();
+}

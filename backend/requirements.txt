@@ -3,7 +3,12 @@ uvicorn[standard]==0.30.6
 pandas==2.2.3
 python-multipart==0.0.9
 pydantic==2.9.2
-numpy==1.26.4
-scipy==1.13.1
-statsmodels==0.14.2
-pingouin==0.5.4
+numpy>=2.0.0
+scipy>=1.14.0
+statsmodels>=0.14.5
+pingouin>=0.5.5
+pyhive[presto]
+thrift
+thrift-sasl
+pure-sasl
+requests

@@ -1,251 +1,303 @@
-import React, { useMemo, useState, useMemo as useDeepMemo } from "react";
-
-type Row = Record<string, any>;
+import { useState, useMemo } from 'react';
+import {
+    useReactTable,
+    getCoreRowModel,
+    getSortedRowModel,
+    getFilteredRowModel,
+    getPaginationRowModel,
+    flexRender,
+    type ColumnDef,
+    type SortingState,
+    type ColumnFiltersState,
+} from '@tanstack/react-table';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface InteractiveDataTableProps {
-    data: Row[];
-    columns: string[];
-    initialPageSize?: number;
+    data: Record<string, any>[];
+    title?: string;
+    description?: string;
 }
 
-/** Utilities */
-const formatCell = (value: any) => {
-    if (value == null) return "";
-    if (typeof value === "number") {
-        return Number.isInteger(value)
-            ? value.toLocaleString()
-            : value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+export function InteractiveDataTable({ data, title, description }: InteractiveDataTableProps) {
+    const [sorting, setSorting] = useState<SortingState>([]);
+    const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
+    const [globalFilter, setGlobalFilter] = useState('');
+    const [pagination, setPagination] = useState({ pageIndex: 0, pageSize: 10 });
+
+    const columns = useMemo<ColumnDef<any>[]>(() => {
+        if (!data || data.length === 0) return [];
+
+        // Get all columns and filter out unnamed ones
+        const allColumns = Object.keys(data[0]).filter(
+            (col) => !col.toLowerCase().includes('unnamed')
+        );
+
+        // Prioritize important columns
+        const importantCols = ['mobile_number', 'captain_id', 'cohort', 'city', 'time', 'date'];
+        const sortedCols = [
+            ...importantCols.filter((col) => allColumns.includes(col)),
+            ...allColumns.filter((col) => !importantCols.includes(col)).sort(),
+        ];
+
+        return sortedCols.map((col) => ({
+            accessorKey: col,
+            header: col.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+            cell: (info) => {
+                const value = info.getValue();
+                if (value === null || value === undefined) return <span className="text-slate-400">-</span>;
+                if (typeof value === 'number') {
+                    return (
+                        <span className="tabular-nums">
+                            {Math.abs(value) >= 1000
+                                ? value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+                                : value
+                            }
+                        </span>
+                    );
+                }
+                return String(value);
+            },
+            enableSorting: true,
+            enableColumnFilter: true,
+        }));
+    }, [data]);
+
+    const table = useReactTable({
+        data,
+        columns,
+        state: {
+            sorting,
+            columnFilters,
+            globalFilter,
+            pagination,
+        },
+        onSortingChange: setSorting,
+        onColumnFiltersChange: setColumnFilters,
+        onGlobalFilterChange: setGlobalFilter,
+        onPaginationChange: setPagination,
+        getCoreRowModel: getCoreRowModel(),
+        getSortedRowModel: getSortedRowModel(),
+        getFilteredRowModel: getFilteredRowModel(),
+        getPaginationRowModel: getPaginationRowModel(),
+    });
+
+    if (!data || data.length === 0) {
+        return (
+            <div className="text-center py-12 text-slate-500">
+                <p className="text-lg">📭 No data available</p>
+            </div>
+        );
     }
-    if (value instanceof Date) return value.toLocaleString();
-    return String(value);
-};
 
-const csvEscape = (v: string) =>
-    /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-
-const toCSV = (rows: Row[], cols: string[]) => {
-    const head = cols.join(",");
-    const body = rows
-        .map((r) => cols.map((c) => csvEscape(formatCell(r[c]))).join(","))
-        .join("\n");
-    return `${head}\n${body}`;
-};
-
-type SortState = { id: string; desc: boolean } | null;
-
-/** Component */
-export function InteractiveDataTable({
-    data,
-    columns,
-    initialPageSize = 20,
-}: InteractiveDataTableProps) {
-    // table state
-    const [globalFilter, setGlobalFilter] = useState("");
-    const [columnFilters, setColumnFilters] = useState<Record<string, string>>({});
-    const [sort, setSort] = useState<SortState>(null);
-    const [pageIndex, setPageIndex] = useState(0);
-    const [pageSize, setPageSize] = useState(initialPageSize);
-
-    // derived: filtered rows
-    const filtered = useMemo(() => {
-        const gf = globalFilter.trim().toLowerCase();
-        const cfEntries = Object.entries(columnFilters).filter(([, v]) => v?.trim());
-        return data.filter((row) => {
-            // per-column filters (AND)
-            for (const [col, q] of cfEntries) {
-                const cell = formatCell(row[col]).toLowerCase();
-                if (!cell.includes(q.toLowerCase())) return false;
-            }
-            // global filter
-            if (!gf) return true;
-            for (const c of columns) {
-                const cell = formatCell(row[c]).toLowerCase();
-                if (cell.includes(gf)) return true;
-            }
-            return false;
-        });
-    }, [data, columns, globalFilter, columnFilters]);
-
-    // derived: sorted rows
-    const sorted = useMemo(() => {
-        if (!sort) return filtered;
-        const { id, desc } = sort;
-        const copy = [...filtered];
-        copy.sort((a, b) => {
-            const av = a[id];
-            const bv = b[id];
-            // number first, then Date, then string
-            const numA = typeof av === "number" ? av : Number.NaN;
-            const numB = typeof bv === "number" ? bv : Number.NaN;
-            let cmp = 0;
-            if (!Number.isNaN(numA) && !Number.isNaN(numB)) cmp = numA - numB;
-            else if (av instanceof Date && bv instanceof Date) cmp = av.getTime() - bv.getTime();
-            else cmp = String(av ?? "").localeCompare(String(bv ?? ""), undefined, { numeric: true, sensitivity: "base" });
-            return desc ? -cmp : cmp;
-        });
-        return copy;
-    }, [filtered, sort]);
-
-    // pagination
-    const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize));
-    const safePageIndex = Math.min(pageIndex, pageCount - 1);
-    const paged = useMemo(() => {
-        const start = safePageIndex * pageSize;
-        return sorted.slice(start, start + pageSize);
-    }, [sorted, pageSize, safePageIndex]);
-
-    // handlers
-    const toggleSort = (id: string) => {
-        setPageIndex(0);
-        setSort((prev) => {
-            if (!prev || prev.id !== id) return { id, desc: false }; // asc
-            if (prev && !prev.desc) return { id, desc: true }; // desc
-            return null; // off
-        });
-    };
-
-    const setColFilter = (id: string, val: string) => {
-        setPageIndex(0);
-        setColumnFilters((f) => ({ ...f, [id]: val }));
-    };
-
-    const exportCSV = () => {
-        const csv = toCSV(sorted, columns);
-        const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "table_export.csv";
-        a.click();
-        URL.revokeObjectURL(url);
+    const isMetricColumn = (colId: string): boolean => {
+        const identifierColumns = ['mobile_number', 'captain_id', 'cohort', 'city', 'time', 'date'];
+        return !identifierColumns.includes(colId);
     };
 
     return (
-        <div className="space-y-4">
-            {/* Top bar */}
-            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                <input
-                    value={globalFilter}
-                    onChange={(e) => { setGlobalFilter(e.target.value); setPageIndex(0); }}
-                    placeholder="Search all columns..."
-                    className="w-full sm:flex-1 rounded-md border border-slate-300 px-3 py-2 outline-none focus:ring-2 focus:ring-slate-400"
-                />
-                <div className="flex items-center gap-2">
-                    <button
-                        onClick={exportCSV}
-                        className="px-3 py-2 text-sm rounded-md border border-slate-300 bg-white hover:bg-slate-50"
-                    >
-                        Export CSV
-                    </button>
-                    <span className="text-sm text-slate-600">
-                        {sorted.length} of {data.length} row(s)
-                    </span>
+        <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="space-y-4"
+        >
+            {/* Header */}
+            <div className="flex items-center justify-between">
+                <div>
+                    {title && (
+                        <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100">
+                            {title}
+                        </h3>
+                    )}
+                    {description && (
+                        <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+                            {description}
+                        </p>
+                    )}
                 </div>
+                <div className="text-xs text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-3 py-1.5 rounded-full">
+                    {table.getFilteredRowModel().rows.length.toLocaleString()} rows × {columns.length} columns
+                </div>
+            </div>
+
+            {/* Search Bar */}
+            <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <span className="text-slate-400">🔍</span>
+                </div>
+                <input
+                    type="text"
+                    value={globalFilter ?? ''}
+                    onChange={(e) => setGlobalFilter(e.target.value)}
+                    placeholder="Search all columns..."
+                    className="w-full pl-10 pr-4 py-3 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all text-sm"
+                />
+                {globalFilter && (
+                    <button
+                        onClick={() => setGlobalFilter('')}
+                        className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                    >
+                        ✕
+                    </button>
+                )}
             </div>
 
             {/* Table */}
-            <div className="overflow-x-auto rounded-lg border border-slate-200 shadow-sm">
-                <table className="min-w-full text-sm">
-                    <thead className="sticky top-0 z-10 bg-gradient-to-r from-slate-100 to-slate-200">
-                        <tr>
-                            {columns.map((col) => {
-                                const sortedState =
-                                    sort?.id === col ? (sort.desc ? "desc" : "asc") : null;
-                                return (
-                                    <th key={col} className="px-4 py-2 text-left align-bottom">
-                                        <div className="flex items-center gap-2">
-                                            <button
-                                                className="font-semibold uppercase tracking-wide text-xs text-slate-700 hover:underline"
-                                                onClick={() => toggleSort(col)}
-                                                title="Sort"
-                                            >
-                                                {col.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-                                            </button>
-                                            <span className="text-slate-500">
-                                                {sortedState === "asc" ? "↑" : sortedState === "desc" ? "↓" : "⇅"}
-                                            </span>
-                                        </div>
-                                        <input
-                                            value={columnFilters[col] ?? ""}
-                                            onChange={(e) => setColFilter(col, e.target.value)}
-                                            placeholder={`Filter ${col}`}
-                                            className="mt-2 w-full rounded border border-slate-300 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-slate-300"
-                                        />
-                                    </th>
-                                );
-                            })}
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                        {paged.map((row, rIdx) => (
-                            <tr key={rIdx} className={rIdx % 2 ? "bg-slate-50/60" : ""}>
-                                {columns.map((c) => (
-                                    <td key={c} className="px-4 py-2 whitespace-nowrap text-slate-900">
-                                        {formatCell(row[c])}
-                                    </td>
+            <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-md rounded-xl border border-slate-200 dark:border-slate-700 shadow-lg overflow-hidden">
+                <div className="overflow-x-auto">
+                    <table className="w-full">
+                        <thead className="bg-gradient-to-r from-slate-100 to-slate-50 dark:from-slate-700 dark:to-slate-800 border-b border-slate-200 dark:border-slate-600">
+                            {table.getHeaderGroups().map((headerGroup) => (
+                                <tr key={headerGroup.id}>
+                                    {headerGroup.headers.map((header) => (
+                                        <th
+                                            key={header.id}
+                                            className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap ${isMetricColumn(header.column.id)
+                                                    ? 'text-indigo-700 dark:text-indigo-400'
+                                                    : 'text-slate-700 dark:text-slate-300'
+                                                }`}
+                                        >
+                                            {header.isPlaceholder ? null : (
+                                                <div
+                                                    className={`flex items-center gap-2 ${header.column.getCanSort()
+                                                            ? 'cursor-pointer select-none hover:text-indigo-600 dark:hover:text-indigo-300'
+                                                            : ''
+                                                        }`}
+                                                    onClick={header.column.getToggleSortingHandler()}
+                                                >
+                                                    {isMetricColumn(header.column.id) && (
+                                                        <span className="text-sm">📊</span>
+                                                    )}
+                                                    <span className="truncate">
+                                                        {flexRender(
+                                                            header.column.columnDef.header,
+                                                            header.getContext()
+                                                        )}
+                                                    </span>
+                                                    {{
+                                                        asc: <span className="text-indigo-600 dark:text-indigo-400">↑</span>,
+                                                        desc: <span className="text-indigo-600 dark:text-indigo-400">↓</span>,
+                                                    }[header.column.getIsSorted() as string] ?? (
+                                                            header.column.getCanSort() && (
+                                                                <span className="text-slate-400">⇅</span>
+                                                            )
+                                                        )}
+                                                </div>
+                                            )}
+                                        </th>
+                                    ))}
+                                </tr>
+                            ))}
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+                            <AnimatePresence mode="popLayout">
+                                {table.getRowModel().rows.map((row, idx) => (
+                                    <motion.tr
+                                        key={row.id}
+                                        initial={{ opacity: 0, x: -20 }}
+                                        animate={{ opacity: 1, x: 0 }}
+                                        exit={{ opacity: 0, x: 20 }}
+                                        transition={{ duration: 0.2, delay: idx * 0.02 }}
+                                        className="hover:bg-indigo-50/50 dark:hover:bg-indigo-900/20 transition-colors"
+                                    >
+                                        {row.getVisibleCells().map((cell) => {
+                                            const isNumeric = typeof cell.getValue() === 'number';
+                                            const isMetric = isMetricColumn(cell.column.id);
+
+                                            return (
+                                                <td
+                                                    key={cell.id}
+                                                    className={`px-4 py-3 text-sm whitespace-nowrap ${isMetric
+                                                            ? 'text-slate-700 dark:text-slate-300 font-medium'
+                                                            : 'text-slate-600 dark:text-slate-400'
+                                                        } ${isNumeric ? 'text-right' : 'text-left'}`}
+                                                >
+                                                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                                </td>
+                                            );
+                                        })}
+                                    </motion.tr>
                                 ))}
-                            </tr>
-                        ))}
-                        {paged.length === 0 && (
-                            <tr>
-                                <td colSpan={columns.length} className="px-4 py-6 text-center text-slate-500">
-                                    No results
-                                </td>
-                            </tr>
-                        )}
-                    </tbody>
-                </table>
-            </div>
-
-            {/* Pagination */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                    <button
-                        onClick={() => setPageIndex(0)}
-                        disabled={safePageIndex === 0}
-                        className="px-3 py-1 text-sm rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50"
-                    >
-                        {"<<"}
-                    </button>
-                    <button
-                        onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
-                        disabled={safePageIndex === 0}
-                        className="px-3 py-1 text-sm rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50"
-                    >
-                        {"<"}
-                    </button>
-                    <button
-                        onClick={() => setPageIndex((p) => Math.min(pageCount - 1, p + 1))}
-                        disabled={safePageIndex >= pageCount - 1}
-                        className="px-3 py-1 text-sm rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50"
-                    >
-                        {">"}
-                    </button>
-                    <button
-                        onClick={() => setPageIndex(pageCount - 1)}
-                        disabled={safePageIndex >= pageCount - 1}
-                        className="px-3 py-1 text-sm rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50"
-                    >
-                        {">>"}
-                    </button>
-                    <span className="text-sm text-slate-700">
-                        Page <strong>{safePageIndex + 1}</strong> of <strong>{pageCount}</strong>
-                    </span>
+                            </AnimatePresence>
+                        </tbody>
+                    </table>
                 </div>
 
-                <div className="flex items-center gap-2">
-                    <span className="text-sm text-slate-700">Rows per page:</span>
-                    <select
-                        value={pageSize}
-                        onChange={(e) => { setPageSize(Number(e.target.value)); setPageIndex(0); }}
-                        className="rounded border border-slate-300 px-2 py-1"
-                    >
-                        {[10, 20, 30, 50, 100].map((n) => (
-                            <option key={n} value={n}>{n}</option>
-                        ))}
-                    </select>
+                {/* Pagination */}
+                <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => table.setPageIndex(0)}
+                                disabled={!table.getCanPreviousPage()}
+                                className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-600 transition-colors text-sm font-medium"
+                            >
+                                «
+                            </button>
+                            <button
+                                onClick={() => table.previousPage()}
+                                disabled={!table.getCanPreviousPage()}
+                                className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-600 transition-colors text-sm font-medium"
+                            >
+                                ‹
+                            </button>
+                            <button
+                                onClick={() => table.nextPage()}
+                                disabled={!table.getCanNextPage()}
+                                className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-600 transition-colors text-sm font-medium"
+                            >
+                                ›
+                            </button>
+                            <button
+                                onClick={() => table.setPageIndex(table.getPageCount() - 1)}
+                                disabled={!table.getCanNextPage()}
+                                className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-600 transition-colors text-sm font-medium"
+                            >
+                                »
+                            </button>
+                        </div>
+
+                        <div className="flex items-center gap-4">
+                            <span className="text-sm text-slate-600 dark:text-slate-400">
+                                Page{' '}
+                                <span className="font-semibold">
+                                    {table.getState().pagination.pageIndex + 1}
+                                </span>{' '}
+                                of{' '}
+                                <span className="font-semibold">{table.getPageCount()}</span>
+                            </span>
+
+                            <select
+                                value={table.getState().pagination.pageSize}
+                                onChange={(e) => table.setPageSize(Number(e.target.value))}
+                                className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            >
+                                {[10, 20, 50, 100].map((pageSize) => (
+                                    <option key={pageSize} value={pageSize}>
+                                        Show {pageSize}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
+
+            {/* Legend */}
+            <div className="flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
+                <span className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-slate-400"></span>
+                    Identifier columns
+                </span>
+                <span className="flex items-center gap-1.5">
+                    <span className="text-sm">📊</span>
+                    Metric columns
+                </span>
+                <span className="flex items-center gap-1.5">
+                    <span>⇅</span>
+                    Sortable
+                </span>
+            </div>
+        </motion.div>
     );
 }

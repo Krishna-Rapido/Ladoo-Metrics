@@ -174,3 +174,134 @@ class CaptainLevelResponse(BaseModel):
     metrics: List[str]
 
 
+# Funnel Analysis Schemas
+class MobileNumberUploadResponse(BaseModel):
+    funnel_session_id: str
+    num_rows: int
+    columns: List[str]
+    has_cohort: bool
+    preview: List[Dict[str, Any]]  # First 5 rows
+    duplicates_removed: int = 0  # Number of duplicate rows removed
+
+
+class CaptainIdRequest(BaseModel):
+    username: str  # Presto username
+
+
+class CaptainIdResponse(BaseModel):
+    num_rows: int
+    num_captains_found: int
+    preview: List[Dict[str, Any]]  # First 5 rows
+
+
+class AOFunnelRequest(BaseModel):
+    username: str
+    start_date: str = "20250801"
+    end_date: str = "20251031"
+    time_level: Literal["daily", "weekly", "monthly"] = "daily"
+    tod_level: Literal["daily", "afternoon", "evening", "morning", "night", "all"] = "daily"
+
+
+class AOFunnelResponse(BaseModel):
+    num_rows: int
+    columns: List[str]
+    preview: List[Dict[str, Any]]  # First 10 rows
+    metrics: List[str]  # Available metric columns
+    unique_captain_ids: int  # Count of unique captain IDs in full dataset
+
+
+class DaprBucketRequest(BaseModel):
+    username: str
+    start_date: str = "20250801"
+    end_date: str = "20251031"
+    city: str = "delhi"
+    service_category: str = "bike_taxi"
+    low_dapr: float = 0.6
+    high_dapr: float = 0.8
+
+
+class DaprBucketResponse(BaseModel):
+    num_rows: int
+    columns: List[str]
+    data: List[Dict[str, Any]]  # Full result set
+
+
+class Fe2NetRequest(BaseModel):
+    username: str
+    start_date: str = "20250801"
+    end_date: str = "20251031"
+    city: str = "delhi"
+    service_category: str = "bike_taxi"
+    geo_level: str = "city"
+    time_level: str = "daily"
+
+
+class Fe2NetResponse(BaseModel):
+    num_rows: int
+    columns: List[str]
+    data: List[Dict[str, Any]]  # Full result set
+
+
+class RtuPerformanceRequest(BaseModel):
+    username: str
+    start_date: str = "20251015"
+    end_date: str = "20251130"
+    city: str = "hyderabad"
+    perf_cut: int = 0
+    consistency_cut: int = 1
+    time_level: str = "daily"
+    tod_level: str = "daily"
+    service_category: str = "auto"
+
+
+class RtuPerformanceResponse(BaseModel):
+    num_rows: int
+    columns: List[str]
+    data: List[Dict[str, Any]]  # Full result set
+
+
+class R2ARequest(BaseModel):
+    username: str
+    start_date: str = "20251015"
+    end_date: str = "20251130"
+    city: str = "hyderabad"
+    service: str = "auto"
+    time_level: str = "day"
+
+
+class R2AResponse(BaseModel):
+    num_rows: int
+    columns: List[str]
+    data: List[Dict[str, Any]]  # Full result set
+
+
+class R2APercentageRequest(BaseModel):
+    username: str
+    start_date: str = "20251001"
+    end_date: str = "20251130"
+    city: str = "hyderabad"
+    service: str = "auto"
+    time_level: str = "day"
+
+
+class R2APercentageResponse(BaseModel):
+    num_rows: int
+    columns: List[str]
+    data: List[Dict[str, Any]]  # Full result set
+
+
+class A2PhhSummaryRequest(BaseModel):
+    username: str
+    start_date: str = "20251001"
+    end_date: str = "20251130"
+    city: str = "bangalore"
+    service: str = "auto"
+    time_level: str = "day"
+
+
+class A2PhhSummaryResponse(BaseModel):
+    num_rows: int
+    columns: List[str]
+    data: List[Dict[str, Any]]  # Full result set
+
+

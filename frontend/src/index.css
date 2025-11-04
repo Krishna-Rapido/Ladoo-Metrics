@@ -160,6 +160,17 @@ body {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
 }
 
+.btn-success {
+  background: linear-gradient(135deg, #16a34a 0%, #059669 100%);
+  color: white;
+  box-shadow: 0 4px 14px rgba(22, 163, 74, 0.3);
+}
+
+.btn-success:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(22, 163, 74, 0.4);
+}
+
 .flex-1 {
   flex: 1;
 }

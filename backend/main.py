@@ -26,6 +26,23 @@ from schemas import (
     CaptainLevelRequest,
     CaptainLevelResponse,
     CaptainLevelAggregationRow,
+    MobileNumberUploadResponse,
+    CaptainIdRequest,
+    CaptainIdResponse,
+    AOFunnelRequest,
+    AOFunnelResponse,
+    DaprBucketRequest,
+    DaprBucketResponse,
+    Fe2NetRequest,
+    Fe2NetResponse,
+    RtuPerformanceRequest,
+    RtuPerformanceResponse,
+    R2ARequest,
+    R2AResponse,
+    R2APercentageRequest,
+    R2APercentageResponse,
+    A2PhhSummaryRequest,
+    A2PhhSummaryResponse,
 )
 from transformations import (
     aggregate_time_series,
@@ -42,6 +59,9 @@ app = FastAPI(title="Cohort Metrics API")
 
 # Simple in-memory session store mapping session_id to DataFrame
 SESSION_STORE: Dict[str, pd.DataFrame] = {}
+
+# Funnel analysis session store - separate from main session store
+FUNNEL_SESSION_STORE: Dict[str, pd.DataFrame] = {}
 
 app.add_middleware(
     CORSMiddleware,
@@ -542,6 +562,427 @@ def captain_level_aggregation(
         group_by_column=payload.group_by_column,
         metrics=metrics
     )
+
+
+# ============================================================================
+# FUNNEL ANALYSIS ENDPOINTS
+# ============================================================================
+
+@app.post("/funnel-analysis/upload-mobile-numbers", response_model=MobileNumberUploadResponse, responses={400: {"model": ErrorResponse}})
+async def upload_mobile_numbers(file: UploadFile = File(...)) -> MobileNumberUploadResponse:
+    """
+    Upload CSV with mobile_number column (and optional cohort column) for funnel analysis
+    """
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only CSV files are supported")
+    
+    content = await file.read()
+    try:
+        df = pd.read_csv(io.BytesIO(content))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to read CSV: {exc}")
+    
+    # Validate that mobile_number column exists
+    if "mobile_number" not in df.columns:
+        raise HTTPException(status_code=400, detail="CSV must include 'mobile_number' column")
+    
+    # Check if cohort column exists
+    has_cohort = "cohort" in df.columns
+    
+    # Ensure mobile_number is treated as string
+    df['mobile_number'] = df['mobile_number'].astype(str)
+    
+    if has_cohort:
+        df['cohort'] = df['cohort'].astype(str)
+    
+    # Drop duplicates based on mobile_number (and cohort if present)
+    original_rows = len(df)
+    if has_cohort:
+        df = df.drop_duplicates(subset=['mobile_number', 'cohort'], keep='first')
+    else:
+        df = df.drop_duplicates(subset=['mobile_number'], keep='first')
+    
+    duplicates_removed = original_rows - len(df)
+    
+    # Generate session ID and store
+    funnel_session_id = secrets.token_hex(16)
+    FUNNEL_SESSION_STORE[funnel_session_id] = df
+    
+    # Get preview (first 5 rows)
+    preview = df.head(5).to_dict('records')
+    
+    return MobileNumberUploadResponse(
+        funnel_session_id=funnel_session_id,
+        num_rows=len(df),
+        columns=list(df.columns),
+        has_cohort=has_cohort,
+        preview=preview,
+        duplicates_removed=duplicates_removed
+    )
+
+
+@app.post("/funnel-analysis/get-captain-ids", response_model=CaptainIdResponse, responses={400: {"model": ErrorResponse}})
+async def get_captain_ids(
+    payload: CaptainIdRequest,
+    x_funnel_session_id: Optional[str] = Header(default=None)
+) -> CaptainIdResponse:
+    """
+    Fetch captain IDs for mobile numbers in current session
+    """
+    if not x_funnel_session_id or x_funnel_session_id not in FUNNEL_SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing funnel_session_id. Upload mobile numbers first.")
+    
+    mobile_number_df = FUNNEL_SESSION_STORE[x_funnel_session_id]
+    
+    try:
+        from funnel import get_captain_id
+        result_df = get_captain_id(mobile_number_df, payload.username)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch captain IDs from Presto: {exc}")
+    
+    # Update session with new dataframe including captain_id
+    FUNNEL_SESSION_STORE[x_funnel_session_id] = result_df
+    
+    # Count how many captain IDs were found (non-null)
+    num_captains_found = len(result_df['captain_id'].dropna().unique())
+    
+    # Get preview
+    preview = result_df.head(5).to_dict('records')
+    
+    return CaptainIdResponse(
+        num_rows=len(result_df),
+        num_captains_found=int(num_captains_found),
+        preview=preview
+    )
+
+
+@app.post("/funnel-analysis/get-ao-funnel", response_model=AOFunnelResponse, responses={400: {"model": ErrorResponse}})
+async def get_ao_funnel_data(
+    payload: AOFunnelRequest,
+    x_funnel_session_id: Optional[str] = Header(default=None)
+) -> AOFunnelResponse:
+    """
+    Fetch AO funnel metrics for captain IDs in current session
+    """
+    if not x_funnel_session_id or x_funnel_session_id not in FUNNEL_SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing funnel_session_id. Get captain IDs first.")
+    
+    captain_id_df = FUNNEL_SESSION_STORE[x_funnel_session_id]
+    
+    # Validate that captain_id column exists
+    if 'captain_id' not in captain_id_df.columns:
+        raise HTTPException(status_code=400, detail="No captain_id column found. Run 'Get Captain IDs' first.")
+    
+    # Check if there are any valid captain IDs
+    if captain_id_df['captain_id'].isna().all():
+        raise HTTPException(status_code=400, detail="No valid captain IDs found. Cannot fetch funnel data.")
+    
+    try:
+        from funnel import get_ao_funnel
+        result_df = get_ao_funnel(
+            captain_id_df,
+            payload.username,
+            payload.start_date,
+            payload.end_date,
+            payload.time_level,
+            payload.tod_level
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch AO funnel data from Presto: {exc}")
+    
+    # Format the dataframe for cohort analysis
+    # Ensure we have a proper date column
+    if 'time' in result_df.columns and 'date' not in result_df.columns:
+        # Convert time column (YYYYMMDD format) to date
+        result_df['date'] = pd.to_datetime(result_df['time'], format='%Y%m%d', errors='coerce')
+    elif 'time' in result_df.columns:
+        # Also ensure date column is datetime
+        result_df['date'] = pd.to_datetime(result_df['date'], errors='coerce')
+    
+    # Ensure cohort column exists, if not create from existing data
+    if 'cohort' not in result_df.columns:
+        # If no cohort column, create a default one
+        result_df['cohort'] = 'all_captains'
+    
+    # Update session with funnel data
+    FUNNEL_SESSION_STORE[x_funnel_session_id] = result_df
+    
+    # Identify metric columns (exclude identifier columns)
+    exclude_cols = {'mobile_number', 'captain_id', 'cohort', 'city', 'time', 'date'}
+    metric_cols = [c for c in result_df.columns if c not in exclude_cols]
+    
+    # Calculate unique captain IDs from full dataset
+    unique_captain_ids = int(result_df['captain_id'].nunique())
+    
+    # Get preview (first 10 rows)
+    preview = result_df.head(10).to_dict('records')
+    
+    return AOFunnelResponse(
+        num_rows=len(result_df),
+        columns=list(result_df.columns),
+        preview=preview,
+        metrics=metric_cols,
+        unique_captain_ids=unique_captain_ids
+    )
+
+
+@app.post("/funnel-analysis/use-for-analysis", response_model=UploadResponse, responses={400: {"model": ErrorResponse}})
+def use_funnel_for_analysis(x_funnel_session_id: Optional[str] = Header(default=None)) -> UploadResponse:
+    """
+    Transfer funnel analysis data to main cohort analysis session
+    This allows using the AO funnel data for plotting and further analysis
+    """
+    if not x_funnel_session_id or x_funnel_session_id not in FUNNEL_SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing funnel_session_id. Complete funnel analysis first.")
+    
+    # Get the funnel dataframe
+    funnel_df = FUNNEL_SESSION_STORE[x_funnel_session_id].copy()
+    
+    # Ensure date column is properly formatted
+    if 'date' not in funnel_df.columns and 'time' in funnel_df.columns:
+        funnel_df['date'] = pd.to_datetime(funnel_df['time'], format='%Y%m%d', errors='coerce')
+    elif 'date' in funnel_df.columns:
+        funnel_df['date'] = pd.to_datetime(funnel_df['date'], errors='coerce')
+    else:
+        raise HTTPException(status_code=400, detail="No date/time column found in funnel data")
+    
+    # Ensure cohort column exists
+    if 'cohort' not in funnel_df.columns:
+        funnel_df['cohort'] = 'all_captains'
+    
+    # Ensure cohort is string
+    funnel_df['cohort'] = funnel_df['cohort'].astype(str)
+    
+    # Drop any rows with invalid dates
+    invalid_dates = funnel_df['date'].isna().sum()
+    if invalid_dates > 0:
+        funnel_df = funnel_df[~funnel_df['date'].isna()]
+    
+    # Create a new session in the main store
+    session_id = secrets.token_hex(16)
+    SESSION_STORE[session_id] = funnel_df
+    
+    # Get cohorts and date range
+    cohorts = sorted(funnel_df["cohort"].dropna().unique().tolist())
+    date_min = funnel_df["date"].min()
+    date_max = funnel_df["date"].max()
+    
+    # Determine available metric columns
+    exclude_cols = {'cohort', 'date', 'time', 'mobile_number', 'captain_id', 'city'}
+    metric_candidates = [c for c in funnel_df.columns if c not in exclude_cols]
+    
+    return UploadResponse(
+        session_id=session_id,
+        num_rows=funnel_df.shape[0],
+        columns=list(funnel_df.columns.astype(str)),
+        cohorts=cohorts,
+        date_min=date_min.strftime("%Y-%m-%d"),
+        date_max=date_max.strftime("%Y-%m-%d"),
+        metrics=metric_candidates,
+    )
+
+
+@app.get("/funnel-analysis/export-csv")
+def export_funnel_csv(x_funnel_session_id: Optional[str] = Header(default=None)):
+    """Export full funnel dataset as CSV"""
+    from fastapi.responses import StreamingResponse
+    
+    if not x_funnel_session_id or x_funnel_session_id not in FUNNEL_SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing funnel_session_id")
+    
+    df = FUNNEL_SESSION_STORE[x_funnel_session_id]
+    
+    # Convert to CSV
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer, index=False)
+    csv_buffer.seek(0)
+    
+    return StreamingResponse(
+        iter([csv_buffer.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=funnel_data.csv"}
+    )
+
+
+@app.post("/funnel-analysis/dapr-bucket", response_model=DaprBucketResponse, responses={400: {"model": ErrorResponse}})
+async def get_dapr_bucket(payload: DaprBucketRequest) -> DaprBucketResponse:
+    """
+    Fetch DAPR bucket distribution data from Presto
+    """
+    try:
+        from funnel import dapr_bucket
+        result_df = dapr_bucket(
+            payload.username,
+            payload.start_date,
+            payload.end_date,
+            payload.city,
+            payload.service_category,
+            payload.low_dapr,
+            payload.high_dapr
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch DAPR bucket data: {exc}")
+    
+    # Convert all data to records
+    data = result_df.to_dict('records')
+    
+    return DaprBucketResponse(
+        num_rows=len(result_df),
+        columns=list(result_df.columns),
+        data=data
+    )
+
+
+@app.post("/captain-dashboards/fe2net", response_model=Fe2NetResponse, responses={400: {"model": ErrorResponse}})
+async def get_fe2net(payload: Fe2NetRequest) -> Fe2NetResponse:
+    """
+    Fetch FE2Net funnel data from Presto
+    """
+    try:
+        from funnel import fe2net
+        result_df = fe2net(
+            payload.username,
+            payload.start_date,
+            payload.end_date,
+            payload.city,
+            payload.service_category,
+            payload.geo_level,
+            payload.time_level
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch FE2Net data: {exc}")
+    
+    # Convert all data to records
+    data = result_df.to_dict('records')
+    
+    return Fe2NetResponse(
+        num_rows=len(result_df),
+        columns=list(result_df.columns),
+        data=data
+    )
+
+
+@app.post("/captain-dashboards/rtu-performance", response_model=RtuPerformanceResponse, responses={400: {"model": ErrorResponse}})
+async def get_rtu_performance(payload: RtuPerformanceRequest) -> RtuPerformanceResponse:
+    """
+    Fetch RTU Performance metrics from Presto
+    """
+    try:
+        from funnel import performance_metrics
+        result_df = performance_metrics(
+            payload.username,
+            payload.start_date,
+            payload.end_date,
+            payload.city,
+            payload.perf_cut,
+            payload.consistency_cut,
+            payload.time_level,
+            payload.tod_level,
+            payload.service_category
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch RTU Performance data: {exc}")
+    
+    # Convert all data to records
+    data = result_df.to_dict('records')
+    
+    return RtuPerformanceResponse(
+        num_rows=len(result_df),
+        columns=list(result_df.columns),
+        data=data
+    )
+
+
+@app.post("/captain-dashboards/r2a", response_model=R2AResponse, responses={400: {"model": ErrorResponse}})
+async def get_r2a(payload: R2ARequest) -> R2AResponse:
+    """
+    Fetch R2A% (Registration to Activation) metrics from Presto
+    """
+    try:
+        from funnel import r2a_registration_by_activation
+        result_df = r2a_registration_by_activation(
+            payload.username,
+            payload.start_date,
+            payload.end_date,
+            payload.city,
+            payload.service,
+            payload.time_level
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch R2A data: {exc}")
+    
+    # Convert all data to records
+    data = result_df.to_dict('records')
+    
+    return R2AResponse(
+        num_rows=len(result_df),
+        columns=list(result_df.columns),
+        data=data
+    )
+
+
+@app.post("/captain-dashboards/r2a-percentage", response_model=R2APercentageResponse, responses={400: {"model": ErrorResponse}})
+async def get_r2a_percentage(payload: R2APercentageRequest) -> R2APercentageResponse:
+    """
+    Fetch R2A% metrics from Presto
+    """
+    try:
+        from funnel import r2a_pecentage
+        result_df = r2a_pecentage(
+            payload.username,
+            payload.start_date,
+            payload.end_date,
+            payload.city,
+            payload.service,
+            payload.time_level
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch R2A% data: {exc}")
+    
+    # Convert all data to records
+    data = result_df.to_dict('records')
+    
+    return R2APercentageResponse(
+        num_rows=len(result_df),
+        columns=list(result_df.columns),
+        data=data
+    )
+
+
+@app.post("/captain-dashboards/a2phh-summary", response_model=A2PhhSummaryResponse, responses={400: {"model": ErrorResponse}})
+async def get_a2phh_summary(payload: A2PhhSummaryRequest) -> A2PhhSummaryResponse:
+    """
+    Fetch A2PHH Summary M0 metrics from Presto
+    """
+    try:
+        from funnel import a2phh_summary
+        result_df = a2phh_summary(
+            payload.username,
+            payload.start_date,
+            payload.end_date,
+            payload.city,
+            payload.service,
+            payload.time_level
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch A2PHH Summary data: {exc}")
+    
+    # Convert all data to records
+    data = result_df.to_dict('records')
+    
+    return A2PhhSummaryResponse(
+        num_rows=len(result_df),
+        columns=list(result_df.columns),
+        data=data
+    )
+
+
+@app.delete("/funnel-analysis/session")
+def clear_funnel_session(x_funnel_session_id: Optional[str] = Header(default=None)):
+    """Clear funnel analysis session"""
+    if x_funnel_session_id and x_funnel_session_id in FUNNEL_SESSION_STORE:
+        del FUNNEL_SESSION_STORE[x_funnel_session_id]
+    return {"ok": True}
 
 
 @app.get("/health")
