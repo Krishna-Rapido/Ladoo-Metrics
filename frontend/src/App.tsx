@@ -1,4 +1,4 @@
-import { useState, Component } from 'react';
+import { useState, Component, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import './App.css';
 import { Upload } from './components/Upload';
@@ -14,7 +14,7 @@ import { FunnelAnalysis } from './components/FunnelAnalysis';
 import { CaptainDashboards } from './components/CaptainDashboards';
 import { ReportBuilder } from './components/ReportBuilder';
 import { AddTextToReport } from './components/AddTextToReport';
-import { fetchFunnel, fetchCohortAggregation, fetchCaptainLevelAggregation } from './lib/api';
+import { fetchFunnel, fetchCohortAggregation, fetchCaptainLevelAggregation, getMeta } from './lib/api';
 import type { FunnelResponse, UploadResponse, CohortAggregationResponse, CaptainLevelResponse } from './lib/api';
 
 // Simple Error Boundary Component
@@ -69,6 +69,8 @@ function App() {
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>([]);
   const [additionalMetrics, setAdditionalMetrics] = useState<string[]>([]);
   const [aggByMetric, setAggByMetric] = useState<Record<string, 'sum' | 'mean' | 'count'>>({});
+  const [seriesBreakout, setSeriesBreakout] = useState<string>('');
+  const [categoricalColumns, setCategoricalColumns] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [visibleSummaries, setVisibleSummaries] = useState<Set<string>>(new Set());
@@ -82,6 +84,19 @@ function App() {
   const handleAggChange = (metric: string, agg: 'sum' | 'mean' | 'count') => {
     setAggByMetric((prev) => ({ ...prev, [metric]: agg }));
   };
+
+  // Load categorical columns from meta when data is uploaded
+  useEffect(() => {
+    if (uploaded) {
+      getMeta().then((meta) => {
+        setCategoricalColumns(meta.categorical_columns || []);
+      }).catch(() => {
+        setCategoricalColumns([]);
+      });
+    } else {
+      setCategoricalColumns([]);
+    }
+  }, [uploaded]);
 
   // Load cohort aggregation data
   const loadCohortAggregation = async () => {
@@ -199,6 +214,7 @@ function App() {
           test_confirmed: filters.test_confirmed,
           control_confirmed: filters.control_confirmed,
           agg: additionalMetrics.includes(m) ? (aggByMetric[m] ?? 'sum') : undefined,
+          series_breakout: seriesBreakout || undefined,
         });
         next[m] = res;
       }
@@ -322,6 +338,9 @@ function App() {
                 onAdditionalMetricsChange={setAdditionalMetrics}
                 aggByMetric={aggByMetric}
                 onAggChange={handleAggChange}
+                categoricalColumns={categoricalColumns}
+                seriesBreakout={seriesBreakout}
+                onSeriesBreakoutChange={setSeriesBreakout}
               />
             </div>
 
@@ -380,8 +399,8 @@ function App() {
                   </div>
                   <div className="chart-container">
                     <Charts
-                      preData={funnel.pre_series.map(p => ({ date: p.date, cohort: p.cohort, value: p.value }))}
-                      postData={funnel.post_series.map(p => ({ date: p.date, cohort: p.cohort, value: p.value }))}
+                      preData={funnel.pre_series.map(p => ({ date: p.date, cohort: p.cohort, value: p.value, series_value: p.series_value }))}
+                      postData={funnel.post_series.map(p => ({ date: p.date, cohort: p.cohort, value: p.value, series_value: p.series_value }))}
                       testCohort={testLabel}
                       controlCohort={controlLabel}
                       legendSuffix={metric.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}

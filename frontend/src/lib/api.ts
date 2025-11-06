@@ -42,7 +42,7 @@ export type MetricsResponse = {
     summaries: SummaryStats[];
 };
 
-export type MetaResponse = { cohorts: string[]; date_min: string; date_max: string; metrics: string[] };
+export type MetaResponse = { cohorts: string[]; date_min: string; date_max: string; metrics: string[]; categorical_columns?: string[] };
 
 export type FunnelRequest = {
     pre_period?: DateRange;
@@ -54,9 +54,10 @@ export type FunnelRequest = {
     test_confirmed?: string;
     control_confirmed?: string;
     agg?: 'sum' | 'mean' | 'count';
+    series_breakout?: string; // categorical column to group by for series breakout
 };
 
-export type FunnelPoint = { date: string; cohort: string; metric: string; value: number };
+export type FunnelPoint = { date: string; cohort: string; metric: string; value: number; series_value?: string | null };
 export type FunnelResponse = {
     metrics_available: string[];
     pre_series: FunnelPoint[];

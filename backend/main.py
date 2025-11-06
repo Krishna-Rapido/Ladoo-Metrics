@@ -60,6 +60,7 @@ from transformations import (
     subset_by_cohorts,
     get_cohort,
     compute_cohort_funnel_timeseries,
+    compute_metric_timeseries_by_cohort,
 )
 
 
@@ -151,7 +152,27 @@ def get_meta(df: pd.DataFrame = Depends(get_session_df)):
     date_min = df["date"].min().strftime("%Y-%m-%d")
     date_max = df["date"].max().strftime("%Y-%m-%d")
     metrics = [c for c in df.columns if c not in {"cohort", "date", "time"}]
-    return {"cohorts": cohorts, "date_min": date_min, "date_max": date_max, "metrics": metrics}
+    
+    # Identify categorical columns (non-numeric columns excluding cohort and date)
+    categorical_columns = []
+    for col in df.columns:
+        if col not in {"cohort", "date", "time"}:
+            # Check if column is categorical (object type or has limited unique values)
+            if df[col].dtype == 'object' or df[col].dtype.name == 'category':
+                categorical_columns.append(col)
+            elif df[col].dtype in ['int64', 'int32', 'float64', 'float32']:
+                # If numeric but has limited unique values (less than 20), consider it categorical
+                unique_count = df[col].nunique()
+                if unique_count < 20 and unique_count < len(df) * 0.1:
+                    categorical_columns.append(col)
+    
+    return {
+        "cohorts": cohorts,
+        "date_min": date_min,
+        "date_max": date_max,
+        "metrics": metrics,
+        "categorical_columns": sorted(categorical_columns)
+    }
 
 
 @app.post("/metrics", response_model=MetricsResponse, responses={400: {"model": ErrorResponse}})
@@ -263,16 +284,85 @@ def funnel(payload: FunnelRequest, df: pd.DataFrame = Depends(get_session_df)) -
                 raise HTTPException(status_code=400, detail=f"Confirmation column '{test_confirmed}' not found")
             working = working[~working[test_confirmed].isna()]
 
+    # Handle series breakout if specified
+    series_breakout_col = payload.series_breakout
+    if series_breakout_col:
+        if series_breakout_col not in working.columns:
+            raise HTTPException(status_code=400, detail=f"Series breakout column '{series_breakout_col}' not found in dataset. Available columns: {list(working.columns)[:20]}")
+        # Check if column has any non-null values
+        if working[series_breakout_col].isna().all():
+            raise HTTPException(status_code=400, detail=f"Series breakout column '{series_breakout_col}' has no valid (non-null) values")
+        # Store the series breakout column before computing timeseries
+        series_values = working[series_breakout_col].astype(str).unique().tolist()
+    else:
+        series_values = None
+
     ts = compute_cohort_funnel_timeseries(working)
     metrics_available = [c for c in ts.columns if c not in {"date", "cohort"}]
     if not metrics_available:
         raise HTTPException(status_code=400, detail="No metrics available in dataset")
 
-    # If requested metric not in precomputed set, try computing it via aggregation
+    # Determine the metric to use
     metric = payload.metric or metrics_available[0]
-    if payload.metric and payload.metric not in metrics_available:
-        from transformations import compute_metric_timeseries_by_cohort
-        agg = payload.agg or "sum"
+    agg = payload.agg or "sum"
+    
+    # If series breakout is specified, we need to recompute the metric with groupby
+    # This is because precomputed metrics don't include the series breakout column
+    if series_breakout_col:
+        try:
+            # Check if metric exists in working dataframe as a column
+            if metric in working.columns:
+                # Metric is a direct column, compute with groupby
+                ts_with_series = compute_metric_timeseries_by_cohort(working, metric, agg, group_by=["cohort", series_breakout_col])
+            else:
+                # Metric is a precomputed one (like ao_days, online_days, etc.)
+                # We need to compute it per series_breakout group from the original working data
+                # by calling compute_cohort_funnel_timeseries on each group
+                
+                # Ensure date column exists in working
+                working_for_series = working.copy()
+                if "date" not in working_for_series.columns:
+                    if "time" in working_for_series.columns:
+                        working_for_series["date"] = pd.to_datetime(working_for_series["time"].astype(str), format="%Y%m%d", errors="coerce")
+                    else:
+                        raise HTTPException(status_code=400, detail="Cannot compute series breakout: missing 'date' or 'time' column")
+                
+                # Group working by series_breakout and compute timeseries for each group
+                frames = []
+                series_vals = working_for_series[series_breakout_col].dropna().unique()
+                if len(series_vals) == 0:
+                    raise HTTPException(status_code=400, detail=f"Series breakout column '{series_breakout_col}' has no valid values")
+                
+                for series_val in series_vals:
+                    group_df = working_for_series[working_for_series[series_breakout_col] == series_val].copy()
+                    if len(group_df) == 0:
+                        continue
+                    try:
+                        group_ts = compute_cohort_funnel_timeseries(group_df)
+                        if metric in group_ts.columns:
+                            group_ts[series_breakout_col] = str(series_val)
+                            frames.append(group_ts[["date", "cohort", metric, series_breakout_col]])
+                    except Exception as group_error:
+                        # Log but continue with other groups
+                        print(f"Warning: Failed to compute timeseries for series value '{series_val}': {group_error}")
+                        continue
+                
+                if frames:
+                    ts_with_series = pd.concat(frames, ignore_index=True)
+                else:
+                    raise HTTPException(status_code=400, detail=f"Cannot compute series breakout for metric '{metric}': metric not found in any grouped data")
+            
+            # Replace ts with ts_with_series (which includes series_breakout)
+            ts = ts_with_series.copy()
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=400, detail=f"Failed to compute series breakout: {str(e)}")
+    elif payload.metric and payload.metric not in metrics_available:
+        # No series breakout, but metric needs to be computed
         try:
             extra = compute_metric_timeseries_by_cohort(working, payload.metric, agg)
         except Exception as e:
@@ -297,10 +387,17 @@ def funnel(payload: FunnelRequest, df: pd.DataFrame = Depends(get_session_df)) -
         post_df = filter_by_date_range(ts, payload.post_period.start_date, payload.post_period.end_date, date_col="date")
 
     def to_points(d: pd.DataFrame) -> list[FunnelPoint]:
-        return [
-            FunnelPoint(date=pd.to_datetime(r["date"]).strftime("%Y-%m-%d"), cohort=r["cohort"], metric=metric, value=float(r.get(metric, 0.0)))
-            for r in d.to_dict("records")
-        ]
+        points = []
+        for r in d.to_dict("records"):
+            series_val = str(r.get(series_breakout_col, "")) if series_breakout_col else None
+            points.append(FunnelPoint(
+                date=pd.to_datetime(r["date"]).strftime("%Y-%m-%d"),
+                cohort=r["cohort"],
+                metric=metric,
+                value=float(r.get(metric, 0.0)),
+                series_value=series_val
+            ))
+        return points
 
     def summarize(d: pd.DataFrame) -> dict[str, float]:
         if d.empty:

@@ -69,6 +69,7 @@ class FunnelRequest(BaseModel):
     test_confirmed: Optional[str] = None  # per-test confirmation filter
     control_confirmed: Optional[str] = None  # per-control confirmation filter
     agg: Optional[Literal["sum", "mean", "count"]] = None  # optional aggregation for arbitrary metric
+    series_breakout: Optional[str] = None  # categorical column to group by for series breakout
 
 
 class FunnelPoint(BaseModel):
@@ -76,6 +77,7 @@ class FunnelPoint(BaseModel):
     cohort: str
     metric: str
     value: float
+    series_value: Optional[str] = None  # value of the series breakout column
 
 
 class FunnelResponse(BaseModel):

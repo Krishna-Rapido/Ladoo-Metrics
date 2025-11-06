@@ -32,6 +32,9 @@ export function MetricBar({
     onAdditionalMetricsChange,
     aggByMetric = {},
     onAggChange,
+    categoricalColumns = [],
+    seriesBreakout = '',
+    onSeriesBreakoutChange,
 }: {
     selected: string[];
     onChange: (next: string[]) => void;
@@ -40,6 +43,9 @@ export function MetricBar({
     onAdditionalMetricsChange?: (metrics: string[]) => void;
     aggByMetric?: Record<string, 'sum' | 'mean' | 'count'>;
     onAggChange?: (metric: string, agg: 'sum' | 'mean' | 'count') => void;
+    categoricalColumns?: string[];
+    seriesBreakout?: string;
+    onSeriesBreakoutChange?: (col: string) => void;
 }) {
     const [current, setCurrent] = useState<string>(BASE_METRICS[0]);
     const options = useMemo(() => ({
@@ -191,6 +197,42 @@ export function MetricBar({
                             </span>
                         ))}
                     </div>
+                </div>
+            )}
+
+            {/* Series Breakout Selector */}
+            {categoricalColumns.length > 0 && (
+                <div>
+                    <label className="input-label">Series Breakout (Group By)</label>
+                    <div className="flex items-center gap-3">
+                        <select
+                            className="glass-select"
+                            style={{ minWidth: '250px' }}
+                            value={seriesBreakout}
+                            onChange={(e) => onSeriesBreakoutChange && onSeriesBreakoutChange(e.target.value)}
+                        >
+                            <option value="">None (No Group By)</option>
+                            {categoricalColumns.map((col) => (
+                                <option key={col} value={col}>
+                                    {col.replace(/_/g, ' ')}
+                                </option>
+                            ))}
+                        </select>
+                        {seriesBreakout && (
+                            <button
+                                className="btn btn-secondary"
+                                onClick={() => onSeriesBreakoutChange && onSeriesBreakoutChange('')}
+                                title="Clear series breakout"
+                            >
+                                Clear
+                            </button>
+                        )}
+                    </div>
+                    {seriesBreakout && (
+                        <p className="mt-2 text-sm text-purple-600">
+                            📊 Chart will show separate lines for each unique value in "{seriesBreakout.replace(/_/g, ' ')}"
+                        </p>
+                    )}
                 </div>
             )}
 

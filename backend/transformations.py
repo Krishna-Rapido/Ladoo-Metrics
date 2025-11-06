@@ -294,11 +294,13 @@ def compute_metric_timeseries_by_cohort(
     base: pd.DataFrame,
     value_col: str,
     agg: Literal["sum", "mean", "count"] = "sum",
+    group_by: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """Compute per-day, per-cohort timeseries for an arbitrary column with an aggregation.
 
     Ensures a `date` column exists (derived from `time` if needed) and groups
-    by ["date", "cohort"]. Returns a DataFrame with columns ["date", "cohort", value_col].
+    by ["date", "cohort"] (and optionally additional columns in group_by).
+    Returns a DataFrame with columns ["date", "cohort", value_col, ...group_by columns].
     """
     df = base.copy()
     if "cohort" not in df.columns:
@@ -319,6 +321,16 @@ def compute_metric_timeseries_by_cohort(
         df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
 
     group_cols = ["date", "cohort"]
+    if group_by:
+        # Add additional group_by columns, ensuring they exist
+        for col in group_by:
+            if col in group_cols:
+                continue  # Already in group_cols
+            if col not in df.columns:
+                raise ValueError(f"Group by column '{col}' not found in data. Available columns: {list(df.columns)[:30]}")
+            if col not in group_cols:
+                group_cols.append(col)
+    
     if value_col not in df.columns:
         raise ValueError(f"Column '{value_col}' not found in data")
 
@@ -339,7 +351,9 @@ def compute_metric_timeseries_by_cohort(
 
     # Ensure numeric output
     grouped[value_col] = pd.to_numeric(grouped[value_col], errors="coerce").fillna(0.0)
-    grouped = grouped.sort_values(["cohort", "date"]).reset_index(drop=True)
+    sort_cols = ["cohort"] + (group_by or []) + ["date"]
+    sort_cols = [c for c in sort_cols if c in grouped.columns]
+    grouped = grouped.sort_values(sort_cols).reset_index(drop=True)
     return grouped
 
 
