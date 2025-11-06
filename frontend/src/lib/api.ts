@@ -587,3 +587,135 @@ export async function getA2PhhSummary(req: A2PhhSummaryRequest): Promise<A2PhhSu
     }
     return await res.json();
 }
+
+// ============================================================================
+// REPORT BUILDER API
+// ============================================================================
+
+export type ReportItem = {
+    id: string;
+    type: 'chart' | 'table' | 'text';
+    title: string;
+    content: Record<string, any>;
+    comment: string;
+    timestamp: string;
+};
+
+export type ReportAddRequest = {
+    type: string;
+    title: string;
+    content: Record<string, any>;
+    comment?: string;
+};
+
+export async function createReport(): Promise<{ report_id: string }> {
+    const res = await fetch(`${BASE_URL}/report/create`, {
+        method: 'POST',
+    });
+    if (!res.ok) throw new Error('Failed to create report');
+    return await res.json();
+}
+
+export async function addReportItem(
+    request: ReportAddRequest,
+    reportId: string
+): Promise<{ report_id: string; item_id: string; num_items: number }> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    headers.set('x-report-id', reportId);
+
+    const res = await fetch(`${BASE_URL}/report/add-item`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+    });
+    if (!res.ok) throw new Error('Failed to add report item');
+    return await res.json();
+}
+
+export async function updateReportComment(
+    itemId: string,
+    comment: string,
+    reportId: string
+): Promise<{ ok: boolean }> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    headers.set('x-report-id', reportId);
+
+    const res = await fetch(`${BASE_URL}/report/update-comment`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ item_id: itemId, comment }),
+    });
+    if (!res.ok) throw new Error('Failed to update comment');
+    return await res.json();
+}
+
+export async function updateReportTitle(
+    itemId: string,
+    title: string,
+    reportId: string
+): Promise<{ ok: boolean }> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    headers.set('x-report-id', reportId);
+
+    const res = await fetch(`${BASE_URL}/report/update-title`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ item_id: itemId, title }),
+    });
+    if (!res.ok) throw new Error('Failed to update title');
+    return await res.json();
+}
+
+export async function deleteReportItem(
+    itemId: string,
+    reportId: string
+): Promise<{ ok: boolean; num_items: number }> {
+    const headers = new Headers();
+    headers.set('x-report-id', reportId);
+
+    const res = await fetch(`${BASE_URL}/report/item/${itemId}`, {
+        method: 'DELETE',
+        headers,
+    });
+    if (!res.ok) throw new Error('Failed to delete report item');
+    return await res.json();
+}
+
+export async function listReportItems(reportId: string): Promise<{ report_id: string; items: ReportItem[] }> {
+    const headers = new Headers();
+    headers.set('x-report-id', reportId);
+
+    const res = await fetch(`${BASE_URL}/report/list`, {
+        method: 'GET',
+        headers,
+    });
+    if (!res.ok) throw new Error('Failed to list report items');
+    return await res.json();
+}
+
+export async function exportReport(reportId: string): Promise<{ report_html: string }> {
+    const headers = new Headers();
+    headers.set('x-report-id', reportId);
+
+    const res = await fetch(`${BASE_URL}/report/export`, {
+        method: 'GET',
+        headers,
+    });
+    if (!res.ok) throw new Error('Failed to export report');
+    return await res.json();
+}
+
+export async function clearReport(reportId: string): Promise<{ ok: boolean }> {
+    const headers = new Headers();
+    headers.set('x-report-id', reportId);
+
+    const res = await fetch(`${BASE_URL}/report/clear`, {
+        method: 'DELETE',
+        headers,
+    });
+    if (!res.ok) throw new Error('Failed to clear report');
+    return await res.json();
+}

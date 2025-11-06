@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { motion } from 'framer-motion';
 import {
     LineChart,
@@ -16,6 +16,8 @@ import {
     Legend,
     ResponsiveContainer,
 } from 'recharts';
+import { useReport } from '../contexts/ReportContext';
+import { toPng } from 'html-to-image';
 
 type ChartType = 'line' | 'bar' | 'area' | 'scatter';
 
@@ -34,6 +36,51 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
     const [xAxis, setXAxis] = useState<string>('');
     const [yAxes, setYAxes] = useState<string[]>([]);
     const [series, setSeries] = useState<string>('');
+    const { addItem } = useReport();
+    const [showSuccess, setShowSuccess] = useState(false);
+    const chartRef = useRef<HTMLDivElement>(null);
+
+    // Add chart to report
+    const handleAddToReport = async () => {
+        if (!xAxis || yAxes.length === 0) {
+            alert('Please configure X-axis and at least one Y-axis metric before adding to report');
+            return;
+        }
+
+        if (!chartRef.current) {
+            alert('Chart not ready. Please wait a moment and try again.');
+            return;
+        }
+
+        try {
+            // Capture the chart as an image
+            const dataUrl = await toPng(chartRef.current, {
+                backgroundColor: '#ffffff',
+                quality: 1.0,
+                pixelRatio: 2,
+            });
+
+            await addItem({
+                type: 'chart',
+                title: title || 'Chart Visualization',
+                content: {
+                    chartType,
+                    xAxis,
+                    yAxes,
+                    seriesBy: series || null,
+                    data: chartData,
+                    imageDataUrl: dataUrl,
+                },
+                comment: '',
+            });
+
+            setShowSuccess(true);
+            setTimeout(() => setShowSuccess(false), 2000);
+        } catch (error) {
+            console.error('Failed to add chart to report:', error);
+            alert('Failed to capture chart image. Please try again.');
+        }
+    };
 
     // Export full dataset as CSV
     const handleExportCsv = () => {
@@ -118,7 +165,7 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
         }
 
         // Group by series - each metric × series combination becomes a line
-        const grouped: Record<string, Record<string, number>> = {};
+        const grouped: Record<string, Record<string, any>> = {};
 
         data.forEach(row => {
             const xValue = String(row[xAxis]);
@@ -180,7 +227,7 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
         const xAxisProps = {
             dataKey: xAxis,
             angle: -45,
-            textAnchor: 'end',
+            textAnchor: 'end' as const,
             height: 100,
             tick: { fontSize: 12 },
         };
@@ -298,13 +345,33 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
                     <h3 className="card-title">{title}</h3>
                     <p className="card-subtitle">Build custom visualizations from your data</p>
                 </div>
-                <button
-                    onClick={handleExportCsv}
-                    className="btn btn-secondary"
-                >
-                    <span>📥</span>
-                    <span>Export Full Data (CSV)</span>
-                </button>
+                <div className="flex gap-2">
+                    {showSuccess && (
+                        <motion.div
+                            initial={{ scale: 0 }}
+                            animate={{ scale: 1 }}
+                            className="px-4 py-2 bg-green-100 text-green-700 rounded-lg font-medium text-sm flex items-center gap-2"
+                        >
+                            <span>✓</span>
+                            <span>Added to Report!</span>
+                        </motion.div>
+                    )}
+                    <button
+                        onClick={handleAddToReport}
+                        className="btn btn-success"
+                        disabled={!xAxis || yAxes.length === 0}
+                    >
+                        <span>📝</span>
+                        <span>Add to Report</span>
+                    </button>
+                    <button
+                        onClick={handleExportCsv}
+                        className="btn btn-secondary"
+                    >
+                        <span>📥</span>
+                        <span>Export CSV</span>
+                    </button>
+                </div>
             </div>
 
             <div className="mt-6 space-y-6">
@@ -446,7 +513,7 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
                 </div>
 
                 {/* Chart Display */}
-                <div className="bg-white rounded-lg border border-slate-200 p-6">
+                <div ref={chartRef} className="bg-white rounded-lg border border-slate-200 p-6">
                     {renderChart()}
                 </div>
 

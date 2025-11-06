@@ -1,9 +1,12 @@
-import { useMemo, useCallback } from 'react';
+import { useMemo, useCallback, useState, useRef } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
 import type { ColDef, GridReadyEvent } from 'ag-grid-community';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
+import { useReport } from '../contexts/ReportContext';
+import { motion } from 'framer-motion';
+import { toPng } from 'html-to-image';
 
 // Register all Community modules
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -16,6 +19,39 @@ interface FunnelDataGridProps {
 }
 
 export function FunnelDataGrid({ data, title, description }: FunnelDataGridProps) {
+    const { addItem } = useReport();
+    const [showSuccess, setShowSuccess] = useState(false);
+    const gridRef = useRef<HTMLDivElement>(null);
+
+    const handleAddToReport = async () => {
+        if (!gridRef.current) return;
+
+        try {
+            // Capture the table as an image
+            const dataUrl = await toPng(gridRef.current, {
+                backgroundColor: '#ffffff',
+                quality: 1.0,
+                pixelRatio: 2,
+            });
+
+            await addItem({
+                type: 'table',
+                title: title || 'Data Table',
+                content: {
+                    data,
+                    imageDataUrl: dataUrl,
+                },
+                comment: '',
+            });
+
+            setShowSuccess(true);
+            setTimeout(() => setShowSuccess(false), 2000);
+        } catch (error) {
+            console.error('Failed to add table to report:', error);
+            alert('Failed to capture table image. Please try again.');
+        }
+    };
+
     const columnDefs: ColDef[] = useMemo(() => {
         if (!data || data.length === 0) return [];
 
@@ -92,14 +128,33 @@ export function FunnelDataGrid({ data, title, description }: FunnelDataGridProps
                             <p className="text-sm text-slate-600 mt-1">{description}</p>
                         )}
                     </div>
-                    <div className="text-xs text-slate-500 bg-slate-100 px-3 py-1.5 rounded-full">
-                        {data.length.toLocaleString()} preview rows × {columnDefs.length} columns
+                    <div className="flex items-center gap-3">
+                        {showSuccess && (
+                            <motion.div
+                                initial={{ scale: 0 }}
+                                animate={{ scale: 1 }}
+                                className="px-3 py-1.5 bg-green-100 text-green-700 rounded-lg font-medium text-xs flex items-center gap-1"
+                            >
+                                <span>✓</span>
+                                <span>Added!</span>
+                            </motion.div>
+                        )}
+                        <button
+                            onClick={handleAddToReport}
+                            className="px-4 py-2 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-lg text-sm font-semibold hover:shadow-lg transition-all"
+                        >
+                            <span className="mr-1">📝</span>
+                            Add to Report
+                        </button>
+                        <div className="text-xs text-slate-500 bg-slate-100 px-3 py-1.5 rounded-full">
+                            {data.length.toLocaleString()} rows × {columnDefs.length} columns
+                        </div>
                     </div>
                 </div>
             )}
 
             {/* AG Grid */}
-            <div className="ag-theme-alpine rounded-lg overflow-hidden border border-slate-200 shadow-sm" style={{ height: '600px', width: '100%' }}>
+            <div ref={gridRef} className="ag-theme-alpine rounded-lg overflow-hidden border border-slate-200 shadow-sm" style={{ height: '600px', width: '100%' }}>
                 <AgGridReact
                     rowData={data}
                     columnDefs={columnDefs}

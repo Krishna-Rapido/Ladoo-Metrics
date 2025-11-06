@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import io
+import os
 import secrets
 from typing import Dict, Optional
 
 import pandas as pd
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, FileResponse
 
 import schemas
 from schemas import (
@@ -43,6 +44,13 @@ from schemas import (
     R2APercentageResponse,
     A2PhhSummaryRequest,
     A2PhhSummaryResponse,
+    ReportItem,
+    ReportAddRequest,
+    ReportAddResponse,
+    ReportUpdateCommentRequest,
+    ReportUpdateTitleRequest,
+    ReportListResponse,
+    ReportExportResponse,
 )
 from transformations import (
     aggregate_time_series,
@@ -62,6 +70,9 @@ SESSION_STORE: Dict[str, pd.DataFrame] = {}
 
 # Funnel analysis session store - separate from main session store
 FUNNEL_SESSION_STORE: Dict[str, pd.DataFrame] = {}
+
+# Report builder session store - maps report_id to list of report items
+REPORT_STORE: Dict[str, list[dict]] = {}
 
 app.add_middleware(
     CORSMiddleware,
@@ -983,6 +994,684 @@ def clear_funnel_session(x_funnel_session_id: Optional[str] = Header(default=Non
     if x_funnel_session_id and x_funnel_session_id in FUNNEL_SESSION_STORE:
         del FUNNEL_SESSION_STORE[x_funnel_session_id]
     return {"ok": True}
+
+
+# ============================================================================
+# REPORT BUILDER ENDPOINTS
+# ============================================================================
+
+@app.post("/report/create")
+def create_report() -> dict:
+    """Create a new report session"""
+    report_id = secrets.token_hex(16)
+    REPORT_STORE[report_id] = []
+    return {"report_id": report_id}
+
+
+@app.post("/report/add-item", response_model=ReportAddResponse)
+def add_report_item(
+    payload: ReportAddRequest,
+    x_report_id: Optional[str] = Header(default=None, alias="x-report-id")
+) -> ReportAddResponse:
+    """Add an item (chart, table, or text) to the report"""
+    from datetime import datetime
+    
+    print(f"DEBUG: add_report_item called with x_report_id={x_report_id}")
+    print(f"DEBUG: Payload type={payload.type}, title={payload.title}")
+    print(f"DEBUG: REPORT_STORE keys before: {list(REPORT_STORE.keys())}")
+    
+    # Create report if not exists
+    if not x_report_id or x_report_id not in REPORT_STORE:
+        if not x_report_id:
+            x_report_id = secrets.token_hex(16)
+        REPORT_STORE[x_report_id] = []
+        print(f"DEBUG: Created new report with ID: {x_report_id}")
+    
+    item_id = secrets.token_hex(8)
+    item = {
+        "id": item_id,
+        "type": payload.type,
+        "title": payload.title,
+        "content": payload.content,
+        "comment": payload.comment or "",
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    REPORT_STORE[x_report_id].append(item)
+    print(f"DEBUG: Added item to report {x_report_id}, total items: {len(REPORT_STORE[x_report_id])}")
+    print(f"DEBUG: REPORT_STORE keys after: {list(REPORT_STORE.keys())}")
+    
+    return ReportAddResponse(
+        report_id=x_report_id,
+        item_id=item_id,
+        num_items=len(REPORT_STORE[x_report_id])
+    )
+
+
+@app.put("/report/update-comment")
+def update_report_comment(
+    payload: ReportUpdateCommentRequest,
+    x_report_id: Optional[str] = Header(default=None, alias="x-report-id")
+):
+    """Update comment for a report item"""
+    if not x_report_id or x_report_id not in REPORT_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing report_id")
+    
+    items = REPORT_STORE[x_report_id]
+    for item in items:
+        if item["id"] == payload.item_id:
+            item["comment"] = payload.comment
+            return {"ok": True}
+    
+    raise HTTPException(status_code=404, detail="Item not found in report")
+
+
+@app.put("/report/update-title")
+def update_report_title(
+    payload: ReportUpdateTitleRequest,
+    x_report_id: Optional[str] = Header(default=None, alias="x-report-id")
+):
+    """Update title for a report item"""
+    if not x_report_id or x_report_id not in REPORT_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing report_id")
+    
+    items = REPORT_STORE[x_report_id]
+    for item in items:
+        if item["id"] == payload.item_id:
+            item["title"] = payload.title
+            return {"ok": True}
+    
+    raise HTTPException(status_code=404, detail="Item not found in report")
+
+
+@app.delete("/report/item/{item_id}")
+def delete_report_item(
+    item_id: str,
+    x_report_id: Optional[str] = Header(default=None, alias="x-report-id")
+):
+    """Delete an item from the report"""
+    if not x_report_id or x_report_id not in REPORT_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing report_id")
+    
+    items = REPORT_STORE[x_report_id]
+    REPORT_STORE[x_report_id] = [item for item in items if item["id"] != item_id]
+    
+    return {"ok": True, "num_items": len(REPORT_STORE[x_report_id])}
+
+
+@app.get("/report/list", response_model=ReportListResponse)
+def list_report_items(x_report_id: Optional[str] = Header(default=None, alias="x-report-id")) -> ReportListResponse:
+    """Get all items in the current report"""
+    print(f"DEBUG: list_report_items called with x_report_id={x_report_id}")
+    print(f"DEBUG: REPORT_STORE keys: {list(REPORT_STORE.keys())}")
+    
+    if not x_report_id:
+        print("DEBUG: No report ID provided, returning empty")
+        return ReportListResponse(report_id="", items=[])
+    
+    if x_report_id not in REPORT_STORE:
+        print(f"DEBUG: Report ID {x_report_id} not found in store, returning empty")
+        return ReportListResponse(report_id=x_report_id, items=[])
+    
+    items = [ReportItem(**item) for item in REPORT_STORE[x_report_id]]
+    print(f"DEBUG: Returning {len(items)} items for report {x_report_id}")
+    return ReportListResponse(report_id=x_report_id, items=items)
+
+
+@app.get("/report/export", response_model=ReportExportResponse)
+def export_report(x_report_id: Optional[str] = Header(default=None, alias="x-report-id")) -> ReportExportResponse:
+    """Export report as HTML document"""
+    if not x_report_id or x_report_id not in REPORT_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing report_id")
+    
+    items = REPORT_STORE[x_report_id]
+    
+    # Build HTML document
+    html_parts = [
+        """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Experiment Report</title>
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    max-width: 1200px;
+                    margin: 0 auto;
+                    padding: 40px 20px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                }
+                .container {
+                    background: white;
+                    padding: 40px;
+                    border-radius: 12px;
+                    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                }
+                h1 {
+                    color: #1e293b;
+                    font-size: 32px;
+                    margin-bottom: 10px;
+                    border-bottom: 3px solid #8b5cf6;
+                    padding-bottom: 10px;
+                }
+                .subtitle {
+                    color: #64748b;
+                    font-size: 14px;
+                    margin-bottom: 30px;
+                }
+                .report-item {
+                    margin: 30px 0;
+                    padding: 25px;
+                    border: 2px solid #e2e8f0;
+                    border-radius: 8px;
+                    background: #f8fafc;
+                }
+                .item-header {
+                    font-size: 20px;
+                    font-weight: 700;
+                    color: #334155;
+                    margin-bottom: 10px;
+                }
+                .item-type {
+                    display: inline-block;
+                    padding: 4px 12px;
+                    background: #8b5cf6;
+                    color: white;
+                    border-radius: 12px;
+                    font-size: 12px;
+                    font-weight: 600;
+                    margin-bottom: 12px;
+                }
+                .item-comment {
+                    margin-top: 15px;
+                    padding: 15px;
+                    background: white;
+                    border-left: 4px solid #8b5cf6;
+                    font-style: italic;
+                    color: #475569;
+                }
+                .item-timestamp {
+                    font-size: 12px;
+                    color: #94a3b8;
+                    margin-top: 8px;
+                }
+                table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 15px;
+                    font-size: 13px;
+                }
+                th {
+                    background: #8b5cf6;
+                    color: white;
+                    padding: 10px;
+                    text-align: left;
+                    font-weight: 600;
+                }
+                td {
+                    padding: 10px;
+                    border-bottom: 1px solid #e2e8f0;
+                }
+                tr:nth-child(even) {
+                    background: #f1f5f9;
+                }
+                .chart-config {
+                    background: #f1f5f9;
+                    padding: 15px;
+                    border-radius: 6px;
+                    margin-top: 15px;
+                    font-family: 'Courier New', monospace;
+                    font-size: 12px;
+                }
+                .page-break {
+                    page-break-after: always;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>📊 Experiment Report</h1>
+                <p class="subtitle">Generated on """ + pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S") + """</p>
+        """
+    ]
+    
+    # Add each report item
+    for idx, item in enumerate(items):
+        item_html = f"""
+            <div class="report-item">
+                <span class="item-type">{item['type'].upper()}</span>
+                <div class="item-header">{idx + 1}. {item['title']}</div>
+        """
+        
+        # Render content based on type
+        if item['type'] == 'table':
+            # Render table image if available, otherwise render table data
+            content = item['content']
+            if 'imageDataUrl' in content and content['imageDataUrl']:
+                # Display the actual table image
+                img_data = content['imageDataUrl']
+                item_html += f"<div style='margin-top:15px; text-align:center;'><img src='{img_data}' alt='{item['title']}' style='max-width:100%; height:auto; border:1px solid #e2e8f0; border-radius:8px;' /></div>"
+            elif 'data' in content and len(content['data']) > 0:
+                # Fallback to table data if no image
+                # Get columns from first row
+                columns = list(content['data'][0].keys())
+                item_html += "<table>"
+                item_html += "<thead><tr>"
+                for col in columns:
+                    item_html += f"<th>{col}</th>"
+                item_html += "</tr></thead><tbody>"
+                
+                # Add rows (limit to first 50 for readability)
+                for row in content['data'][:50]:
+                    item_html += "<tr>"
+                    for col in columns:
+                        val = row.get(col, '')
+                        # Format numbers
+                        if isinstance(val, (int, float)):
+                            val = f"{val:,.2f}" if isinstance(val, float) else f"{val:,}"
+                        item_html += f"<td>{val}</td>"
+                    item_html += "</tr>"
+                item_html += "</tbody></table>"
+                
+                if len(content['data']) > 50:
+                    item_html += f"<p style='margin-top:10px; color:#64748b; font-size:12px;'>Showing first 50 of {len(content['data'])} rows</p>"
+        
+        elif item['type'] == 'chart':
+            # Render chart image if available
+            content = item['content']
+            if 'imageDataUrl' in content and content['imageDataUrl']:
+                # Display the actual chart image
+                img_data = content['imageDataUrl']
+                item_html += f"<div style='margin-top:15px; text-align:center;'><img src='{img_data}' alt='{item['title']}' style='max-width:100%; height:auto; border:1px solid #e2e8f0; border-radius:8px;' /></div>"
+            else:
+                # Fallback to metadata if no image
+                item_html += "<div class='chart-config'>"
+                item_html += f"<strong>Chart Type:</strong> {content.get('chartType', 'N/A')}<br>"
+                item_html += f"<strong>X-Axis:</strong> {content.get('xAxis', 'N/A')}<br>"
+                item_html += f"<strong>Y-Axes:</strong> {', '.join(content.get('yAxes', []))}<br>"
+                if content.get('seriesBy'):
+                    item_html += f"<strong>Series Breakout:</strong> {content.get('seriesBy')}<br>"
+                item_html += f"<strong>Data Points:</strong> {len(content.get('data', []))}"
+                item_html += "</div>"
+        
+        elif item['type'] == 'text':
+            # Render text content
+            text_content = item['content'].get('text', '')
+            item_html += f"<div style='margin-top:15px; padding:15px; background:white; border-radius:6px;'>{text_content}</div>"
+        
+        # Add comment if present
+        if item['comment']:
+            item_html += f"<div class='item-comment'>💬 {item['comment']}</div>"
+        
+        # Add timestamp
+        item_html += f"<div class='item-timestamp'>Added: {item['timestamp']}</div>"
+        
+        item_html += "</div>"
+        
+        # Add page break after every 2 items for printing
+        if (idx + 1) % 2 == 0:
+            item_html += "<div class='page-break'></div>"
+        
+        html_parts.append(item_html)
+    
+    html_parts.append("""
+            </div>
+        </body>
+        </html>
+    """)
+    
+    return ReportExportResponse(report_html="".join(html_parts))
+
+
+@app.delete("/report/clear")
+def clear_report(x_report_id: Optional[str] = Header(default=None, alias="x-report-id")):
+    """Clear all items from the report"""
+    if x_report_id and x_report_id in REPORT_STORE:
+        REPORT_STORE[x_report_id] = []
+    return {"ok": True}
+
+
+@app.get("/report/export/pdf")
+def export_report_pdf(x_report_id: Optional[str] = Header(default=None, alias="x-report-id")):
+    """Export report as PDF"""
+    try:
+        from reportlab.lib.pagesizes import letter, A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
+        from reportlab.lib.enums import TA_LEFT
+        import base64
+        import tempfile
+        import os
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"PDF export library not available: {str(e)}")
+    
+    if not x_report_id or x_report_id not in REPORT_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing report_id")
+    
+    try:
+        items = REPORT_STORE[x_report_id]
+        temp_files = []  # Track temporary files for cleanup
+        
+        # Create temporary PDF file
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
+        
+        # Container for the 'Flowable' objects
+        story = []
+        
+        # Define styles
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=18,
+            textColor='black',
+            spaceAfter=12,
+        )
+        
+        # Add title
+        story.append(Paragraph("Experiment Report", title_style))
+        story.append(Spacer(1, 0.2*inch))
+        
+        # Add each item
+        for idx, item in enumerate(items):
+            # Item title
+            story.append(Paragraph(f"{idx + 1}. {item['title']}", styles['Heading2']))
+            story.append(Spacer(1, 0.1*inch))
+            
+            # Add image if present
+            if item['type'] in ['chart', 'table'] and 'imageDataUrl' in item.get('content', {}):
+                try:
+                    # Decode base64 image
+                    img_data = item['content']['imageDataUrl']
+                    if img_data.startswith('data:image'):
+                        img_data = img_data.split(',')[1]
+                    
+                    img_bytes = base64.b64decode(img_data)
+                    
+                    # Use PIL to open the image, then save to a temporary file that stays open
+                    from PIL import Image as PILImage
+                    pil_img = PILImage.open(io.BytesIO(img_bytes))
+                    
+                    # Save to temporary file that ReportLab can read
+                    img_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                    pil_img.save(img_file.name, format='PNG')
+                    img_file.close()
+                    
+                    # Add image to PDF - ReportLab will read the file
+                    img = RLImage(img_file.name, width=5*inch, height=3.75*inch)
+                    story.append(img)
+                    story.append(Spacer(1, 0.2*inch))
+                    
+                    # Clean up after PDF is built (will be done later)
+                    # Store file path for cleanup
+                    temp_files.append(img_file.name)
+                except Exception as e:
+                    print(f"Error adding image to PDF: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Add text content
+            if item['type'] == 'text' and 'text' in item.get('content', {}):
+                story.append(Paragraph(item['content']['text'], styles['Normal']))
+                story.append(Spacer(1, 0.1*inch))
+            
+            # Add comment if present
+            if item.get('comment'):
+                comment_style = ParagraphStyle(
+                    'Comment',
+                    parent=styles['Normal'],
+                    fontStyle='italic',
+                    textColor='#666666',
+                    leftIndent=20,
+                    backColor='#FFFACD',
+                )
+                story.append(Paragraph(f"Comment: {item['comment']}", comment_style))
+            
+            story.append(Spacer(1, 0.3*inch))
+        
+        # Build PDF
+        doc.build(story)
+        buffer.seek(0)
+        
+        # Clean up temporary image files
+        for temp_file in temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+            except Exception as e:
+                print(f"Error cleaning up temp file {temp_file}: {e}")
+        
+        return Response(
+            content=buffer.read(),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=experiment_report_{pd.Timestamp.now().strftime('%Y%m%d')}.pdf",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "x-report-id",
+            }
+        )
+    except Exception as e:
+        # Clean up temporary files on error
+        if 'temp_files' in locals():
+            for temp_file in temp_files:
+                try:
+                    if os.path.exists(temp_file):
+                        os.unlink(temp_file)
+                except:
+                    pass
+        
+        print(f"Error generating PDF: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
+
+
+@app.get("/report/export/png")
+def export_report_png(x_report_id: Optional[str] = Header(default=None, alias="x-report-id")):
+    """Export report as PNG (single page image)"""
+    from PIL import Image, ImageDraw, ImageFont
+    import base64
+    import tempfile
+    
+    if not x_report_id or x_report_id not in REPORT_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing report_id")
+    
+    items = REPORT_STORE[x_report_id]
+    
+    # Create a white background image
+    width, height = 2480, 3508  # A4 size at 300 DPI
+    img = Image.new('RGB', (width, height), 'white')
+    draw = ImageDraw.Draw(img)
+    
+    try:
+        # Try to use a nice font
+        try:
+            font_title = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 60)
+            font_text = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 40)
+        except:
+            font_title = ImageFont.load_default()
+            font_text = ImageFont.load_default()
+        
+        y_offset = 100
+        
+        # Add title
+        draw.text((100, y_offset), "Experiment Report", fill='black', font=font_title)
+        y_offset += 150
+        
+        # Add each item
+        for idx, item in enumerate(items):
+            # Item title
+            draw.text((100, y_offset), f"{idx + 1}. {item['title']}", fill='black', font=font_text)
+            y_offset += 80
+            
+            # Add image if present
+            if item['type'] in ['chart', 'table'] and 'imageDataUrl' in item.get('content', {}):
+                try:
+                    img_data = item['content']['imageDataUrl']
+                    if img_data.startswith('data:image'):
+                        img_data = img_data.split(',')[1]
+                    
+                    item_img_bytes = base64.b64decode(img_data)
+                    item_img = Image.open(io.BytesIO(item_img_bytes))
+                    
+                    # Resize to fit
+                    max_width = width - 200
+                    max_height = 600
+                    # Use Resampling.LANCZOS if available, otherwise fall back to LANCZOS
+                    try:
+                        item_img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+                    except AttributeError:
+                        item_img.thumbnail((max_width, max_height), Image.LANCZOS)
+                    
+                    # Paste image
+                    img.paste(item_img, (100, y_offset))
+                    y_offset += item_img.height + 50
+                except Exception as e:
+                    print(f"Error adding image: {e}")
+            
+            # Add text
+            if item['type'] == 'text' and 'text' in item.get('content', {}):
+                text = item['content']['text'][:200]  # Limit text length
+                draw.text((100, y_offset), text, fill='black', font=font_text)
+                y_offset += 100
+            
+            # Add comment if present
+            if item.get('comment'):
+                comment_y = y_offset
+                # Calculate comment box height based on text length
+                comment_text = f"Comment: {item['comment'][:150]}"
+                # Estimate height: ~40 pixels per line, max 3 lines
+                lines = comment_text.split('\n')
+                num_lines = min(len(lines), 3)
+                comment_box_height = max(60, num_lines * 40)
+                
+                # Draw comment box background (yellow highlight)
+                draw.rectangle([90, comment_y - 5, width - 100, comment_y + comment_box_height], fill='#FFFACD', outline='#FFD700', width=2)
+                
+                # Draw comment text (wrap if needed)
+                try:
+                    # Try to use textbbox if available (Pillow >= 8.0)
+                    if hasattr(draw, 'textbbox'):
+                        bbox = draw.textbbox((100, comment_y), comment_text, font=font_text)
+                        actual_height = bbox[3] - bbox[1] + 20
+                        comment_box_height = max(comment_box_height, actual_height)
+                except:
+                    pass
+                
+                # Draw comment text
+                draw.text((100, comment_y), comment_text, fill='#333333', font=font_text)
+                y_offset += comment_box_height + 20
+            
+            y_offset += 100
+            
+            if y_offset > height - 200:
+                break  # Stop if we run out of space
+        
+    except Exception as e:
+        print(f"Error creating PNG: {e}")
+    
+    # Save to bytes
+    buffer = io.BytesIO()
+    img.save(buffer, format='PNG')
+    buffer.seek(0)
+    
+    return Response(
+        content=buffer.read(),
+        media_type="image/png",
+        headers={"Content-Disposition": f"attachment; filename=experiment_report_{pd.Timestamp.now().strftime('%Y%m%d')}.png"}
+    )
+
+
+@app.get("/report/export/word")
+def export_report_word(x_report_id: Optional[str] = Header(default=None, alias="x-report-id")):
+    """Export report as Word document"""
+    try:
+        from docx import Document
+        from docx.shared import Inches, Pt
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        import base64
+        import tempfile
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"Word export library not available: {str(e)}")
+    
+    if not x_report_id or x_report_id not in REPORT_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing report_id")
+    
+    try:
+        items = REPORT_STORE[x_report_id]
+        
+        # Create document
+        doc = Document()
+        
+        # Set default font
+        style = doc.styles['Normal']
+        font = style.font
+        font.name = 'Calibri'
+        font.size = Pt(11)
+        
+        # Add title
+        title = doc.add_heading('Experiment Report', 0)
+        title.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        
+        # Add each item
+        for idx, item in enumerate(items):
+            # Item title
+            doc.add_heading(f"{idx + 1}. {item['title']}", level=1)
+            
+            # Add image if present
+            if item['type'] in ['chart', 'table'] and 'imageDataUrl' in item.get('content', {}):
+                try:
+                    img_data = item['content']['imageDataUrl']
+                    if img_data.startswith('data:image'):
+                        img_data = img_data.split(',')[1]
+                    
+                    img_bytes = base64.b64decode(img_data)
+                    img_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                    img_file.write(img_bytes)
+                    img_file.close()
+                    
+                    # Add image to document
+                    doc.add_picture(img_file.name, width=Inches(6))
+                    
+                    # Clean up
+                    os.unlink(img_file.name)
+                except Exception as e:
+                    print(f"Error adding image to Word: {e}")
+            
+            # Add text content
+            if item['type'] == 'text' and 'text' in item.get('content', {}):
+                doc.add_paragraph(item['content']['text'])
+            
+            # Add comment if present
+            if item.get('comment'):
+                para = doc.add_paragraph(f"Comment: {item['comment']}")
+                para.italic = True
+            
+            # Add spacing
+            doc.add_paragraph()
+        
+        # Save to bytes
+        buffer = io.BytesIO()
+        doc.save(buffer)
+        buffer.seek(0)
+        
+        return Response(
+            content=buffer.read(),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "Content-Disposition": f"attachment; filename=experiment_report_{pd.Timestamp.now().strftime('%Y%m%d')}.docx",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "x-report-id",
+            }
+        )
+    except Exception as e:
+        print(f"Error generating Word document: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to generate Word document: {str(e)}")
 
 
 @app.get("/health")

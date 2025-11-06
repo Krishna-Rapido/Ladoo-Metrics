@@ -305,3 +305,44 @@ class A2PhhSummaryResponse(BaseModel):
     data: List[Dict[str, Any]]  # Full result set
 
 
+class ReportItem(BaseModel):
+    id: str
+    type: str  # 'chart', 'table', 'text'
+    title: str
+    content: Dict[str, Any]  # Chart config, table data, or text content
+    comment: str = ""
+    timestamp: str
+
+
+class ReportAddRequest(BaseModel):
+    type: str
+    title: str
+    content: Dict[str, Any]
+    comment: str = ""
+
+
+class ReportAddResponse(BaseModel):
+    report_id: str
+    item_id: str
+    num_items: int
+
+
+class ReportUpdateCommentRequest(BaseModel):
+    item_id: str
+    comment: str
+
+
+class ReportUpdateTitleRequest(BaseModel):
+    item_id: str
+    title: str
+
+
+class ReportListResponse(BaseModel):
+    report_id: str
+    items: List[ReportItem]
+
+
+class ReportExportResponse(BaseModel):
+    report_html: str
+
+

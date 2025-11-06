@@ -22,6 +22,7 @@ A comprehensive analytics platform for Rapido captain data analysis, featuring c
 - **Interactive Tables**: Sortable, filterable AG Grid tables with export capabilities
 - **Chart Builder**: Custom chart creation with multiple metrics and grouping options
 - **Data Export**: CSV/Excel export for all analysis results
+- **Report Builder**: 📝 Create professional experiment reports by saving charts, tables, and adding comments - export as HTML documents
 
 ## 📋 Prerequisites
 
@@ -66,6 +67,9 @@ cd backend
 
 # Install Python dependencies
 pip install -r requirements.txt
+
+# For PDF and Word export functionality, also install:
+pip install reportlab python-docx Pillow
 
 # Start the FastAPI server
 python main.py
@@ -181,6 +185,19 @@ const BASE_URL = 'http://localhost:8000';
 - Upload two datasets or select cohorts
 - Choose statistical test
 - View results with p-values and interpretations
+
+### 5. Building Experiment Reports
+
+**NEW**: Document your analysis journey with the Report Builder!
+
+1. **Click "📝 Add to Report"** on any chart or table
+2. **Add comments** to explain insights and observations
+3. **Add text notes** using the "✍️ Add Note to Report" button (bottom-left)
+4. **Open Report Builder** (bottom-right floating button)
+5. **Review and edit** all saved items and comments
+6. **Export as HTML** for sharing with stakeholders
+
+See [REPORT_BUILDER_GUIDE.md](./REPORT_BUILDER_GUIDE.md) for detailed documentation.
 
 ## 🎨 Features Highlights
 

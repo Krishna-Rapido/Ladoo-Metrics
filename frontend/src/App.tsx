@@ -12,6 +12,8 @@ import { SummaryStatsTable } from './components/SummaryStatsTable';
 import { CaptainLevelCharts } from './components/CaptainLevelCharts';
 import { FunnelAnalysis } from './components/FunnelAnalysis';
 import { CaptainDashboards } from './components/CaptainDashboards';
+import { ReportBuilder } from './components/ReportBuilder';
+import { AddTextToReport } from './components/AddTextToReport';
 import { fetchFunnel, fetchCohortAggregation, fetchCaptainLevelAggregation } from './lib/api';
 import type { FunnelResponse, UploadResponse, CohortAggregationResponse, CaptainLevelResponse } from './lib/api';
 
@@ -414,6 +416,12 @@ function App() {
           </>
         )}
       </div>
+
+      {/* Report Builder - Floating Panel */}
+      <ReportBuilder />
+
+      {/* Add Text Note to Report - Floating Button */}
+      <AddTextToReport />
     </div>
   );
 }
