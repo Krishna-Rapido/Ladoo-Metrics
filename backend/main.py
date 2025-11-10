@@ -77,7 +77,9 @@ REPORT_STORE: Dict[str, list[dict]] = {}
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://internal-tools-v1-1.onrender.com",  # Your frontend URL
+                    "http://localhost:5173", 
+                    "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
