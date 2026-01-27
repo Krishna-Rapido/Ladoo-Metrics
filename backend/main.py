@@ -51,6 +51,25 @@ from schemas import (
     ReportUpdateTitleRequest,
     ReportListResponse,
     ReportExportResponse,
+    InsightsRequest,
+    InsightsResponse,
+    InsightsTimeSeriesPoint,
+    InsightsSummaryRow,
+    FunctionTestRequest,
+    FunctionTestResponse,
+    FunctionExecuteRequest,
+    FunctionExecuteResponse,
+    FunctionPreviewRequest,
+    FunctionPreviewResponse,
+    FunctionJoinRequest,
+    FunctionJoinResponse,
+    FunctionTemplateResponse,
+)
+from function_executor import (
+    test_function,
+    execute_function,
+    join_with_csv,
+    FUNCTION_TEMPLATE,
 )
 from transformations import (
     aggregate_time_series,
@@ -175,6 +194,163 @@ def get_meta(df: pd.DataFrame = Depends(get_session_df)):
         "metrics": metrics,
         "categorical_columns": sorted(categorical_columns)
     }
+
+
+@app.get("/insights")
+def insights_help():
+    """Helpful response for browser hits; the actual Insights compute route is POST /insights."""
+    return {
+        "ok": True,
+        "message": "Use POST /insights with JSON body + x-session-id header (set by /upload).",
+        "example": {
+            "method": "POST",
+            "path": "/insights",
+            "headers": {"x-session-id": "<session_id>"},
+            "json": {
+                "test_cohort": "<test cohort>",
+                "control_cohort": "<control cohort>",
+                "pre_period": {"start_date": "2024-01-01", "end_date": "2024-02-14"},
+                "post_period": {"start_date": "2024-02-15", "end_date": "2024-03-31"},
+                "metrics": [{"column": "<metric column>", "agg_func": "sum"}],
+            },
+        },
+    }
+
+
+@app.post("/insights", response_model=InsightsResponse, responses={400: {"model": ErrorResponse}})
+def compute_insights(payload: InsightsRequest, df: pd.DataFrame = Depends(get_session_df)) -> InsightsResponse:
+    """
+    Multi-metric Insights endpoint.
+    - Returns daily timeseries for selected metrics (each with its own aggregation).
+    - Returns an executive summary for pre vs post across test/control + deltas.
+    """
+    if not payload.metrics:
+        raise HTTPException(status_code=400, detail="No metrics selected")
+
+    working = df.copy()
+
+    # Build a unified frame with explicit cohort_type
+    if payload.test_cohort and payload.control_cohort:
+        test_df = get_cohort(working, payload.test_cohort).copy()
+        control_df = get_cohort(working, payload.control_cohort).copy()
+        test_df["cohort_type"] = "test"
+        control_df["cohort_type"] = "control"
+        working = pd.concat([test_df, control_df], ignore_index=True)
+    else:
+        raise HTTPException(status_code=400, detail="Both test_cohort and control_cohort are required")
+
+    # Ensure date is datetime
+    working["date"] = pd.to_datetime(working["date"], errors="coerce")
+    if working["date"].isna().any():
+        raise HTTPException(status_code=400, detail="Invalid date values found in session data")
+
+    def _agg_series(s: pd.Series, agg: str) -> float:
+        if agg == "count":
+            return float(s.count())
+        if agg == "nunique":
+            return float(s.nunique(dropna=True))
+        s_num = pd.to_numeric(s, errors="coerce")
+        if agg == "sum":
+            return float(s_num.sum(skipna=True))
+        if agg == "mean":
+            return float(s_num.mean(skipna=True))
+        if agg == "median":
+            return float(s_num.median(skipna=True))
+        raise ValueError(f"Unsupported aggregation: {agg}")
+
+    # -------- Timeseries window (union of selected date ranges, if provided) --------
+    start_candidates = []
+    end_candidates = []
+    for period in [payload.pre_period, payload.post_period]:
+        if period and period.start_date:
+            start_candidates.append(pd.to_datetime(period.start_date))
+        if period and period.end_date:
+            end_candidates.append(pd.to_datetime(period.end_date))
+    ts_start = min(start_candidates) if start_candidates else None
+    ts_end = max(end_candidates) if end_candidates else None
+
+    ts_df = filter_by_date_range(working, ts_start, ts_end, date_col="date") if (ts_start or ts_end) else working
+    ts_df = ts_df.sort_values(["cohort_type", "date"]).reset_index(drop=True)
+
+    ts_frames = []
+    for spec in payload.metrics:
+        col = spec.column
+        agg = spec.agg_func
+        if col not in ts_df.columns:
+            continue
+
+        grouped = ts_df.groupby(["cohort_type", "date"], dropna=False)[col].apply(lambda x: _agg_series(x, agg))
+        out = grouped.reset_index().rename(columns={col: "value"})
+        out["metric"] = col
+        out["agg_func"] = agg
+        ts_frames.append(out)
+
+    if ts_frames:
+        ts_out = pd.concat(ts_frames, ignore_index=True)
+    else:
+        ts_out = pd.DataFrame(columns=["date", "cohort_type", "metric", "agg_func", "value"])
+
+    time_series = [
+        InsightsTimeSeriesPoint(
+            date=pd.to_datetime(r["date"]).strftime("%Y-%m-%d"),
+            cohort_type=str(r["cohort_type"]),
+            metric=str(r["metric"]),
+            agg_func=str(r["agg_func"]),
+            value=float(r["value"]) if pd.notna(r["value"]) else 0.0,
+        )
+        for r in ts_out.to_dict("records")
+    ]
+
+    # -------- Executive summary (pre vs post aggregates per cohort_type) --------
+    pre_df = working
+    post_df = working
+    if payload.pre_period:
+        pre_df = filter_by_date_range(pre_df, payload.pre_period.start_date, payload.pre_period.end_date, date_col="date")
+    if payload.post_period:
+        post_df = filter_by_date_range(post_df, payload.post_period.start_date, payload.post_period.end_date, date_col="date")
+
+    summary: list[InsightsSummaryRow] = []
+    for spec in payload.metrics:
+        col = spec.column
+        agg = spec.agg_func
+        if col not in working.columns:
+            continue
+
+        def _period_val(d: pd.DataFrame, cohort_type: str) -> float:
+            subset = d.loc[d["cohort_type"] == cohort_type, col]
+            return _agg_series(subset, agg) if not subset.empty else 0.0
+
+        control_pre = _period_val(pre_df, "control")
+        control_post = _period_val(post_df, "control")
+        test_pre = _period_val(pre_df, "test")
+        test_post = _period_val(post_df, "test")
+
+        control_delta = control_post - control_pre
+        test_delta = test_post - test_pre
+        diff_in_diff = test_delta - control_delta
+
+        control_delta_pct = (control_delta / control_pre * 100.0) if control_pre != 0 else None
+        test_delta_pct = (test_delta / test_pre * 100.0) if test_pre != 0 else None
+        diff_in_diff_pct = (diff_in_diff / control_pre * 100.0) if control_pre != 0 else None
+
+        summary.append(
+            InsightsSummaryRow(
+                metric=col,
+                agg_func=agg,
+                control_pre=control_pre,
+                control_post=control_post,
+                control_delta=control_delta,
+                control_delta_pct=control_delta_pct,
+                test_pre=test_pre,
+                test_post=test_post,
+                test_delta=test_delta,
+                test_delta_pct=test_delta_pct,
+                diff_in_diff=diff_in_diff,
+                diff_in_diff_pct=diff_in_diff_pct,
+            )
+        )
+
+    return InsightsResponse(time_series=time_series, summary=summary)
 
 
 @app.post("/metrics", response_model=MetricsResponse, responses={400: {"model": ErrorResponse}})
@@ -1773,6 +1949,379 @@ def export_report_word(x_report_id: Optional[str] = Header(default=None, alias="
         raise HTTPException(status_code=500, detail=f"Failed to generate Word document: {str(e)}")
 
 
+# =============================================================================
+# METRIC FUNCTIONS API
+# =============================================================================
+
+@app.post("/functions/test", response_model=FunctionTestResponse)
+async def test_metric_function(request: FunctionTestRequest) -> FunctionTestResponse:
+    """
+    Test a metric function in sandbox mode.
+    Returns a preview of the output (limited rows).
+    """
+    try:
+        result = test_function(
+            code=request.code,
+            parameters=request.parameters,
+            username=request.username,
+            limit_rows=100
+        )
+        return FunctionTestResponse(**result)
+    except Exception as e:
+        return FunctionTestResponse(
+            success=False,
+            error=f"Test failed: {str(e)}",
+            row_count=0
+        )
+
+
+@app.post("/functions/execute", response_model=FunctionExecuteResponse)
+async def execute_metric_function(request: FunctionExecuteRequest) -> FunctionExecuteResponse:
+    """
+    Execute a metric function and return full results.
+    """
+    try:
+        result_df, error, output_columns = execute_function(
+            code=request.code,
+            parameters=request.parameters,
+            username=request.username
+        )
+        
+        if error:
+            return FunctionExecuteResponse(
+                success=False,
+                error=error,
+                row_count=0
+            )
+        
+        return FunctionExecuteResponse(
+            success=True,
+            data=result_df.to_dict(orient='records'),
+            columns=list(result_df.columns),
+            output_columns=output_columns,
+            row_count=len(result_df)
+        )
+    except Exception as e:
+        return FunctionExecuteResponse(
+            success=False,
+            error=f"Execution failed: {str(e)}",
+            row_count=0
+        )
+
+
+@app.post("/functions/preview", response_model=FunctionPreviewResponse)
+async def preview_function_result(
+    request: FunctionPreviewRequest
+) -> FunctionPreviewResponse:
+    """
+    Execute a function and return a preview of results with statistics.
+    Does NOT join with CSV - just shows the function output.
+    """
+    try:
+        # Execute the function
+        result_df, error, output_columns = execute_function(
+            code=request.code,
+            parameters=request.parameters,
+            username=request.username
+        )
+        
+        if error:
+            return FunctionPreviewResponse(
+                success=False,
+                error=error,
+                row_count=0
+            )
+        
+        # Calculate descriptive stats for all columns
+        stats = {}
+        for col in result_df.columns:
+            col_data = result_df[col]
+            if pd.api.types.is_numeric_dtype(col_data):
+                stats[col] = {
+                    'type': 'numeric',
+                    'count': int(col_data.notna().sum()),
+                    'mean': round(float(col_data.mean()), 2) if col_data.notna().any() else None,
+                    'std': round(float(col_data.std()), 2) if col_data.notna().any() else None,
+                    'min': round(float(col_data.min()), 2) if col_data.notna().any() else None,
+                    'max': round(float(col_data.max()), 2) if col_data.notna().any() else None,
+                    'median': round(float(col_data.median()), 2) if col_data.notna().any() else None,
+                    'null_count': int(col_data.isna().sum()),
+                }
+            else:
+                stats[col] = {
+                    'type': 'categorical',
+                    'count': int(col_data.notna().sum()),
+                    'unique': int(col_data.nunique()),
+                    'null_count': int(col_data.isna().sum()),
+                    'top_values': {str(k): int(v) for k, v in col_data.value_counts().head(5).items()} if col_data.notna().any() else {},
+                }
+        
+        # Prepare preview data (first 100 rows)
+        preview_df = result_df.head(100).copy()
+        for col in preview_df.columns:
+            if pd.api.types.is_datetime64_any_dtype(preview_df[col]):
+                preview_df[col] = preview_df[col].dt.strftime('%Y-%m-%d')
+        preview_data = preview_df.fillna('').to_dict(orient='records')
+        
+        return FunctionPreviewResponse(
+            success=True,
+            preview=preview_data,
+            columns=list(result_df.columns),
+            row_count=len(result_df),
+            stats=stats
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return FunctionPreviewResponse(
+            success=False,
+            error=f"Preview failed: {str(e)}",
+            row_count=0
+        )
+
+
+@app.post("/functions/join", response_model=FunctionJoinResponse)
+async def join_function_with_csv(
+    request: FunctionJoinRequest,
+    x_session_id: Optional[str] = Header(default=None)
+) -> FunctionJoinResponse:
+    """
+    Execute a function and join its results with the uploaded CSV.
+    Updates the session DataFrame with the new columns.
+    Supports configurable join columns and join type.
+    """
+    if not x_session_id or x_session_id not in SESSION_STORE:
+        return FunctionJoinResponse(
+            success=False,
+            error="Invalid or missing session_id. Upload data first.",
+            row_count=0,
+            matched_rows=0
+        )
+    
+    try:
+        csv_df = SESSION_STORE[x_session_id].copy()
+        
+        # Execute the function
+        result_df, error, output_columns = execute_function(
+            code=request.code,
+            parameters=request.parameters,
+            username=request.username
+        )
+        
+        if error:
+            return FunctionJoinResponse(
+                success=False,
+                error=error,
+                row_count=0,
+                matched_rows=0
+            )
+        
+        # Remove any duplicate columns in CSV
+        csv_df = csv_df.loc[:, ~csv_df.columns.duplicated()]
+        result_df = result_df.loc[:, ~result_df.columns.duplicated()]
+        
+        # Prepare CSV for join - create yyyymmdd column if not exists
+        if 'yyyymmdd' not in csv_df.columns:
+            if 'time' in csv_df.columns:
+                # time is already in YYYYMMDD format (as int or string)
+                csv_df['yyyymmdd'] = csv_df['time'].astype(str)
+            elif 'date' in csv_df.columns:
+                # date is in datetime format, convert to YYYYMMDD string
+                if pd.api.types.is_datetime64_any_dtype(csv_df['date']):
+                    csv_df['yyyymmdd'] = csv_df['date'].dt.strftime('%Y%m%d')
+                else:
+                    # Try parsing as date
+                    csv_df['yyyymmdd'] = pd.to_datetime(csv_df['date']).dt.strftime('%Y%m%d')
+        
+        # Handle captain_id column name variations
+        if 'captain_id' not in csv_df.columns:
+            if 'captainId' in csv_df.columns:
+                csv_df['captain_id'] = csv_df['captainId'].astype(str)
+            elif 'captainid' in csv_df.columns:
+                csv_df['captain_id'] = csv_df['captainid'].astype(str)
+        
+        # Ensure captain_id is string in both dataframes
+        if 'captain_id' in csv_df.columns:
+            csv_df['captain_id'] = csv_df['captain_id'].astype(str)
+        if 'captain_id' in result_df.columns:
+            result_df['captain_id'] = result_df['captain_id'].astype(str)
+        
+        # Ensure yyyymmdd is string in both dataframes  
+        if 'yyyymmdd' in csv_df.columns:
+            csv_df['yyyymmdd'] = csv_df['yyyymmdd'].astype(str)
+        if 'yyyymmdd' in result_df.columns:
+            result_df['yyyymmdd'] = result_df['yyyymmdd'].astype(str)
+        
+        # Use join columns from request (default: ['captain_id', 'yyyymmdd'])
+        join_columns = request.join_columns
+        join_type = request.join_type if request.join_type in ['left', 'inner'] else 'left'
+        
+        # Check for duplicate join key combinations in function result
+        if result_df.duplicated(subset=join_columns).any():
+            dup_count = result_df.duplicated(subset=join_columns).sum()
+            return FunctionJoinResponse(
+                success=False,
+                error=f"Function result has {dup_count} duplicate {' + '.join(join_columns)} combinations. Each combination must be unique. Please fix the function to return unique rows.",
+                row_count=0,
+                matched_rows=0
+            )
+        
+        # Debug: log unique values for joining
+        print(f"DEBUG: Join columns: {join_columns}, Join type: {join_type}")
+        print(f"DEBUG: CSV columns: {list(csv_df.columns)}")
+        print(f"DEBUG: Result columns: {list(result_df.columns)}")
+        
+        # Verify join columns exist
+        for col in join_columns:
+            if col not in csv_df.columns:
+                return FunctionJoinResponse(
+                    success=False,
+                    error=f"CSV is missing required join column: '{col}'. Available columns: {list(csv_df.columns)}",
+                    row_count=0,
+                    matched_rows=0
+                )
+            if col not in result_df.columns:
+                return FunctionJoinResponse(
+                    success=False,
+                    error=f"Function result is missing required join column: '{col}'. Available columns: {list(result_df.columns)}",
+                    row_count=0,
+                    matched_rows=0
+                )
+        
+        # Perform the join
+        merged_df = csv_df.merge(
+            result_df,
+            on=join_columns,
+            how=join_type,
+            suffixes=('', '_computed')
+        )
+        
+        print(f"DEBUG: Merged from {len(csv_df)} CSV rows + {len(result_df)} result rows = {len(merged_df)} merged rows")
+        
+        # Count matched rows (rows with non-null values in new columns)
+        matched_rows = 0
+        if output_columns and output_columns[0] in merged_df.columns:
+            matched_rows = merged_df[output_columns[0]].notna().sum()
+        
+        print(f"DEBUG: Matched rows: {matched_rows} out of {len(merged_df)}")
+        
+        # Calculate descriptive stats for new columns
+        metrics_stats = {}
+        for col in output_columns or []:
+            if col in merged_df.columns:
+                col_data = merged_df[col]
+                if pd.api.types.is_numeric_dtype(col_data):
+                    stats = {
+                        'count': int(col_data.notna().sum()),
+                        'mean': round(float(col_data.mean()), 2) if col_data.notna().any() else None,
+                        'std': round(float(col_data.std()), 2) if col_data.notna().any() else None,
+                        'min': round(float(col_data.min()), 2) if col_data.notna().any() else None,
+                        'max': round(float(col_data.max()), 2) if col_data.notna().any() else None,
+                        'median': round(float(col_data.median()), 2) if col_data.notna().any() else None,
+                        'null_count': int(col_data.isna().sum()),
+                    }
+                else:
+                    # For non-numeric columns
+                    stats = {
+                        'count': int(col_data.notna().sum()),
+                        'unique': int(col_data.nunique()),
+                        'null_count': int(col_data.isna().sum()),
+                        'top_values': col_data.value_counts().head(5).to_dict() if col_data.notna().any() else {},
+                    }
+                metrics_stats[col] = stats
+        
+        # Update the session store
+        SESSION_STORE[x_session_id] = merged_df
+        
+        # Prepare preview data (first 100 rows)
+        preview_df = merged_df.head(100).copy()
+        # Convert date columns to string for JSON serialization
+        for col in preview_df.columns:
+            if pd.api.types.is_datetime64_any_dtype(preview_df[col]):
+                preview_df[col] = preview_df[col].dt.strftime('%Y-%m-%d')
+        preview_data = preview_df.fillna('').to_dict(orient='records')
+        
+        return FunctionJoinResponse(
+            success=True,
+            added_columns=output_columns,
+            row_count=len(merged_df),
+            matched_rows=int(matched_rows),
+            preview=preview_data,
+            columns=list(merged_df.columns),
+            metrics_stats=metrics_stats
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return FunctionJoinResponse(
+            success=False,
+            error=f"Join failed: {str(e)}",
+            row_count=0,
+            matched_rows=0
+        )
+
+
+@app.get("/data/download")
+async def download_session_data(
+    x_session_id: Optional[str] = Header(default=None)
+):
+    """
+    Download the current session data as a CSV file.
+    """
+    if not x_session_id or x_session_id not in SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
+    
+    df = SESSION_STORE[x_session_id]
+    
+    # Convert DataFrame to CSV
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer, index=False)
+    csv_content = csv_buffer.getvalue()
+    
+    # Return as downloadable file
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=data_with_metrics.csv"
+        }
+    )
+
+
+@app.get("/data/preview")
+async def preview_session_data(
+    x_session_id: Optional[str] = Header(default=None),
+    limit: int = 100
+):
+    """
+    Get a preview of the current session data.
+    """
+    if not x_session_id or x_session_id not in SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
+    
+    df = SESSION_STORE[x_session_id]
+    preview_df = df.head(limit).copy()
+    
+    # Convert date columns to string for JSON serialization
+    for col in preview_df.columns:
+        if pd.api.types.is_datetime64_any_dtype(preview_df[col]):
+            preview_df[col] = preview_df[col].dt.strftime('%Y-%m-%d')
+    
+    return {
+        "columns": list(df.columns),
+        "preview": preview_df.fillna('').to_dict(orient='records'),
+        "total_rows": len(df)
+    }
+
+
+@app.get("/functions/template", response_model=FunctionTemplateResponse)
+async def get_function_template() -> FunctionTemplateResponse:
+    """
+    Get the template code for creating a new metric function.
+    """
+    return FunctionTemplateResponse(template=FUNCTION_TEMPLATE)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -1781,6 +2330,6 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     # Render sets PORT environment variable, default to 8000 for local development
-    port = int(os.environ.get("PORT", "8000"))
+    port = int(os.environ.get("PORT", "8001"))
     uvicorn.run(app, host="0.0.0.0", port=port)
 

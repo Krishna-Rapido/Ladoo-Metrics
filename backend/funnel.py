@@ -10,11 +10,11 @@ from pyhive import presto
 
 def get_presto_connection(username: str):
     """Create a Presto connection with the given username"""
-    return presto.connect(
-    host='presto-gateway.processing.data.production.internal',
-    port='80',
-        username=username
-    )
+    presto_host = 'bi-trino-4.serving.data.production.internal'
+    presto_port = '80'
+    presto_connection = presto.connect(presto_host,presto_port,username = username)
+    return presto_connection
+
 
 
 def get_captain_id(mobile_number_df: pd.DataFrame, username: str):

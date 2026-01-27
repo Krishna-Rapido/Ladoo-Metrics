@@ -22,6 +22,49 @@ class DateRange(BaseModel):
 
 Aggregation = Literal["sum", "mean", "count"]
 
+InsightAggregation = Literal["sum", "count", "nunique", "mean", "median"]
+
+
+class MetricSpec(BaseModel):
+    column: str
+    agg_func: InsightAggregation = "sum"
+
+
+class InsightsRequest(BaseModel):
+    pre_period: Optional[DateRange] = None
+    post_period: Optional[DateRange] = None
+    test_cohort: str
+    control_cohort: str
+    metrics: List[MetricSpec] = Field(default_factory=list)
+
+
+class InsightsTimeSeriesPoint(BaseModel):
+    date: str  # YYYY-MM-DD
+    cohort_type: Literal["test", "control"]
+    metric: str
+    agg_func: InsightAggregation
+    value: float
+
+
+class InsightsSummaryRow(BaseModel):
+    metric: str
+    agg_func: InsightAggregation
+    control_pre: float
+    control_post: float
+    control_delta: float
+    control_delta_pct: Optional[float] = None
+    test_pre: float
+    test_post: float
+    test_delta: float
+    test_delta_pct: Optional[float] = None
+    diff_in_diff: float
+    diff_in_diff_pct: Optional[float] = None
+
+
+class InsightsResponse(BaseModel):
+    time_series: List[InsightsTimeSeriesPoint]
+    summary: List[InsightsSummaryRow]
+
 
 class MetricsRequest(BaseModel):
     pre_period: Optional[DateRange] = None
@@ -346,5 +389,85 @@ class ReportListResponse(BaseModel):
 
 class ReportExportResponse(BaseModel):
     report_html: str
+
+
+# =============================================================================
+# METRIC FUNCTIONS SCHEMAS
+# =============================================================================
+
+class FunctionParameter(BaseModel):
+    name: str
+    type: str  # 'string', 'date', 'number', 'select'
+    default: Optional[str] = None
+    label: str
+    options: Optional[List[str]] = None  # For select type
+
+
+class FunctionTestRequest(BaseModel):
+    code: str
+    parameters: Dict[str, Any]
+    username: str
+
+
+class FunctionTestResponse(BaseModel):
+    success: bool
+    error: Optional[str] = None
+    preview: Optional[List[Dict[str, Any]]] = None
+    columns: Optional[List[str]] = None
+    output_columns: Optional[List[str]] = None
+    row_count: int = 0
+
+
+class FunctionExecuteRequest(BaseModel):
+    code: str
+    parameters: Dict[str, Any]
+    username: str
+
+
+class FunctionExecuteResponse(BaseModel):
+    success: bool
+    error: Optional[str] = None
+    data: Optional[List[Dict[str, Any]]] = None
+    columns: Optional[List[str]] = None
+    output_columns: Optional[List[str]] = None
+    row_count: int = 0
+
+
+class FunctionPreviewRequest(BaseModel):
+    code: str
+    parameters: Dict[str, Any]
+    username: str
+
+
+class FunctionPreviewResponse(BaseModel):
+    success: bool
+    error: Optional[str] = None
+    preview: Optional[List[Dict[str, Any]]] = None
+    columns: Optional[List[str]] = None
+    row_count: int = 0
+    stats: Optional[Dict[str, Dict[str, Any]]] = None  # Descriptive stats for all columns
+
+
+class FunctionJoinRequest(BaseModel):
+    code: str
+    parameters: Dict[str, Any]
+    username: str
+    join_columns: List[str] = ['captain_id', 'yyyymmdd']  # Join on these columns
+    join_type: str = 'left'  # 'left' or 'inner'
+
+
+class FunctionJoinResponse(BaseModel):
+    success: bool
+    error: Optional[str] = None
+    added_columns: Optional[List[str]] = None
+    row_count: int = 0
+    matched_rows: int = 0
+    preview: Optional[List[Dict[str, Any]]] = None
+    columns: Optional[List[str]] = None
+    metrics_stats: Optional[Dict[str, Dict[str, Any]]] = None  # Descriptive stats for new columns
+
+
+class FunctionTemplateResponse(BaseModel):
+    template: str
 
 

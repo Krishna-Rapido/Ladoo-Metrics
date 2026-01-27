@@ -440,7 +440,7 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
                             )}
                         </label>
                         <div className="border border-slate-300 rounded-lg p-4 min-h-[100px] max-h-64 overflow-y-auto bg-white">
-                            <div className="flex flex-wrap gap-5">
+                            <div className="flex flex-wrap gap-3">
                                 {numericColumns.map((col) => {
                                     const isSelected = yAxes.includes(col);
                                     return (
@@ -453,25 +453,18 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
                                                     setYAxes([...yAxes, col]);
                                                 }
                                             }}
-                                            whileHover={{
-                                                scale: 1.05,
-                                                backgroundColor: !isSelected ? "#ede9fe" : undefined // Tailwind purple-50
-                                            }}
+                                            whileHover={{ scale: 1.05 }}
                                             whileTap={{ scale: 0.95 }}
                                             className={`
-                                                inline-flex items-center gap-2 px-6 py-3
+                                                inline-flex items-center gap-2 px-4 py-2
                                                 text-sm font-semibold transition-all whitespace-nowrap
-                                                rounded-full border-2
-                                                outline outline-1 outline-gray-300
+                                                rounded-full border
+                                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white
                                                 ${isSelected
-                                                    ? 'bg-green-500 text-white border-gray-300'
-                                                    : 'bg-white text-slate-700 border-gray-300 hover:bg-purple-50 hover:border-purple-400'
+                                                    ? 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
+                                                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 hover:border-purple-300'
                                                 }
                                             `}
-                                            style={{
-                                                marginBottom: '12px',
-                                                marginRight: '12px',
-                                            }}
                                         >
                                             {isSelected && <span>✓</span>}
                                             <span>{col.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</span>

@@ -1,7 +1,7 @@
 // frontend/src/components/CohortAggregation.tsx
 import { useState, useEffect } from 'react';
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8001';
 
 function getSessionId(): string | null {
     return localStorage.getItem('session_id');

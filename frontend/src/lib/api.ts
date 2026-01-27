@@ -44,6 +44,49 @@ export type MetricsResponse = {
 
 export type MetaResponse = { cohorts: string[]; date_min: string; date_max: string; metrics: string[]; categorical_columns?: string[] };
 
+export type InsightAggregation = 'sum' | 'count' | 'nunique' | 'mean' | 'median';
+
+export type InsightsMetricSpec = {
+    column: string;
+    agg_func: InsightAggregation;
+};
+
+export type InsightsRequest = {
+    pre_period?: DateRange;
+    post_period?: DateRange;
+    test_cohort: string;
+    control_cohort: string;
+    metrics: InsightsMetricSpec[];
+};
+
+export type InsightsTimeSeriesPoint = {
+    date: string; // YYYY-MM-DD
+    cohort_type: 'test' | 'control';
+    metric: string;
+    agg_func: InsightAggregation;
+    value: number;
+};
+
+export type InsightsSummaryRow = {
+    metric: string;
+    agg_func: InsightAggregation;
+    control_pre: number;
+    control_post: number;
+    control_delta: number;
+    control_delta_pct?: number | null;
+    test_pre: number;
+    test_post: number;
+    test_delta: number;
+    test_delta_pct?: number | null;
+    diff_in_diff: number;
+    diff_in_diff_pct?: number | null;
+};
+
+export type InsightsResponse = {
+    time_series: InsightsTimeSeriesPoint[];
+    summary: InsightsSummaryRow[];
+};
+
 export type FunnelRequest = {
     pre_period?: DateRange;
     post_period?: DateRange;
@@ -94,9 +137,9 @@ export type CohortAggregationResponse = {
     data: CohortAggregationRow[];
 };
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8001';
 
-function getSessionId(): string | null {
+export function getSessionId(): string | null {
     return localStorage.getItem('session_id');
 }
 
@@ -138,6 +181,18 @@ export async function fetchMetrics(payload: MetricsRequest): Promise<MetricsResp
     const headers = sessionHeaders();
     headers.set('Content-Type', 'application/json');
     const res = await fetch(`${BASE_URL}/metrics`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+}
+
+export async function fetchInsights(payload: InsightsRequest): Promise<InsightsResponse> {
+    const headers = sessionHeaders();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/insights`, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
@@ -719,4 +774,149 @@ export async function clearReport(reportId: string): Promise<{ ok: boolean }> {
     });
     if (!res.ok) throw new Error('Failed to clear report');
     return await res.json();
+}
+
+// =============================================================================
+// METRIC FUNCTIONS API
+// =============================================================================
+
+export type FunctionTestRequest = {
+    code: string;
+    parameters: Record<string, string | number>;
+    username: string;
+};
+
+export type FunctionTestResponse = {
+    success: boolean;
+    error?: string | null;
+    preview?: Record<string, unknown>[] | null;
+    columns?: string[] | null;
+    output_columns?: string[] | null;
+    row_count: number;
+};
+
+export type FunctionExecuteResponse = {
+    success: boolean;
+    error?: string | null;
+    data?: Record<string, unknown>[] | null;
+    columns?: string[] | null;
+    output_columns?: string[] | null;
+    row_count: number;
+};
+
+export type MetricStats = {
+    type?: 'numeric' | 'categorical';
+    count: number;
+    mean?: number | null;
+    std?: number | null;
+    min?: number | null;
+    max?: number | null;
+    median?: number | null;
+    null_count: number;
+    unique?: number;
+    top_values?: Record<string, number>;
+};
+
+export type FunctionPreviewResponse = {
+    success: boolean;
+    error?: string | null;
+    preview?: Record<string, unknown>[] | null;
+    columns?: string[] | null;
+    row_count: number;
+    stats?: Record<string, MetricStats> | null;
+};
+
+export type FunctionJoinRequest = {
+    code: string;
+    parameters: Record<string, unknown>;
+    username: string;
+    join_columns: string[];
+    join_type: 'left' | 'inner';
+};
+
+export type FunctionJoinResponse = {
+    success: boolean;
+    error?: string | null;
+    added_columns?: string[] | null;
+    row_count: number;
+    matched_rows: number;
+    preview?: Record<string, unknown>[] | null;
+    columns?: string[] | null;
+    metrics_stats?: Record<string, MetricStats> | null;
+};
+
+export async function testFunction(request: FunctionTestRequest): Promise<FunctionTestResponse> {
+    const res = await fetch(`${BASE_URL}/functions/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+    });
+    if (!res.ok) throw new Error('Failed to test function');
+    return await res.json();
+}
+
+export async function executeFunction(request: FunctionTestRequest): Promise<FunctionExecuteResponse> {
+    const res = await fetch(`${BASE_URL}/functions/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+    });
+    if (!res.ok) throw new Error('Failed to execute function');
+    return await res.json();
+}
+
+export async function previewFunctionResult(
+    request: FunctionTestRequest
+): Promise<FunctionPreviewResponse> {
+    const res = await fetch(`${BASE_URL}/functions/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+    });
+    if (!res.ok) throw new Error('Failed to preview function');
+    return await res.json();
+}
+
+export async function joinFunctionWithCsv(
+    request: FunctionJoinRequest,
+    sessionId: string
+): Promise<FunctionJoinResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    headers.set('x-session-id', sessionId);
+
+    const res = await fetch(`${BASE_URL}/functions/join`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+    });
+    if (!res.ok) throw new Error('Failed to join function with CSV');
+    return await res.json();
+}
+
+export async function getFunctionTemplate(): Promise<{ template: string }> {
+    const res = await fetch(`${BASE_URL}/functions/template`);
+    if (!res.ok) throw new Error('Failed to get function template');
+    return await res.json();
+}
+
+export async function downloadSessionData(sessionId: string): Promise<void> {
+    const headers = new Headers();
+    headers.set('x-session-id', sessionId);
+
+    const res = await fetch(`${BASE_URL}/data/download`, {
+        method: 'GET',
+        headers,
+    });
+    if (!res.ok) throw new Error('Failed to download data');
+    
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'data_with_metrics.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
 }
