@@ -47,7 +47,7 @@ export function DatePicker({
   disabled = false,
 }: DatePickerProps) {
   const [open, setOpen] = React.useState(false)
-  
+
   // Parse YYYYMMDD to Date object (handle null -> undefined)
   const date = value ? parseYYYYMMDD(value) ?? undefined : undefined
   const [month, setMonth] = React.useState<Date | undefined>(date)
@@ -63,7 +63,7 @@ export function DatePicker({
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const inputVal = e.target.value
     setInputValue(inputVal)
-    
+
     // Try to parse the input as a date
     const parsedDate = new Date(inputVal)
     if (isValidDate(parsedDate) && onChange) {

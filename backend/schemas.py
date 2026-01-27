@@ -470,4 +470,3 @@ class FunctionJoinResponse(BaseModel):
 class FunctionTemplateResponse(BaseModel):
     template: str
 
-

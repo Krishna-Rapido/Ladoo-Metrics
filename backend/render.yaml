@@ -1,13 +1,13 @@
+# Render.com deployment configuration with OpenVPN support
+# NOTE: Set OPENVPN_CONFIG in Render dashboard with your .ovpn file contents
 services:
   - type: web
     name: internal-tools-backend
-    env: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python main.py"
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.12"
+      - key: OPENVPN_CONFIG
+        sync: false  # Must be set manually in Render dashboard (contains secrets)
       - key: PORT
         value: "8000"
     healthCheckPath: /health
-
