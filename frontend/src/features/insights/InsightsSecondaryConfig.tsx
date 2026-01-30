@@ -7,7 +7,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { getMeta, uploadCsv } from '@/lib/api';
-import type { MetaResponse, UploadResponse } from '@/lib/api';
+import type { MetaResponse, UploadResponse, UploadProgress } from '@/lib/api';
 
 interface InsightsSecondaryConfigProps {
     onRunAnalysis?: () => void;
@@ -36,6 +36,14 @@ const confirmationOptions = [
     { value: 'clickedCaptain', label: 'Clicked Captains' },
 ];
 
+function formatBytes(bytes: number): string {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
 export function InsightsSecondaryConfig({
     onRunAnalysis,
     onUpload,
@@ -45,6 +53,8 @@ export function InsightsSecondaryConfig({
     const [uploading, setUploading] = useState(false);
     const [dragOver, setDragOver] = useState(false);
     const [meta, setMeta] = useState<MetaResponse | null>(null);
+    const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+    const [uploadError, setUploadError] = useState<string | null>(null);
 
     // Filter state
     const [prePeriodStart, setPrePeriodStart] = useState('2024-01-01');
@@ -92,16 +102,38 @@ export function InsightsSecondaryConfig({
         async (files: FileList | null) => {
             if (!files || files.length === 0) return;
             const file = files[0];
+            
+            // Check file size (5GB limit)
+            const MAX_SIZE = 5 * 1024 * 1024 * 1024;
+            if (file.size > MAX_SIZE) {
+                setUploadError(`File too large. Maximum size is 5GB. Your file: ${formatBytes(file.size)}`);
+                return;
+            }
+            
             setUploading(true);
+            setUploadError(null);
+            setUploadProgress({
+                status: 'initializing',
+                bytesUploaded: 0,
+                totalBytes: file.size,
+                progress: 0,
+            });
+            
             try {
-                const res = await uploadCsv(file);
+                const res = await uploadCsv(file, (progress) => {
+                    setUploadProgress(progress);
+                    if (progress.status === 'error') {
+                        setUploadError(progress.error || 'Upload failed');
+                    }
+                });
                 setUploadedFile(file.name);
                 onUpload?.(res);
                 // Refresh meta after upload
                 const newMeta = await getMeta();
                 setMeta(newMeta);
-            } catch (e) {
+            } catch (e: any) {
                 console.error('Upload failed:', e);
+                setUploadError(e?.message || 'Upload failed');
             } finally {
                 setUploading(false);
             }
@@ -142,10 +174,10 @@ export function InsightsSecondaryConfig({
                             </Label>
                         </div>
                         <label
-                            className={`flex flex-col items-center justify-center w-full h-24 border-2 border-dashed rounded-xl cursor-pointer transition-colors ${dragOver
+                            className={`flex flex-col items-center justify-center w-full ${uploading && uploadProgress ? 'h-32' : 'h-24'} border-2 border-dashed rounded-xl cursor-pointer transition-colors ${dragOver
                                 ? 'border-emerald-500 bg-emerald-50'
                                 : 'border-muted-foreground/25 hover:border-muted-foreground/50 hover:bg-muted/30'
-                                }`}
+                                } ${uploading ? 'pointer-events-none opacity-75' : ''}`}
                             onDragOver={(e) => {
                                 e.preventDefault();
                                 setDragOver(true);
@@ -162,11 +194,25 @@ export function InsightsSecondaryConfig({
                                 accept=".csv"
                                 className="hidden"
                                 onChange={(e) => handleFiles(e.target.files)}
+                                disabled={uploading}
                             />
-                            {uploading ? (
-                                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                    <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                                    Uploading...
+                            {uploading && uploadProgress ? (
+                                <div className="flex flex-col items-center gap-2 text-sm text-muted-foreground w-full px-4">
+                                    <div className="flex items-center gap-2">
+                                        <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                                        {uploadProgress.status === 'processing' ? 'Processing...' : 
+                                         uploadProgress.status === 'uploading' ? `Uploading ${Math.round(uploadProgress.progress)}%` : 
+                                         'Initializing...'}
+                                    </div>
+                                    <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                                        <div 
+                                            className="h-full rounded-full transition-all duration-300 ease-out bg-emerald-500"
+                                            style={{ width: `${Math.min(uploadProgress.progress, 100)}%` }}
+                                        />
+                                    </div>
+                                    <p className="text-xs">
+                                        {formatBytes(uploadProgress.bytesUploaded)} / {formatBytes(uploadProgress.totalBytes)}
+                                    </p>
                                 </div>
                             ) : uploadedFile ? (
                                 <div className="text-center px-2">
@@ -178,10 +224,15 @@ export function InsightsSecondaryConfig({
                             ) : (
                                 <div className="text-center">
                                     <p className="text-sm text-muted-foreground">Drag & drop or click</p>
-                                    <p className="text-xs text-muted-foreground mt-1">CSV files only</p>
+                                    <p className="text-xs text-muted-foreground mt-1">CSV files up to 5GB</p>
                                 </div>
                             )}
                         </label>
+                        {uploadError && !uploading && (
+                            <div className="p-2 bg-destructive/10 border border-destructive/20 rounded-lg">
+                                <p className="text-destructive/80 text-xs">{uploadError}</p>
+                            </div>
+                        )}
                     </div>
 
                     <Separator />

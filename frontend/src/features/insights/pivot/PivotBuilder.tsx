@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Download } from "lucide-react"
 import { toPng } from "html-to-image"
 import {
@@ -46,11 +46,13 @@ import {
 import type {
   PivotAggFn,
   PivotFilterRule,
+  PivotResult,
   PivotValueSpec,
   RawRow,
 } from "../types"
 import { buildPivot, exportPivotToCsv } from "./pivotEngine"
 import { useReport } from "@/contexts/ReportContext"
+import { fetchPivot } from "@/lib/api"
 
 const ZONES = ["filters", "rows", "cols", "values"] as const
 type ZoneId = (typeof ZONES)[number]
@@ -253,13 +255,19 @@ function ZoneCard({
 export type PivotBuilderProps = {
   rows: RawRow[]
   columns: string[]
+  /** When set and rows are empty, pivot is computed via backend (DuckDB). */
+  sessionId?: string | null
 }
 
-export function PivotBuilder({ rows, columns }: PivotBuilderProps) {
+export function PivotBuilder({ rows, columns, sessionId }: PivotBuilderProps) {
   const { addItem } = useReport()
   const [adding, setAdding] = useState(false)
   const [added, setAdded] = useState(false)
   const pivotResultRef = useRef<HTMLDivElement | null>(null)
+  const useBackendPivot = Boolean(sessionId && rows.length === 0)
+  const [backendPivotResult, setBackendPivotResult] = useState<PivotResult | null>(null)
+  const [pivotLoading, setPivotLoading] = useState(false)
+  const [pivotError, setPivotError] = useState<string | null>(null)
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -394,7 +402,43 @@ export function PivotBuilder({ rows, columns }: PivotBuilderProps) {
     })
   }, [filters])
 
-  const pivotResult = useMemo(() => {
+  // Backend pivot (DuckDB) when sessionId is set and no rows
+  useEffect(() => {
+    if (!useBackendPivot || !sessionId) {
+      setBackendPivotResult(null)
+      setPivotError(null)
+      return
+    }
+    let cancelled = false
+    setPivotLoading(true)
+    setPivotError(null)
+    fetchPivot({
+      row_fields: rowFields,
+      col_fields: colFields,
+      values: values.map((v) => ({ col: v.col, agg: v.agg })),
+      filters: pivotFilters.map((f) => ({ column: f.column, operator: f.operator, value: f.value })),
+    })
+      .then((res) => {
+        if (!cancelled) {
+          setBackendPivotResult({ columns: res.columns, data: res.data as Record<string, import("../types").CsvPrimitive>[] })
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setPivotError(err?.message ?? "Pivot failed")
+          setBackendPivotResult(null)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPivotLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [useBackendPivot, sessionId, rowFields, colFields, values, pivotFilters])
+
+  const pivotResult = useMemo((): PivotResult => {
+    if (useBackendPivot && backendPivotResult) return backendPivotResult
     return buildPivot({
       rows,
       rowFields,
@@ -402,7 +446,7 @@ export function PivotBuilder({ rows, columns }: PivotBuilderProps) {
       values,
       filters: pivotFilters,
     })
-  }, [rows, rowFields, colFields, values, pivotFilters])
+  }, [useBackendPivot, backendPivotResult, rows, rowFields, colFields, values, pivotFilters])
 
   const tableColumns = useMemo<ColumnDef<Record<string, any>>[]>(() => {
     return pivotResult.columns.map((c) => ({
@@ -679,8 +723,16 @@ export function PivotBuilder({ rows, columns }: PivotBuilderProps) {
               <div ref={pivotResultRef} className="rounded-xl border border-border/60">
                 <div className="flex items-center justify-between px-4 py-3">
                   <div className="text-sm font-semibold">Pivot Result</div>
-                  <div className="text-xs text-muted-foreground">
-                    {pivotResult.data.length} rows • {pivotResult.columns.length} cols
+                  <div className="flex items-center gap-3">
+                    {useBackendPivot && pivotLoading && (
+                      <span className="text-xs text-muted-foreground">Loading…</span>
+                    )}
+                    {pivotError && (
+                      <span className="text-xs text-destructive">{pivotError}</span>
+                    )}
+                    <div className="text-xs text-muted-foreground">
+                      {pivotResult.data.length} rows • {pivotResult.columns.length} cols
+                    </div>
                   </div>
                 </div>
                 <Separator />

@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Upload, File, X } from 'lucide-react';
 import { uploadCsv } from '@/lib/api';
-import type { UploadResponse } from '@/lib/api';
+import type { UploadResponse, UploadProgress } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 interface CsvUploadCardProps {
@@ -11,19 +11,63 @@ interface CsvUploadCardProps {
   uploadedFile?: UploadResponse | null;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function getStatusText(progress: UploadProgress): string {
+  switch (progress.status) {
+    case 'initializing':
+      return 'Initializing...';
+    case 'uploading':
+      return `Uploading ${formatBytes(progress.bytesUploaded)} / ${formatBytes(progress.totalBytes)}`;
+    case 'processing':
+      return 'Processing CSV...';
+    case 'completed':
+      return 'Complete!';
+    default:
+      return 'Uploading...';
+  }
+}
+
 export function CsvUploadCard({ onUploaded, uploadedFile }: CsvUploadCardProps) {
   const [dragOver, setDragOver] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
 
   const handleFiles = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) return;
       const file = files[0];
+      
+      // Check file size (5GB limit)
+      const MAX_SIZE = 5 * 1024 * 1024 * 1024;
+      if (file.size > MAX_SIZE) {
+        setError(`File too large. Maximum size is 5GB. Your file: ${formatBytes(file.size)}`);
+        return;
+      }
+      
       setLoading(true);
       setError(null);
+      setUploadProgress({
+        status: 'initializing',
+        bytesUploaded: 0,
+        totalBytes: file.size,
+        progress: 0,
+      });
+      
       try {
-        const res = await uploadCsv(file);
+        const res = await uploadCsv(file, (progress) => {
+          setUploadProgress(progress);
+          if (progress.status === 'error') {
+            setError(progress.error || 'Upload failed');
+          }
+        });
         onUploaded(res);
       } catch (e: any) {
         setError(e.message ?? 'Upload failed');
@@ -39,7 +83,7 @@ export function CsvUploadCard({ onUploaded, uploadedFile }: CsvUploadCardProps) 
       <CardHeader>
         <CardTitle>Upload CSV</CardTitle>
         <CardDescription>
-          Accepted format: CSV files up to 10MB
+          Accepted format: CSV files up to 5GB
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -74,7 +118,8 @@ export function CsvUploadCard({ onUploaded, uploadedFile }: CsvUploadCardProps) 
               'border-2 border-dashed rounded-lg p-8 text-center transition-colors',
               dragOver
                 ? 'border-primary bg-primary/5'
-                : 'border-muted-foreground/25 hover:border-muted-foreground/50'
+                : 'border-muted-foreground/25 hover:border-muted-foreground/50',
+              loading && 'pointer-events-none opacity-75'
             )}
             onDragOver={(e) => {
               e.preventDefault();
@@ -97,27 +142,40 @@ export function CsvUploadCard({ onUploaded, uploadedFile }: CsvUploadCardProps) 
             />
             <Upload className="h-10 w-10 mx-auto mb-4 text-muted-foreground" />
             <p className="text-sm font-medium mb-1">
-              {loading ? 'Uploading...' : 'Drag & drop your CSV file'}
+              {loading && uploadProgress 
+                ? getStatusText(uploadProgress)
+                : 'Drag & drop your CSV file'}
             </p>
             <p className="text-xs text-muted-foreground mb-4">
-              or click to browse your files
+              {loading ? 'Please wait...' : 'Supports files up to 5GB'}
             </p>
+            
+            {/* Progress bar */}
+            {loading && uploadProgress && (
+              <div className="w-full mb-4">
+                <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                  <div 
+                    className="h-full rounded-full transition-all duration-300 ease-out bg-primary"
+                    style={{ width: `${Math.min(uploadProgress.progress, 100)}%` }}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {Math.round(uploadProgress.progress)}%
+                </p>
+              </div>
+            )}
+            
             <Button
               variant="outline"
               onClick={() => document.getElementById('csv-upload')?.click()}
               disabled={loading}
             >
-              Browse Files
+              {loading ? 'Uploading...' : 'Browse Files'}
             </Button>
-            {loading && (
-              <div className="flex items-center justify-center mt-4">
-                <div className="h-4 w-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-              </div>
-            )}
           </div>
         )}
 
-        {error && (
+        {error && !loading && (
           <div className="mt-4 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
             <div className="flex items-center gap-2">
               <span className="text-destructive text-sm font-medium">Error</span>

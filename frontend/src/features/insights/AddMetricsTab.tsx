@@ -11,6 +11,9 @@ import {
   Table,
   Eye,
   Merge,
+  History,
+  FileSpreadsheet,
+  Trash2,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -55,11 +58,22 @@ import {
   type FunctionPreviewResponse,
 } from "@/lib/api"
 
+type AppliedFunction = {
+  id: string
+  name: string
+  addedColumns: string[]
+  appliedAt: Date
+  parameters: Record<string, string>
+}
+
 type AddMetricsTabProps = {
   sessionId: string | null
   username: string
-  onMetricsAdded?: (columns: string[]) => void
+  onMetricsAdded?: () => void | Promise<void>
 }
+
+// Helper to get storage key for session
+const getAppliedFunctionsKey = (sessionId: string) => `applied_functions_${sessionId}`
 
 export function AddMetricsTab({ sessionId, username, onMetricsAdded }: AddMetricsTabProps) {
   // Saved functions state
@@ -83,6 +97,47 @@ export function AddMetricsTab({ sessionId, username, onMetricsAdded }: AddMetric
   const [isExecuting, setIsExecuting] = useState(false)
   const [executionResult, setExecutionResult] = useState<FunctionJoinResponse | null>(null)
   const [isDownloading, setIsDownloading] = useState(false)
+
+  // Applied functions tracking
+  const [appliedFunctions, setAppliedFunctions] = useState<AppliedFunction[]>([])
+
+  // Load applied functions from localStorage on mount
+  useEffect(() => {
+    if (sessionId) {
+      const stored = localStorage.getItem(getAppliedFunctionsKey(sessionId))
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored)
+          setAppliedFunctions(parsed.map((f: AppliedFunction) => ({
+            ...f,
+            appliedAt: new Date(f.appliedAt)
+          })))
+        } catch {
+          setAppliedFunctions([])
+        }
+      }
+    }
+  }, [sessionId])
+
+  // Persist applied functions to localStorage
+  const saveAppliedFunctions = (funcs: AppliedFunction[]) => {
+    if (sessionId) {
+      localStorage.setItem(getAppliedFunctionsKey(sessionId), JSON.stringify(funcs))
+    }
+    setAppliedFunctions(funcs)
+  }
+
+  const addAppliedFunction = (func: AppliedFunction) => {
+    const updated = [...appliedFunctions, func]
+    saveAppliedFunctions(updated)
+  }
+
+  const clearAppliedFunctions = () => {
+    if (sessionId) {
+      localStorage.removeItem(getAppliedFunctionsKey(sessionId))
+    }
+    setAppliedFunctions([])
+  }
 
   // Load functions on mount
   useEffect(() => {
@@ -198,8 +253,18 @@ export function AddMetricsTab({ sessionId, username, onMetricsAdded }: AddMetric
       )
       setExecutionResult(result)
 
-      if (result.success && result.added_columns) {
-        onMetricsAdded?.(result.added_columns)
+      if (result.success && result.added_columns && selectedFunction) {
+        // Track the applied function
+        addAppliedFunction({
+          id: selectedFunction.id,
+          name: selectedFunction.name,
+          addedColumns: result.added_columns,
+          appliedAt: new Date(),
+          parameters: { ...parameterValues }
+        })
+        
+        // Call the callback to refresh the parent's data state
+        await onMetricsAdded?.()
       }
     } catch (err) {
       setExecutionResult({
@@ -259,6 +324,12 @@ export function AddMetricsTab({ sessionId, username, onMetricsAdded }: AddMetric
     )
   }
 
+  // Calculate total added columns
+  const totalAddedColumns = appliedFunctions.reduce(
+    (acc, f) => acc + f.addedColumns.length,
+    0
+  )
+
   if (!sessionId) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -272,11 +343,102 @@ export function AddMetricsTab({ sessionId, username, onMetricsAdded }: AddMetric
   }
 
   return (
-    <Tabs defaultValue="use" className="space-y-6">
-      <TabsList className="grid w-full max-w-md grid-cols-2">
-        <TabsTrigger value="use">Use Saved Function</TabsTrigger>
-        <TabsTrigger value="create">Create New Function</TabsTrigger>
-      </TabsList>
+    <div className="space-y-6">
+      {/* Session Summary Card - Always visible at top */}
+      <Card className="rounded-2xl border-2 border-primary/20 bg-primary/5">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <FileSpreadsheet className="h-6 w-6 text-primary" />
+              <div>
+                <CardTitle className="text-lg">Current Session Data</CardTitle>
+                <CardDescription>
+                  {appliedFunctions.length > 0 
+                    ? `${appliedFunctions.length} function${appliedFunctions.length > 1 ? 's' : ''} applied, ${totalAddedColumns} columns added`
+                    : 'No metrics added yet. Use functions below to enrich your data.'
+                  }
+                </CardDescription>
+              </div>
+            </div>
+            <Button
+              onClick={handleDownload}
+              disabled={isDownloading}
+              className="rounded-xl"
+              size="lg"
+            >
+              {isDownloading ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Downloading...
+                </>
+              ) : (
+                <>
+                  <Download className="h-4 w-4 mr-2" />
+                  Download CSV
+                </>
+              )}
+            </Button>
+          </div>
+        </CardHeader>
+        
+        {appliedFunctions.length > 0 && (
+          <CardContent className="pt-0">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-medium flex items-center gap-2">
+                  <History className="h-4 w-4" />
+                  Applied Functions
+                </Label>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearAppliedFunctions}
+                  className="text-xs text-muted-foreground hover:text-destructive"
+                >
+                  <Trash2 className="h-3 w-3 mr-1" />
+                  Clear History
+                </Button>
+              </div>
+              <div className="space-y-2">
+                {appliedFunctions.map((func, idx) => (
+                  <div
+                    key={`${func.id}-${idx}`}
+                    className="flex items-center justify-between p-3 rounded-lg border bg-background"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center justify-center w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
+                        {idx + 1}
+                      </div>
+                      <div>
+                        <div className="font-medium text-sm flex items-center gap-2">
+                          <Code className="h-4 w-4 text-emerald-500" />
+                          {func.name}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Applied {func.appliedAt.toLocaleTimeString()}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1 max-w-xs justify-end">
+                      {func.addedColumns.map((col) => (
+                        <Badge key={col} variant="secondary" className="text-xs">
+                          {col}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </CardContent>
+        )}
+      </Card>
+
+      <Tabs defaultValue="use" className="space-y-6">
+        <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsTrigger value="use">Use Saved Function</TabsTrigger>
+          <TabsTrigger value="create">Create New Function</TabsTrigger>
+        </TabsList>
 
       {/* Use Saved Function Tab */}
       <TabsContent value="use" className="space-y-6">
@@ -789,6 +951,7 @@ export function AddMetricsTab({ sessionId, username, onMetricsAdded }: AddMetric
           </CardContent>
         </Card>
       </TabsContent>
-    </Tabs>
+      </Tabs>
+    </div>
   )
 }

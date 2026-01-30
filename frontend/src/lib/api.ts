@@ -44,7 +44,7 @@ export type MetricsResponse = {
 
 export type MetaResponse = { cohorts: string[]; date_min: string; date_max: string; metrics: string[]; categorical_columns?: string[] };
 
-export type InsightAggregation = 'sum' | 'count' | 'nunique' | 'mean' | 'median';
+export type InsightAggregation = 'sum' | 'count' | 'nunique' | 'mean' | 'median' | 'sum_per_captain' | 'ratio';
 
 export type InsightsMetricSpec = {
     column: string;
@@ -57,14 +57,17 @@ export type InsightsRequest = {
     test_cohort: string;
     control_cohort: string;
     metrics: InsightsMetricSpec[];
+    series_breakout?: string;
 };
 
 export type InsightsTimeSeriesPoint = {
     date: string; // YYYY-MM-DD
     cohort_type: 'test' | 'control';
+    period?: string | null; // "pre" | "post" for 4-line chart
     metric: string;
     agg_func: InsightAggregation;
     value: number;
+    breakout_value?: string | null; // when series_breakout is set
 };
 
 export type InsightsSummaryRow = {
@@ -85,6 +88,7 @@ export type InsightsSummaryRow = {
 export type InsightsResponse = {
     time_series: InsightsTimeSeriesPoint[];
     summary: InsightsSummaryRow[];
+    total_participants?: number | null;
 };
 
 export type FunnelRequest = {
@@ -139,6 +143,20 @@ export type CohortAggregationResponse = {
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8001';
 
+// Configuration for chunked uploads
+const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
+const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 50MB - use chunked upload for files larger than this
+
+export type UploadProgress = {
+    status: 'initializing' | 'uploading' | 'processing' | 'completed' | 'error';
+    bytesUploaded: number;
+    totalBytes: number;
+    progress: number; // 0-100
+    error?: string;
+};
+
+export type UploadProgressCallback = (progress: UploadProgress) => void;
+
 export function getSessionId(): string | null {
     return localStorage.getItem('session_id');
 }
@@ -154,18 +172,203 @@ function sessionHeaders(): Headers {
     return h;
 }
 
-export async function uploadCsv(file: File): Promise<UploadResponse> {
-    const form = new FormData();
-    form.append('file', file);
-    const res = await fetch(`${BASE_URL}/upload`, {
-        method: 'POST',
-        body: form,
-    });
-    if (!res.ok) {
-        throw new Error(await res.text());
+/**
+ * Upload a CSV file with progress tracking.
+ * Automatically uses chunked upload for large files (>50MB).
+ */
+export async function uploadCsv(
+    file: File,
+    onProgress?: UploadProgressCallback
+): Promise<UploadResponse> {
+    // For large files, use chunked upload with progress tracking
+    if (file.size > LARGE_FILE_THRESHOLD) {
+        return uploadCsvChunked(file, onProgress);
     }
-    const data = (await res.json()) as UploadResponse;
+    
+    // For smaller files, use simple upload with XHR for progress
+    return uploadCsvSimple(file, onProgress);
+}
+
+/**
+ * Simple upload using XHR for progress tracking (for files <50MB)
+ */
+async function uploadCsvSimple(
+    file: File,
+    onProgress?: UploadProgressCallback
+): Promise<UploadResponse> {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        const form = new FormData();
+        form.append('file', file);
+        
+        xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable && onProgress) {
+                onProgress({
+                    status: 'uploading',
+                    bytesUploaded: event.loaded,
+                    totalBytes: event.total,
+                    progress: (event.loaded / event.total) * 100,
+                });
+            }
+        };
+        
+        xhr.onload = async () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+                try {
+                    const data = JSON.parse(xhr.responseText) as UploadResponse;
+                    setSessionId(data.session_id);
+                    onProgress?.({
+                        status: 'completed',
+                        bytesUploaded: file.size,
+                        totalBytes: file.size,
+                        progress: 100,
+                    });
+                    resolve(data);
+                } catch (e) {
+                    reject(new Error('Failed to parse response'));
+                }
+            } else {
+                const error = xhr.responseText || 'Upload failed';
+                onProgress?.({
+                    status: 'error',
+                    bytesUploaded: 0,
+                    totalBytes: file.size,
+                    progress: 0,
+                    error,
+                });
+                reject(new Error(error));
+            }
+        };
+        
+        xhr.onerror = () => {
+            const error = 'Network error during upload';
+            onProgress?.({
+                status: 'error',
+                bytesUploaded: 0,
+                totalBytes: file.size,
+                progress: 0,
+                error,
+            });
+            reject(new Error(error));
+        };
+        
+        xhr.open('POST', `${BASE_URL}/upload`);
+        xhr.send(form);
+    });
+}
+
+/**
+ * Chunked upload for large files (>50MB) with progress tracking
+ */
+async function uploadCsvChunked(
+    file: File,
+    onProgress?: UploadProgressCallback
+): Promise<UploadResponse> {
+    // Initialize upload session
+    onProgress?.({
+        status: 'initializing',
+        bytesUploaded: 0,
+        totalBytes: file.size,
+        progress: 0,
+    });
+    
+    const initRes = await fetch(`${BASE_URL}/upload/init`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            filename: file.name,
+            file_size: file.size,
+        }),
+    });
+    
+    if (!initRes.ok) {
+        const error = await initRes.text();
+        onProgress?.({
+            status: 'error',
+            bytesUploaded: 0,
+            totalBytes: file.size,
+            progress: 0,
+            error,
+        });
+        throw new Error(error);
+    }
+    
+    const { upload_id } = await initRes.json();
+    
+    // Upload file in chunks
+    let bytesUploaded = 0;
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    
+    for (let i = 0; i < totalChunks; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunk = file.slice(start, end);
+        
+        const chunkForm = new FormData();
+        chunkForm.append('file', chunk, `chunk_${i}`);
+        
+        const chunkRes = await fetch(`${BASE_URL}/upload/chunk/${upload_id}`, {
+            method: 'POST',
+            body: chunkForm,
+        });
+        
+        if (!chunkRes.ok) {
+            // Cancel upload on error
+            await fetch(`${BASE_URL}/upload/${upload_id}`, { method: 'DELETE' }).catch(() => {});
+            const error = await chunkRes.text();
+            onProgress?.({
+                status: 'error',
+                bytesUploaded,
+                totalBytes: file.size,
+                progress: (bytesUploaded / file.size) * 100,
+                error,
+            });
+            throw new Error(error);
+        }
+        
+        bytesUploaded = end;
+        onProgress?.({
+            status: 'uploading',
+            bytesUploaded,
+            totalBytes: file.size,
+            progress: (bytesUploaded / file.size) * 90, // Reserve 10% for processing
+        });
+    }
+    
+    // Complete upload and process file
+    onProgress?.({
+        status: 'processing',
+        bytesUploaded: file.size,
+        totalBytes: file.size,
+        progress: 95,
+    });
+    
+    const completeRes = await fetch(`${BASE_URL}/upload/complete/${upload_id}`, {
+        method: 'POST',
+    });
+    
+    if (!completeRes.ok) {
+        const error = await completeRes.text();
+        onProgress?.({
+            status: 'error',
+            bytesUploaded: file.size,
+            totalBytes: file.size,
+            progress: 95,
+            error,
+        });
+        throw new Error(error);
+    }
+    
+    const data = (await completeRes.json()) as UploadResponse;
     setSessionId(data.session_id);
+    
+    onProgress?.({
+        status: 'completed',
+        bytesUploaded: file.size,
+        totalBytes: file.size,
+        progress: 100,
+    });
+    
     return data;
 }
 
@@ -193,6 +396,28 @@ export async function fetchInsights(payload: InsightsRequest): Promise<InsightsR
     const headers = sessionHeaders();
     headers.set('Content-Type', 'application/json');
     const res = await fetch(`${BASE_URL}/insights`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+}
+
+/** Pivot API (DuckDB sessions): request body shape */
+export type PivotApiRequest = {
+    row_fields: string[];
+    col_fields: string[];
+    values: Array<{ col: string; agg: 'sum' | 'avg' | 'min' | 'max' | 'count' | 'countDistinct' }>;
+    filters: Array<{ column: string; operator: string; value: unknown }>;
+};
+
+export type PivotApiResponse = { columns: string[]; data: Record<string, unknown>[] };
+
+export async function fetchPivot(payload: PivotApiRequest): Promise<PivotApiResponse> {
+    const headers = sessionHeaders();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/pivot`, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
@@ -919,4 +1144,28 @@ export async function downloadSessionData(sessionId: string): Promise<void> {
     a.click();
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
+}
+
+export type SessionDataResponse = {
+    rows: Record<string, unknown>[];
+    columns: string[];
+    metric_columns: string[];
+    numeric_columns: string[];
+    categorical_columns: string[];
+    cohorts: string[];
+    date_min: string | null;
+    date_max: string | null;
+    row_count: number;
+};
+
+export async function getSessionData(sessionId: string): Promise<SessionDataResponse> {
+    const headers = new Headers();
+    headers.set('x-session-id', sessionId);
+
+    const res = await fetch(`${BASE_URL}/data/session`, {
+        method: 'GET',
+        headers,
+    });
+    if (!res.ok) throw new Error('Failed to get session data');
+    return await res.json();
 }

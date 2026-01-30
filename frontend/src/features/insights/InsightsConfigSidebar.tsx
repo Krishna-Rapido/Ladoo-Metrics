@@ -7,9 +7,39 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 
-import { uploadCsv } from "@/lib/api"
+import { uploadCsv, type UploadProgress, type UploadResponse } from "@/lib/api"
 import { parseCsv } from "@/features/insights/csv/parseCsv"
 import type { AggMethod, ParsedCsv } from "@/features/insights/types"
+
+// Threshold for skipping local parsing (50MB) - large files use backend metadata only
+const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024
+
+/**
+ * Convert backend UploadResponse to ParsedCsv format for large files.
+ * Large files don't have local rows - all analysis happens on backend via DuckDB.
+ */
+function uploadResponseToParsedCsv(response: UploadResponse, fileName: string): ParsedCsv {
+  // Parse date strings to Date objects
+  const dateMin = response.date_min ? new Date(response.date_min + 'T00:00:00') : undefined
+  const dateMax = response.date_max ? new Date(response.date_max + 'T00:00:00') : undefined
+  
+  // Determine numeric columns (metrics that are not cohort/date/time)
+  const numericColumns = response.metrics || []
+  const metricColumns = response.columns.filter(c => !['cohort', 'date', 'time'].includes(c.toLowerCase()))
+  const categoricalColumns = metricColumns.filter(c => !numericColumns.includes(c))
+  
+  return {
+    fileName,
+    rows: [], // Empty for large files - analysis happens on backend
+    columns: response.columns,
+    metricColumns,
+    numericColumns,
+    categoricalColumns,
+    cohorts: response.cohorts,
+    dateMin,
+    dateMax,
+  }
+}
 import { aggLabel } from "@/features/insights/analysis/formatters"
 import { ladooDerivedRatioMetrics } from "@/features/insights/metrics/metricCatalog"
 
@@ -121,12 +151,32 @@ export function InsightsConfigSidebar({
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
 
   const canRun = useMemo(() => {
     return Boolean(fileName && testCohort && controlCohort && preRange?.from && preRange?.to && postRange?.from && postRange?.to && selectedMetricKeys.length > 0)
   }, [controlCohort, fileName, postRange?.from, postRange?.to, preRange?.from, preRange?.to, selectedMetricKeys.length, testCohort])
 
   const numericSet = useMemo(() => new Set(numericColumns), [numericColumns])
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 B'
+    const k = 1024
+    const sizes = ['B', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+  }
+
+  const getUploadStatusText = (): string => {
+    if (!uploadProgress) return "Uploading..."
+    switch (uploadProgress.status) {
+      case 'initializing': return 'Initializing...'
+      case 'uploading': return `Uploading ${Math.round(uploadProgress.progress)}%`
+      case 'processing': return 'Processing CSV...'
+      case 'completed': return 'Complete!'
+      default: return 'Uploading...'
+    }
+  }
 
   return (
     <aside className="flex h-full w-[320px] flex-col border-r bg-background p-6">
@@ -168,15 +218,48 @@ export function InsightsConfigSidebar({
             type="file"
             accept=".csv"
             className="hidden"
+            disabled={uploading}
             onChange={async (e) => {
               const file = e.target.files?.[0]
               if (!file) return
+              
+              // Check file size (5GB limit)
+              const MAX_SIZE = 5 * 1024 * 1024 * 1024
+              if (file.size > MAX_SIZE) {
+                setUploadError(`File too large. Maximum size is 5GB. Your file: ${formatBytes(file.size)}`)
+                return
+              }
+              
               setUploading(true)
               setUploadError(null)
+              setUploadProgress({
+                status: 'initializing',
+                bytesUploaded: 0,
+                totalBytes: file.size,
+                progress: 0,
+              })
+              
               try {
-                // keep backend session flow
-                await uploadCsv(file)
-                const parsed = await parseCsv(file)
+                // Upload to backend with progress tracking
+                const uploadResponse = await uploadCsv(file, (progress) => {
+                  setUploadProgress(progress)
+                  if (progress.status === 'error') {
+                    setUploadError(progress.error || 'Upload failed')
+                  }
+                })
+                
+                // For large files, use backend metadata directly (no local parsing)
+                // For small files, parse locally for richer UI experience
+                let parsed: ParsedCsv
+                if (file.size > LARGE_FILE_THRESHOLD) {
+                  // Large file - use backend metadata, analysis via DuckDB
+                  console.log(`Large file (${(file.size / (1024*1024)).toFixed(1)}MB) - using backend metadata`)
+                  parsed = uploadResponseToParsedCsv(uploadResponse, file.name)
+                } else {
+                  // Small file - parse locally for full row access
+                  parsed = await parseCsv(file)
+                }
+                
                 onUploaded(parsed)
               } catch (err: any) {
                 setUploadError(err?.message ?? "Failed to upload/parse CSV")
@@ -197,10 +280,26 @@ export function InsightsConfigSidebar({
           >
             <Upload className="h-4 w-4" />
             <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground/80" title={fileName ?? ""}>
-              {uploading ? "Uploading..." : fileName ? fileName : "Upload CSV"}
+              {uploading ? getUploadStatusText() : fileName ? fileName : "Upload CSV (up to 5GB)"}
             </span>
           </Button>
-          {uploadError ? <div className="text-xs text-destructive">{uploadError}</div> : null}
+          
+          {/* Progress bar */}
+          {uploading && uploadProgress && (
+            <div className="w-full">
+              <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                <div 
+                  className="h-full rounded-full transition-all duration-300 ease-out bg-emerald-500"
+                  style={{ width: `${Math.min(uploadProgress.progress, 100)}%` }}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {formatBytes(uploadProgress.bytesUploaded)} / {formatBytes(uploadProgress.totalBytes)}
+              </p>
+            </div>
+          )}
+          
+          {uploadError && !uploading ? <div className="text-xs text-destructive">{uploadError}</div> : null}
         </div>
 
         {/* Cohort selection */}

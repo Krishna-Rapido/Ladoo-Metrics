@@ -3,12 +3,17 @@ from __future__ import annotations
 import io
 import os
 import secrets
-from typing import Dict, Optional
+import tempfile
+import shutil
+import asyncio
+from pathlib import Path
+from typing import Dict, Optional, Union
 
+import duckdb
 import pandas as pd
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, FileResponse
+from fastapi.responses import JSONResponse, Response, FileResponse, StreamingResponse
 
 import schemas
 from schemas import (
@@ -64,6 +69,8 @@ from schemas import (
     FunctionJoinRequest,
     FunctionJoinResponse,
     FunctionTemplateResponse,
+    PivotRequest,
+    PivotResponse,
 )
 from function_executor import (
     test_function,
@@ -85,8 +92,24 @@ from transformations import (
 
 app = FastAPI(title="Cohort Metrics API")
 
-# Simple in-memory session store mapping session_id to DataFrame
-SESSION_STORE: Dict[str, pd.DataFrame] = {}
+# Configuration for large file uploads (5GB max)
+MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024  # 5GB in bytes
+CHUNK_SIZE = 1024 * 1024  # 1MB chunks for reading
+CSV_CHUNK_SIZE = 100_000  # 100k rows per chunk for pandas
+
+# Threshold for using DuckDB-based storage (files larger than this use parquet + DuckDB)
+DUCKDB_THRESHOLD = 50 * 1024 * 1024  # 50MB
+
+# Session store - maps session_id to either:
+#   - pandas DataFrame (for small files, backward compatibility)
+#   - dict with parquet_path and metadata (for large files, DuckDB-based)
+SESSION_STORE: Dict[str, Union[pd.DataFrame, dict]] = {}
+
+# Session file store - maps session_id to temp file path (for large files)
+SESSION_FILE_STORE: Dict[str, str] = {}
+
+# Upload progress store - maps upload_id to progress info
+UPLOAD_PROGRESS: Dict[str, dict] = {}
 
 # Funnel analysis session store - separate from main session store
 FUNNEL_SESSION_STORE: Dict[str, pd.DataFrame] = {}
@@ -105,70 +128,670 @@ app.add_middleware(
 )
 
 
-def get_session_df(x_session_id: Optional[str] = Header(default=None)) -> pd.DataFrame:
+def is_duckdb_session(session_id: str) -> bool:
+    """Check if a session uses DuckDB-based storage (parquet file on disk)."""
+    if session_id not in SESSION_STORE:
+        return False
+    session = SESSION_STORE[session_id]
+    return isinstance(session, dict) and "parquet_path" in session
+
+
+def get_session_parquet_path(x_session_id: Optional[str] = Header(default=None)) -> str:
+    """Get the parquet file path for a DuckDB-based session."""
     if not x_session_id or x_session_id not in SESSION_STORE:
         raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
-    return SESSION_STORE[x_session_id]
+    
+    session = SESSION_STORE[x_session_id]
+    if isinstance(session, dict) and "parquet_path" in session:
+        return session["parquet_path"]
+    
+    raise HTTPException(status_code=400, detail="Session does not use DuckDB storage")
+
+
+def get_session_metadata(x_session_id: Optional[str] = Header(default=None)) -> dict:
+    """Get session metadata (works for both pandas and DuckDB sessions)."""
+    if not x_session_id or x_session_id not in SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
+    
+    session = SESSION_STORE[x_session_id]
+    if isinstance(session, dict) and "parquet_path" in session:
+        return session
+    
+    # For pandas DataFrame sessions, extract metadata
+    df = session
+    return {
+        "num_rows": len(df),
+        "columns": list(df.columns),
+        "cohorts": sorted(df["cohort"].dropna().unique().tolist()) if "cohort" in df.columns else [],
+        "date_min": df["date"].min().strftime("%Y-%m-%d") if "date" in df.columns else None,
+        "date_max": df["date"].max().strftime("%Y-%m-%d") if "date" in df.columns else None,
+        "metrics": [c for c in df.columns if c not in {"cohort", "date", "time"}],
+    }
+
+
+def query_session_duckdb(session_id: str, sql: str) -> pd.DataFrame:
+    """
+    Execute SQL query on session's Parquet file using DuckDB.
+    The query should reference the table as 'data'.
+    Returns results as a pandas DataFrame.
+    """
+    if session_id not in SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+    
+    session = SESSION_STORE[session_id]
+    if not isinstance(session, dict) or "parquet_path" not in session:
+        raise HTTPException(status_code=400, detail="Session does not use DuckDB storage")
+    
+    parquet_path = session["parquet_path"]
+    
+    if not os.path.exists(parquet_path):
+        raise HTTPException(status_code=400, detail="Session data file not found")
+    
+    # Execute query using DuckDB
+    con = duckdb.connect()
+    try:
+        # Register the parquet file as a table named 'data'
+        con.execute(f"CREATE VIEW data AS SELECT * FROM read_parquet('{parquet_path}')")
+        result = con.execute(sql).fetchdf()
+        return result
+    finally:
+        con.close()
+
+
+def get_session_df(x_session_id: Optional[str] = Header(default=None)) -> pd.DataFrame:
+    """
+    Get session DataFrame. For DuckDB sessions, loads the full data into pandas.
+    WARNING: For large files, prefer using query_session_duckdb() with specific queries.
+    """
+    if not x_session_id or x_session_id not in SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
+    
+    session = SESSION_STORE[x_session_id]
+    
+    # If it's already a DataFrame, return it
+    if isinstance(session, pd.DataFrame):
+        return session
+    
+    # If it's a DuckDB session, load from parquet
+    if isinstance(session, dict) and "parquet_path" in session:
+        parquet_path = session["parquet_path"]
+        if not os.path.exists(parquet_path):
+            raise HTTPException(status_code=400, detail="Session data file not found")
+        
+        # Use DuckDB to read the parquet file (more memory efficient than pyarrow for large files)
+        con = duckdb.connect()
+        try:
+            df = con.execute(f"SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
+            return df
+        finally:
+            con.close()
+    
+    raise HTTPException(status_code=400, detail="Invalid session data format")
+
+
+async def stream_file_to_disk(file: UploadFile, temp_path: str, upload_id: str = None) -> int:
+    """Stream uploaded file to disk in chunks to avoid memory issues."""
+    total_size = 0
+    with open(temp_path, 'wb') as f:
+        while True:
+            chunk = await file.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            f.write(chunk)
+            total_size += len(chunk)
+            
+            # Update progress if upload_id provided
+            if upload_id and upload_id in UPLOAD_PROGRESS:
+                UPLOAD_PROGRESS[upload_id]['bytes_uploaded'] = total_size
+            
+            # Check file size limit
+            if total_size > MAX_FILE_SIZE:
+                os.unlink(temp_path)
+                raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {MAX_FILE_SIZE / (1024**3):.1f}GB")
+    
+    return total_size
+
+
+def detect_csv_delimiter(file_path: str) -> str:
+    """Detect CSV delimiter by reading first few lines."""
+    import csv
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+        # Read first 8KB to detect delimiter
+        sample = f.read(8192)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=',;\t|')
+            return dialect.delimiter
+        except csv.Error:
+            return ','  # Default to comma
+
+
+def process_csv_to_parquet(temp_path: str, parquet_path: str) -> dict:
+    """
+    Process CSV file in chunks and write to Parquet for DuckDB-based storage.
+    Returns metadata dict with parquet_path, num_rows, columns, cohorts, date range, metrics.
+    Does NOT load the full data into memory.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    
+    # Detect delimiter first
+    delimiter = detect_csv_delimiter(temp_path)
+    
+    # First, read a small sample to validate structure
+    try:
+        sample_df = pd.read_csv(temp_path, nrows=100, sep=delimiter, encoding='utf-8', encoding_errors='replace')
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to read CSV: {exc}")
+    
+    # Validate required columns
+    if "cohort" not in sample_df.columns:
+        raise HTTPException(status_code=400, detail="CSV missing required column: 'cohort'")
+    if ("date" not in sample_df.columns) and ("time" not in sample_df.columns):
+        raise HTTPException(status_code=400, detail="CSV must include 'date' (YYYY-MM-DD) or 'time' (YYYYMMDD)")
+    
+    # Determine dtypes for efficient reading
+    has_date = "date" in sample_df.columns
+    columns_list = list(sample_df.columns)
+    
+    # Determine columns that should be numeric
+    numeric_cols = []
+    for c in sample_df.columns:
+        if c not in {"cohort", "date", "time"}:
+            try:
+                pd.to_numeric(sample_df[c], errors='raise')
+                numeric_cols.append(c)
+            except (ValueError, TypeError):
+                pass
+    
+    # Process CSV in chunks and write to Parquet incrementally
+    total_rows = 0
+    invalid_date_count = 0
+    writer = None
+    
+    try:
+        for chunk_idx, chunk in enumerate(pd.read_csv(
+            temp_path, 
+            chunksize=CSV_CHUNK_SIZE, 
+            low_memory=False,
+            sep=delimiter,
+            encoding='utf-8',
+            encoding_errors='replace',
+            on_bad_lines='warn'
+        )):
+            # Process date column
+            if has_date:
+                chunk["date"] = pd.to_datetime(chunk["date"], errors="coerce")
+            else:
+                chunk["date"] = pd.to_datetime(chunk["time"].astype(str), format="%Y%m%d", errors="coerce")
+            
+            # Count invalid dates
+            invalid_date_count += chunk["date"].isna().sum()
+            
+            # Process cohort column
+            chunk["cohort"] = chunk["cohort"].astype(str)
+            
+            # Numeric coercion for metric columns
+            for c in numeric_cols:
+                if c in chunk.columns:
+                    chunk[c] = pd.to_numeric(chunk[c], errors="coerce")
+            
+            # Convert to pyarrow table
+            table = pa.Table.from_pandas(chunk, preserve_index=False)
+            
+            # Write to parquet (append mode)
+            if writer is None:
+                writer = pq.ParquetWriter(parquet_path, table.schema)
+            writer.write_table(table)
+            
+            total_rows += len(chunk)
+            
+            # Free memory
+            del chunk
+            del table
+        
+        if writer:
+            writer.close()
+            writer = None
+        
+        # Check for invalid dates (warn but don't fail for large files)
+        if invalid_date_count > 0:
+            # For large files, log warning but allow if less than 1% invalid
+            invalid_pct = (invalid_date_count / total_rows) * 100
+            if invalid_pct > 1:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Too many invalid date/time values: {invalid_date_count} ({invalid_pct:.1f}%)"
+                )
+        
+        # Use DuckDB to extract metadata WITHOUT loading full data into memory
+        con = duckdb.connect()
+        try:
+            # Get date range and row count
+            meta = con.execute(f"""
+                SELECT 
+                    COUNT(*) as num_rows,
+                    MIN(date) as date_min,
+                    MAX(date) as date_max
+                FROM read_parquet('{parquet_path}')
+            """).fetchone()
+            
+            # Get unique cohorts
+            cohorts_result = con.execute(f"""
+                SELECT DISTINCT cohort 
+                FROM read_parquet('{parquet_path}') 
+                WHERE cohort IS NOT NULL
+                ORDER BY cohort
+            """).fetchall()
+            
+            cohorts = [c[0] for c in cohorts_result]
+            
+            # Format dates
+            date_min = meta[1]
+            date_max = meta[2]
+            if hasattr(date_min, 'strftime'):
+                date_min_str = date_min.strftime("%Y-%m-%d")
+            else:
+                date_min_str = str(date_min)[:10] if date_min else None
+                
+            if hasattr(date_max, 'strftime'):
+                date_max_str = date_max.strftime("%Y-%m-%d")
+            else:
+                date_max_str = str(date_max)[:10] if date_max else None
+            
+            # Get column info from parquet schema
+            schema_result = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{parquet_path}')").fetchall()
+            columns = [row[0] for row in schema_result]
+            
+            # Determine metric columns (exclude cohort, date, time)
+            metrics = [c for c in columns if c not in {"cohort", "date", "time"}]
+            
+            # Determine numeric columns
+            numeric_columns = []
+            categorical_columns = []
+            for row in schema_result:
+                col_name, col_type = row[0], row[1]
+                if col_name not in {"cohort", "date", "time"}:
+                    if any(t in col_type.lower() for t in ['int', 'float', 'double', 'decimal', 'numeric']):
+                        numeric_columns.append(col_name)
+                    elif col_type.lower() in ['varchar', 'string']:
+                        categorical_columns.append(col_name)
+            
+            return {
+                "parquet_path": parquet_path,
+                "num_rows": meta[0],
+                "columns": columns,
+                "cohorts": cohorts,
+                "date_min": date_min_str,
+                "date_max": date_max_str,
+                "metrics": metrics,
+                "numeric_columns": numeric_columns,
+                "categorical_columns": categorical_columns,
+                "invalid_dates": invalid_date_count,
+            }
+        finally:
+            con.close()
+        
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Clean up on error
+        if writer:
+            try:
+                writer.close()
+            except Exception:
+                pass
+        if os.path.exists(parquet_path):
+            os.unlink(parquet_path)
+        raise HTTPException(status_code=400, detail=f"Failed to process CSV: {exc}")
+
+
+def process_csv_chunked(temp_path: str, session_id: str) -> tuple[pd.DataFrame, dict]:
+    """
+    Legacy function for backward compatibility.
+    Process CSV file in chunks and return DataFrame.
+    For large files, prefer using process_csv_to_parquet() which doesn't load into memory.
+    """
+    import pyarrow.parquet as pq
+    
+    # Create temp parquet path
+    parquet_path = temp_path.replace('.csv', '.parquet')
+    
+    # Process to parquet
+    metadata = process_csv_to_parquet(temp_path, parquet_path)
+    
+    # Read back as DataFrame (for backward compatibility with small file handling)
+    df = pq.read_table(parquet_path).to_pandas()
+    
+    # Clean up parquet file since we loaded into memory
+    if os.path.exists(parquet_path):
+        os.unlink(parquet_path)
+    
+    return df, {"total_rows": metadata["num_rows"], "invalid_dates": metadata["invalid_dates"]}
 
 
 @app.post("/upload", response_model=UploadResponse, responses={400: {"model": ErrorResponse}})
 async def upload_csv(file: UploadFile = File(...)) -> UploadResponse:
+    """
+    Upload a CSV file for analysis. Supports files up to 5GB.
+    
+    For very large files (>100MB), consider using /upload/chunked endpoint
+    which provides progress tracking.
+    """
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files are supported")
-    content = await file.read()
-    try:
-        df = pd.read_csv(io.BytesIO(content))
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Failed to read CSV: {exc}")
-
-    # Validate identifiers
-    if "cohort" not in df.columns:
-        raise HTTPException(status_code=400, detail="CSV missing required column: 'cohort'")
-    if ("date" not in df.columns) and ("time" not in df.columns):
-        raise HTTPException(status_code=400, detail="CSV must include 'date' (YYYY-MM-DD) or 'time' (YYYYMMDD)")
-
-    df = df.copy()
-    # Coerce a unified date column
-    # df['date'] = df['time'].astype(str)
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    else:
-        df["date"] = pd.to_datetime(df["time"].astype(str), format="%Y%m%d", errors="coerce")
-    if df["date"].isna().any():
-        x = df["date"].isna().sum()
-        raise HTTPException(status_code=400, detail=f"Invalid date/time values found = {x}")
-    df["cohort"] = df["cohort"].astype(str)
-    # Best-effort numeric coercion for other columns
-    for c in df.columns:
-        if c in {"cohort", "date", "time"}:
-            continue
-        try:
-            df[c] = pd.to_numeric(df[c], errors="ignore")
-        except Exception:
-            pass
-
+    
     session_id = secrets.token_hex(16)
-    SESSION_STORE[session_id] = df
+    
+    # Create temp file for streaming
+    temp_dir = tempfile.mkdtemp()
+    temp_path = os.path.join(temp_dir, "upload.csv")
+    
+    try:
+        # Stream file to disk instead of loading into memory
+        file_size = await stream_file_to_disk(file, temp_path)
+        
+        # Detect delimiter
+        delimiter = detect_csv_delimiter(temp_path)
+        
+        # For smaller files (<DUCKDB_THRESHOLD), use the traditional in-memory approach for speed
+        if file_size < DUCKDB_THRESHOLD:
+            df = pd.read_csv(temp_path, sep=delimiter, encoding='utf-8', encoding_errors='replace')
+            
+            # Validate and process
+            if "cohort" not in df.columns:
+                raise HTTPException(status_code=400, detail="CSV missing required column: 'cohort'")
+            if ("date" not in df.columns) and ("time" not in df.columns):
+                raise HTTPException(status_code=400, detail="CSV must include 'date' (YYYY-MM-DD) or 'time' (YYYYMMDD)")
+            
+            df = df.copy()
+            if "date" in df.columns:
+                df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            else:
+                df["date"] = pd.to_datetime(df["time"].astype(str), format="%Y%m%d", errors="coerce")
+            
+            if df["date"].isna().any():
+                x = df["date"].isna().sum()
+                raise HTTPException(status_code=400, detail=f"Invalid date/time values found = {x}")
+            
+            df["cohort"] = df["cohort"].astype(str)
+            
+            # Best-effort numeric coercion
+            for c in df.columns:
+                if c in {"cohort", "date", "time"}:
+                    continue
+                try:
+                    df[c] = pd.to_numeric(df[c], errors="ignore")
+                except Exception:
+                    pass
+            
+            # Store DataFrame in session (in-memory for small files)
+            SESSION_STORE[session_id] = df
+            SESSION_FILE_STORE[session_id] = temp_path
+            
+            cohorts = sorted(df["cohort"].dropna().unique().tolist())
+            date_min = df["date"].min()
+            date_max = df["date"].max()
+            metric_candidates = [c for c in df.columns if c not in {"cohort", "date", "time"}]
+            
+            return UploadResponse(
+                session_id=session_id,
+                num_rows=df.shape[0],
+                columns=list(df.columns.astype(str)),
+                cohorts=cohorts,
+                date_min=date_min.strftime("%Y-%m-%d"),
+                date_max=date_max.strftime("%Y-%m-%d"),
+                metrics=metric_candidates,
+            )
+        else:
+            # For large files, use DuckDB-based storage (parquet on disk)
+            parquet_path = os.path.join(temp_dir, "data.parquet")
+            
+            # Process CSV to Parquet and get metadata (without loading into memory)
+            session_metadata = process_csv_to_parquet(temp_path, parquet_path)
+            
+            # Store metadata in session (NOT the full DataFrame)
+            SESSION_STORE[session_id] = session_metadata
+            SESSION_FILE_STORE[session_id] = temp_dir  # Store dir for cleanup
+            
+            return UploadResponse(
+                session_id=session_id,
+                num_rows=session_metadata["num_rows"],
+                columns=session_metadata["columns"],
+                cohorts=session_metadata["cohorts"],
+                date_min=session_metadata["date_min"],
+                date_max=session_metadata["date_max"],
+                metrics=session_metadata["metrics"],
+            )
+    except HTTPException:
+        # Clean up temp dir on validation errors
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+    except Exception as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"Failed to process CSV: {exc}")
 
-    cohorts = sorted(df["cohort"].dropna().unique().tolist())
-    date_min = df["date"].min()
-    date_max = df["date"].max()
 
-    # Determine available metric columns
-    metric_candidates = [c for c in df.columns if c not in {"cohort", "date", "time"}]
-    return UploadResponse(
-        session_id=session_id,
-        num_rows=df.shape[0],
-        columns=list(df.columns.astype(str)),
-        cohorts=cohorts,
-        date_min=date_min.strftime("%Y-%m-%d"),
-        date_max=date_max.strftime("%Y-%m-%d"),
-        metrics=metric_candidates,
-    )
+@app.post("/upload/init")
+async def init_chunked_upload(request: Request):
+    """
+    Initialize a chunked upload session. Returns an upload_id for tracking progress.
+    Use this for large files (>100MB) to enable progress tracking.
+    """
+    body = await request.json()
+    filename = body.get("filename", "upload.csv")
+    file_size = body.get("file_size", 0)
+    
+    if not filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only CSV files are supported")
+    
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {MAX_FILE_SIZE / (1024**3):.1f}GB")
+    
+    upload_id = secrets.token_hex(16)
+    temp_dir = tempfile.mkdtemp()
+    temp_path = os.path.join(temp_dir, "upload.csv")
+    
+    UPLOAD_PROGRESS[upload_id] = {
+        "status": "initialized",
+        "filename": filename,
+        "total_size": file_size,
+        "bytes_uploaded": 0,
+        "temp_path": temp_path,
+        "temp_dir": temp_dir,
+    }
+    
+    return {"upload_id": upload_id, "max_chunk_size": CHUNK_SIZE}
+
+
+@app.post("/upload/chunk/{upload_id}")
+async def upload_chunk(upload_id: str, file: UploadFile = File(...)):
+    """
+    Upload a chunk of the file. Chunks should be uploaded sequentially.
+    """
+    if upload_id not in UPLOAD_PROGRESS:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+    
+    progress = UPLOAD_PROGRESS[upload_id]
+    temp_path = progress["temp_path"]
+    
+    # Read chunk and append to file
+    chunk_data = await file.read()
+    
+    with open(temp_path, 'ab') as f:
+        f.write(chunk_data)
+    
+    progress["bytes_uploaded"] += len(chunk_data)
+    progress["status"] = "uploading"
+    
+    return {
+        "upload_id": upload_id,
+        "bytes_uploaded": progress["bytes_uploaded"],
+        "total_size": progress["total_size"],
+        "progress": progress["bytes_uploaded"] / max(progress["total_size"], 1) * 100
+    }
+
+
+@app.get("/upload/progress/{upload_id}")
+async def get_upload_progress(upload_id: str):
+    """Get the progress of an ongoing upload."""
+    if upload_id not in UPLOAD_PROGRESS:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+    
+    progress = UPLOAD_PROGRESS[upload_id]
+    return {
+        "upload_id": upload_id,
+        "status": progress["status"],
+        "bytes_uploaded": progress["bytes_uploaded"],
+        "total_size": progress["total_size"],
+        "progress": progress["bytes_uploaded"] / max(progress["total_size"], 1) * 100
+    }
+
+
+@app.post("/upload/complete/{upload_id}", response_model=UploadResponse)
+async def complete_chunked_upload(upload_id: str):
+    """
+    Complete a chunked upload and process the CSV file.
+    """
+    if upload_id not in UPLOAD_PROGRESS:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+    
+    progress = UPLOAD_PROGRESS[upload_id]
+    temp_path = progress["temp_path"]
+    temp_dir = progress["temp_dir"]
+    
+    progress["status"] = "processing"
+    session_id = secrets.token_hex(16)
+    
+    try:
+        file_size = progress["bytes_uploaded"]
+        
+        # Detect delimiter
+        delimiter = detect_csv_delimiter(temp_path)
+        
+        # For smaller files (<DUCKDB_THRESHOLD), use in-memory approach
+        if file_size < DUCKDB_THRESHOLD:
+            df = pd.read_csv(temp_path, sep=delimiter, encoding='utf-8', encoding_errors='replace')
+            
+            if "cohort" not in df.columns:
+                raise HTTPException(status_code=400, detail="CSV missing required column: 'cohort'")
+            if ("date" not in df.columns) and ("time" not in df.columns):
+                raise HTTPException(status_code=400, detail="CSV must include 'date' (YYYY-MM-DD) or 'time' (YYYYMMDD)")
+            
+            df = df.copy()
+            if "date" in df.columns:
+                df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            else:
+                df["date"] = pd.to_datetime(df["time"].astype(str), format="%Y%m%d", errors="coerce")
+            
+            if df["date"].isna().any():
+                x = df["date"].isna().sum()
+                raise HTTPException(status_code=400, detail=f"Invalid date/time values found = {x}")
+            
+            df["cohort"] = df["cohort"].astype(str)
+            
+            for c in df.columns:
+                if c in {"cohort", "date", "time"}:
+                    continue
+                try:
+                    df[c] = pd.to_numeric(df[c], errors="ignore")
+                except Exception:
+                    pass
+            
+            SESSION_STORE[session_id] = df
+            SESSION_FILE_STORE[session_id] = temp_path
+            
+            cohorts = sorted(df["cohort"].dropna().unique().tolist())
+            date_min = df["date"].min()
+            date_max = df["date"].max()
+            metric_candidates = [c for c in df.columns if c not in {"cohort", "date", "time"}]
+            
+            progress["status"] = "completed"
+            progress["session_id"] = session_id
+            
+            return UploadResponse(
+                session_id=session_id,
+                num_rows=df.shape[0],
+                columns=list(df.columns.astype(str)),
+                cohorts=cohorts,
+                date_min=date_min.strftime("%Y-%m-%d"),
+                date_max=date_max.strftime("%Y-%m-%d"),
+                metrics=metric_candidates,
+            )
+        else:
+            # For large files, use DuckDB-based storage (parquet on disk)
+            parquet_path = os.path.join(temp_dir, "data.parquet")
+            
+            # Process CSV to Parquet and get metadata (without loading into memory)
+            session_metadata = process_csv_to_parquet(temp_path, parquet_path)
+            
+            # Store metadata in session (NOT the full DataFrame)
+            SESSION_STORE[session_id] = session_metadata
+            SESSION_FILE_STORE[session_id] = temp_dir  # Store dir for cleanup
+            
+            progress["status"] = "completed"
+            progress["session_id"] = session_id
+            
+            return UploadResponse(
+                session_id=session_id,
+                num_rows=session_metadata["num_rows"],
+                columns=session_metadata["columns"],
+                cohorts=session_metadata["cohorts"],
+                date_min=session_metadata["date_min"],
+                date_max=session_metadata["date_max"],
+                metrics=session_metadata["metrics"],
+            )
+    except HTTPException:
+        progress["status"] = "error"
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        del UPLOAD_PROGRESS[upload_id]
+        raise
+    except Exception as exc:
+        progress["status"] = "error"
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        del UPLOAD_PROGRESS[upload_id]
+        raise HTTPException(status_code=400, detail=f"Failed to process CSV: {exc}")
+
+
+@app.delete("/upload/{upload_id}")
+async def cancel_upload(upload_id: str):
+    """Cancel an ongoing upload and clean up resources."""
+    if upload_id not in UPLOAD_PROGRESS:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+    
+    progress = UPLOAD_PROGRESS[upload_id]
+    temp_dir = progress.get("temp_dir")
+    
+    if temp_dir:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    
+    del UPLOAD_PROGRESS[upload_id]
+    
+    return {"status": "cancelled", "upload_id": upload_id}
 
 
 @app.get("/meta")
-def get_meta(df: pd.DataFrame = Depends(get_session_df)):
+def get_meta(x_session_id: Optional[str] = Header(default=None)):
+    """Get metadata for the session - works with both DuckDB and pandas sessions."""
+    if not x_session_id or x_session_id not in SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
+    
+    session = SESSION_STORE[x_session_id]
+    
+    # If it's a DuckDB session (dict with parquet_path), return stored metadata
+    if isinstance(session, dict) and "parquet_path" in session:
+        # Get categorical columns from DuckDB if not already cached
+        categorical_columns = session.get("categorical_columns", [])
+        
+        return {
+            "cohorts": session["cohorts"],
+            "date_min": session["date_min"],
+            "date_max": session["date_max"],
+            "metrics": session["metrics"],
+            "categorical_columns": sorted(categorical_columns)
+        }
+    
+    # For pandas DataFrame sessions, compute metadata
+    df = session
     cohorts = sorted(df["cohort"].dropna().unique().tolist())
     date_min = df["date"].min().strftime("%Y-%m-%d")
     date_max = df["date"].max().strftime("%Y-%m-%d")
@@ -217,12 +840,318 @@ def insights_help():
     }
 
 
-@app.post("/insights", response_model=InsightsResponse, responses={400: {"model": ErrorResponse}})
-def compute_insights(payload: InsightsRequest, df: pd.DataFrame = Depends(get_session_df)) -> InsightsResponse:
+def compute_insights_duckdb(payload: InsightsRequest, parquet_path: str) -> InsightsResponse:
     """
-    Multi-metric Insights endpoint.
-    - Returns daily timeseries for selected metrics (each with its own aggregation).
-    - Returns an executive summary for pre vs post across test/control + deltas.
+    Compute insights using DuckDB queries on parquet file.
+    Memory efficient - doesn't load full data into memory.
+    """
+    if not payload.metrics:
+        raise HTTPException(status_code=400, detail="No metrics selected")
+    
+    if not payload.test_cohort or not payload.control_cohort:
+        raise HTTPException(status_code=400, detail="Both test_cohort and control_cohort are required")
+    
+    con = duckdb.connect()
+    try:
+        # Get column types from parquet so we use correct aggregation for numeric vs string columns
+        type_df = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
+        # DuckDB DESCRIBE may return 'column_name'/'column_type' or 'Column'/'Type'
+        name_col = type_df.columns[0]
+        type_col = type_df.columns[1]
+        col_types = dict(zip(type_df[name_col], type_df[type_col]))
+        
+        def is_numeric_col(col: str) -> bool:
+            t = col_types.get(col, "")
+            t_lower = str(t).lower()
+            return any(x in t_lower for x in ["int", "float", "double", "decimal", "numeric", "bigint", "smallint"])
+        
+        # Quote column names for DuckDB (handles special characters like ':')
+        def quote_col(col: str) -> str:
+            # Escape any double quotes in the column name and wrap in double quotes
+            return f'"{col.replace(chr(34), chr(34)+chr(34))}"'
+        
+        # captain_id column (quoted) for sum_per_captain; fallback if missing
+        captain_id_quoted = quote_col("captain_id") if "captain_id" in col_types else None
+
+        # Map aggregation functions to SQL; for non-numeric columns use COUNT/COUNT DISTINCT only
+        def get_sql_agg(agg: str, col: str) -> str:
+            quoted = quote_col(col)
+            numeric = is_numeric_col(col)
+            
+            if agg == "count":
+                return f"COUNT({quoted})"
+            if agg == "nunique":
+                return f"COUNT(DISTINCT {quoted})"
+            # sum_per_captain = sum(metric) / count(distinct captain_id)
+            if agg == "sum_per_captain":
+                if captain_id_quoted is None:
+                    # No captain_id column: fall back to sum
+                    if numeric:
+                        return f"SUM(CAST({quoted} AS DOUBLE))"
+                    return f"COUNT({quoted})"
+                if numeric:
+                    return f"SUM(CAST({quoted} AS DOUBLE)) / NULLIF(COUNT(DISTINCT {captain_id_quoted}), 0)"
+                return f"COUNT({quoted}) / NULLIF(COUNT(DISTINCT {captain_id_quoted}), 0)"
+            # For sum/mean/median on non-numeric columns, use COUNT (interpret as row count)
+            if not numeric:
+                return f"COUNT({quoted})"
+            if agg == "sum":
+                return f"SUM(CAST({quoted} AS DOUBLE))"
+            if agg == "mean":
+                return f"AVG(CAST({quoted} AS DOUBLE))"
+            if agg == "median":
+                return f"MEDIAN(CAST({quoted} AS DOUBLE))"
+            raise ValueError(f"Unsupported aggregation: {agg}")
+        
+        # Resolve metric SQL: column may be a physical column or a ratio key "num2denom" (value = SUM(denom)/SUM(num))
+        def get_metric_sql_and_agg(spec):
+            col = spec.column
+            agg = spec.agg_func
+            if col in col_types:
+                return get_sql_agg(agg, col), col, agg
+            if "2" in col:
+                parts = col.split("2", 1)
+                if len(parts) == 2:
+                    num, denom = parts[0].strip(), parts[1].strip()
+                    if num in col_types and denom in col_types:
+                        qn, qd = quote_col(num), quote_col(denom)
+                        ratio_sql = f"SUM(CAST({qd} AS DOUBLE)) / NULLIF(SUM(CAST({qn} AS DOUBLE)), 0)"
+                        return ratio_sql, col, "ratio"
+            return None, None, None
+        
+        # Determine date range for timeseries
+        start_candidates = []
+        end_candidates = []
+        for period in [payload.pre_period, payload.post_period]:
+            if period and period.start_date:
+                start_candidates.append(period.start_date)
+            if period and period.end_date:
+                end_candidates.append(period.end_date)
+        ts_start = min(start_candidates) if start_candidates else None
+        ts_end = max(end_candidates) if end_candidates else None
+        
+        # Build date filter clause
+        date_filter = ""
+        if ts_start and ts_end:
+            date_filter = f"AND date >= '{ts_start}' AND date <= '{ts_end}'"
+        elif ts_start:
+            date_filter = f"AND date >= '{ts_start}'"
+        elif ts_end:
+            date_filter = f"AND date <= '{ts_end}'"
+        
+        # Period (pre/post) for 4-line chart
+        pre_start = payload.pre_period.start_date if payload.pre_period else None
+        pre_end = payload.pre_period.end_date if payload.pre_period else None
+        post_start = payload.post_period.start_date if payload.post_period else None
+        post_end = payload.post_period.end_date if payload.post_period else None
+        period_case = "NULL"
+        if pre_start and pre_end and post_start and post_end:
+            period_case = f"""CASE
+                WHEN date >= '{pre_start}' AND date <= '{pre_end}' THEN 'pre'
+                WHEN date >= '{post_start}' AND date <= '{post_end}' THEN 'post'
+                ELSE NULL
+            END"""
+        
+        # Optional series breakout (categorical column)
+        breakout_col = payload.series_breakout if payload.series_breakout and payload.series_breakout in col_types else None
+        breakout_select = ""
+        breakout_group = ""
+        if breakout_col:
+            bq = quote_col(breakout_col)
+            breakout_select = f", COALESCE(CAST({bq} AS VARCHAR), 'Unknown') as breakout_value"
+            breakout_group = f", breakout_value"
+        
+        # -------- Timeseries query --------
+        time_series = []
+        for spec in payload.metrics:
+            sql_agg, col, agg = get_metric_sql_and_agg(spec)
+            if sql_agg is None:
+                continue
+            ts_query = f"""
+                SELECT 
+                    CAST(date AS DATE) as date,
+                    CASE 
+                        WHEN cohort = '{payload.test_cohort}' THEN 'test' 
+                        ELSE 'control' 
+                    END as cohort_type,
+                    {period_case} as period,
+                    '{col}' as metric,
+                    '{agg}' as agg_func,
+                    {sql_agg} as value
+                    {breakout_select}
+                FROM read_parquet('{parquet_path}')
+                WHERE cohort IN ('{payload.test_cohort}', '{payload.control_cohort}')
+                {date_filter}
+                GROUP BY CAST(date AS DATE), cohort_type, period
+                    {breakout_group}
+                ORDER BY date, cohort_type, period
+                    {breakout_group.replace(', breakout_value', '')}
+            """
+            # If no breakout, remove the extra comma from GROUP BY
+            if not breakout_col:
+                ts_query = f"""
+                SELECT 
+                    CAST(date AS DATE) as date,
+                    CASE 
+                        WHEN cohort = '{payload.test_cohort}' THEN 'test' 
+                        ELSE 'control' 
+                    END as cohort_type,
+                    {period_case} as period,
+                    '{col}' as metric,
+                    '{agg}' as agg_func,
+                    {sql_agg} as value
+                FROM read_parquet('{parquet_path}')
+                WHERE cohort IN ('{payload.test_cohort}', '{payload.control_cohort}')
+                {date_filter}
+                GROUP BY CAST(date AS DATE), cohort_type, period
+                ORDER BY date, cohort_type, period
+            """
+            else:
+                ts_query = f"""
+                SELECT 
+                    CAST(date AS DATE) as date,
+                    CASE 
+                        WHEN cohort = '{payload.test_cohort}' THEN 'test' 
+                        ELSE 'control' 
+                    END as cohort_type,
+                    {period_case} as period,
+                    '{col}' as metric,
+                    '{agg}' as agg_func,
+                    {sql_agg} as value,
+                    COALESCE(CAST({quote_col(breakout_col)} AS VARCHAR), 'Unknown') as breakout_value
+                FROM read_parquet('{parquet_path}')
+                WHERE cohort IN ('{payload.test_cohort}', '{payload.control_cohort}')
+                {date_filter}
+                GROUP BY CAST(date AS DATE), cohort_type, period, breakout_value
+                ORDER BY date, cohort_type, period, breakout_value
+            """
+            ts_df = con.execute(ts_query).fetchdf()
+            for _, row in ts_df.iterrows():
+                time_series.append(InsightsTimeSeriesPoint(
+                    date=str(row["date"])[:10],
+                    cohort_type=str(row["cohort_type"]),
+                    period=str(row["period"]) if row.get("period") is not None and str(row["period"]) != "None" else None,
+                    metric=col,
+                    agg_func=agg,
+                    value=float(row["value"]) if pd.notna(row["value"]) else 0.0,
+                    breakout_value=str(row["breakout_value"]) if breakout_col and row.get("breakout_value") is not None else None,
+                ))
+        
+        # -------- Executive summary query --------
+        summary = []
+        for spec in payload.metrics:
+            sql_agg, col, agg = get_metric_sql_and_agg(spec)
+            if sql_agg is None:
+                continue
+            # Build period filters
+            pre_filter = ""
+            post_filter = ""
+            if payload.pre_period:
+                if payload.pre_period.start_date:
+                    pre_filter += f" AND date >= '{payload.pre_period.start_date}'"
+                if payload.pre_period.end_date:
+                    pre_filter += f" AND date <= '{payload.pre_period.end_date}'"
+            if payload.post_period:
+                if payload.post_period.start_date:
+                    post_filter += f" AND date >= '{payload.post_period.start_date}'"
+                if payload.post_period.end_date:
+                    post_filter += f" AND date <= '{payload.post_period.end_date}'"
+            
+            # Query for pre and post values per cohort_type
+            summary_query = f"""
+                WITH pre_data AS (
+                    SELECT 
+                        CASE WHEN cohort = '{payload.test_cohort}' THEN 'test' ELSE 'control' END as cohort_type,
+                        {sql_agg} as value
+                    FROM read_parquet('{parquet_path}')
+                    WHERE cohort IN ('{payload.test_cohort}', '{payload.control_cohort}')
+                    {pre_filter}
+                    GROUP BY cohort_type
+                ),
+                post_data AS (
+                    SELECT 
+                        CASE WHEN cohort = '{payload.test_cohort}' THEN 'test' ELSE 'control' END as cohort_type,
+                        {sql_agg} as value
+                    FROM read_parquet('{parquet_path}')
+                    WHERE cohort IN ('{payload.test_cohort}', '{payload.control_cohort}')
+                    {post_filter}
+                    GROUP BY cohort_type
+                )
+                SELECT 
+                    p.cohort_type,
+                    COALESCE(pre.value, 0) as pre_value,
+                    COALESCE(post.value, 0) as post_value
+                FROM (SELECT 'test' as cohort_type UNION SELECT 'control') p
+                LEFT JOIN pre_data pre ON p.cohort_type = pre.cohort_type
+                LEFT JOIN post_data post ON p.cohort_type = post.cohort_type
+            """
+            
+            summary_df = con.execute(summary_query).fetchdf()
+            
+            control_pre = 0.0
+            control_post = 0.0
+            test_pre = 0.0
+            test_post = 0.0
+            
+            for _, row in summary_df.iterrows():
+                if row["cohort_type"] == "control":
+                    control_pre = float(row["pre_value"]) if pd.notna(row["pre_value"]) else 0.0
+                    control_post = float(row["post_value"]) if pd.notna(row["post_value"]) else 0.0
+                elif row["cohort_type"] == "test":
+                    test_pre = float(row["pre_value"]) if pd.notna(row["pre_value"]) else 0.0
+                    test_post = float(row["post_value"]) if pd.notna(row["post_value"]) else 0.0
+            
+            control_delta = control_post - control_pre
+            test_delta = test_post - test_pre
+            diff_in_diff = test_delta - control_delta
+            
+            control_delta_pct = (control_delta / control_pre * 100.0) if control_pre != 0 else None
+            test_delta_pct = (test_delta / test_pre * 100.0) if test_pre != 0 else None
+            diff_in_diff_pct = (diff_in_diff / control_pre * 100.0) if control_pre != 0 else None
+            
+            summary.append(InsightsSummaryRow(
+                metric=col,
+                agg_func=agg,
+                control_pre=control_pre,
+                control_post=control_post,
+                control_delta=control_delta,
+                control_delta_pct=control_delta_pct,
+                test_pre=test_pre,
+                test_post=test_post,
+                test_delta=test_delta,
+                test_delta_pct=test_delta_pct,
+                diff_in_diff=diff_in_diff,
+                diff_in_diff_pct=diff_in_diff_pct,
+            ))
+        
+        # Total participants = nunique captains (test + control) in analysis date range
+        total_participants = None
+        if "captain_id" in col_types:
+            tp_query = f"""
+                SELECT COUNT(DISTINCT captain_id) as n
+                FROM read_parquet('{parquet_path}')
+                WHERE cohort IN ('{payload.test_cohort}', '{payload.control_cohort}')
+                {date_filter}
+            """
+            try:
+                tp_row = con.execute(tp_query).fetchone()
+                total_participants = int(tp_row[0]) if tp_row and tp_row[0] is not None else None
+            except Exception:
+                pass
+        
+        return InsightsResponse(
+            time_series=time_series,
+            summary=summary,
+            total_participants=total_participants,
+        )
+    
+    finally:
+        con.close()
+
+
+def compute_insights_pandas(payload: InsightsRequest, df: pd.DataFrame) -> InsightsResponse:
+    """
+    Compute insights using pandas (original implementation for small files).
     """
     if not payload.metrics:
         raise HTTPException(status_code=400, detail="No metrics selected")
@@ -351,6 +1280,32 @@ def compute_insights(payload: InsightsRequest, df: pd.DataFrame = Depends(get_se
         )
 
     return InsightsResponse(time_series=time_series, summary=summary)
+
+
+@app.post("/insights", response_model=InsightsResponse, responses={400: {"model": ErrorResponse}})
+def compute_insights(payload: InsightsRequest, x_session_id: Optional[str] = Header(default=None)) -> InsightsResponse:
+    """
+    Multi-metric Insights endpoint.
+    - Returns daily timeseries for selected metrics (each with its own aggregation).
+    - Returns an executive summary for pre vs post across test/control + deltas.
+    
+    Automatically uses DuckDB for large files (memory efficient) or pandas for small files.
+    """
+    if not x_session_id or x_session_id not in SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
+    
+    session = SESSION_STORE[x_session_id]
+    
+    # Check if it's a DuckDB session
+    if isinstance(session, dict) and "parquet_path" in session:
+        # Use DuckDB for memory-efficient query execution
+        return compute_insights_duckdb(payload, session["parquet_path"])
+    
+    # Otherwise use pandas (for small files stored as DataFrames)
+    if isinstance(session, pd.DataFrame):
+        return compute_insights_pandas(payload, session)
+    
+    raise HTTPException(status_code=400, detail="Invalid session data format")
 
 
 @app.post("/metrics", response_model=MetricsResponse, responses={400: {"model": ErrorResponse}})
@@ -679,8 +1634,36 @@ def get_cohort_aggregation(df: pd.DataFrame = Depends(get_session_df)) -> Cohort
 
 @app.delete("/session")
 def clear_session(x_session_id: Optional[str] = Header(default=None)):
-    if x_session_id and x_session_id in SESSION_STORE:
-        del SESSION_STORE[x_session_id]
+    if x_session_id:
+        # Check if it's a DuckDB session and clean up parquet file
+        if x_session_id in SESSION_STORE:
+            session = SESSION_STORE[x_session_id]
+            if isinstance(session, dict) and "parquet_path" in session:
+                # DuckDB session - clean up parquet file
+                parquet_path = session.get("parquet_path")
+                if parquet_path and os.path.exists(parquet_path):
+                    try:
+                        os.unlink(parquet_path)
+                    except Exception:
+                        pass
+                # Also clean up the temp directory
+                temp_dir = os.path.dirname(parquet_path) if parquet_path else None
+                if temp_dir and os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+            del SESSION_STORE[x_session_id]
+        
+        # Clean up temp file if exists (for pandas sessions)
+        if x_session_id in SESSION_FILE_STORE:
+            temp_path = SESSION_FILE_STORE[x_session_id]
+            # For DuckDB sessions, temp_path might be the directory
+            if os.path.isdir(temp_path):
+                shutil.rmtree(temp_path, ignore_errors=True)
+            else:
+                temp_dir = os.path.dirname(temp_path)
+                if temp_dir and os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+            del SESSION_FILE_STORE[x_session_id]
+    
     return {"ok": True}
 
 
@@ -2099,7 +3082,25 @@ async def join_function_with_csv(
         )
     
     try:
-        csv_df = SESSION_STORE[x_session_id].copy()
+        session = SESSION_STORE[x_session_id]
+        was_duckdb = isinstance(session, dict) and "parquet_path" in session
+        parquet_path_for_update = session.get("parquet_path") if was_duckdb else None
+        
+        # DuckDB sessions store dict with parquet_path; load DataFrame for join
+        if was_duckdb:
+            parquet_path = session["parquet_path"]
+            if not os.path.exists(parquet_path):
+                return FunctionJoinResponse(
+                    success=False,
+                    error="Session data file not found.",
+                    row_count=0,
+                    matched_rows=0
+                )
+            con = duckdb.connect()
+            csv_df = con.execute(f"SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
+            con.close()
+        else:
+            csv_df = session.copy()
         
         # Execute the function
         result_df, error, output_columns = execute_function(
@@ -2230,8 +3231,35 @@ async def join_function_with_csv(
                     }
                 metrics_stats[col] = stats
         
-        # Update the session store
-        SESSION_STORE[x_session_id] = merged_df
+        # Update the session store: for DuckDB sessions, write merged data back to parquet and keep DuckDB session
+        if was_duckdb and parquet_path_for_update:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+            table = pa.Table.from_pandas(merged_df, preserve_index=False)
+            pq.write_table(table, parquet_path_for_update)
+            # Build metadata from merged_df for DuckDB session
+            cols = list(merged_df.columns)
+            cohorts = sorted(merged_df["cohort"].dropna().unique().tolist()) if "cohort" in merged_df.columns else []
+            date_min = merged_df["date"].min()
+            date_max = merged_df["date"].max()
+            if hasattr(date_min, "strftime"):
+                date_min_str = date_min.strftime("%Y-%m-%d")
+                date_max_str = date_max.strftime("%Y-%m-%d")
+            else:
+                date_min_str = str(date_min)[:10] if date_min else None
+                date_max_str = str(date_max)[:10] if date_max else None
+            metrics = [c for c in cols if c not in {"cohort", "date", "time"}]
+            SESSION_STORE[x_session_id] = {
+                "parquet_path": parquet_path_for_update,
+                "num_rows": len(merged_df),
+                "columns": cols,
+                "cohorts": cohorts,
+                "date_min": date_min_str,
+                "date_max": date_max_str,
+                "metrics": metrics,
+            }
+        else:
+            SESSION_STORE[x_session_id] = merged_df
         
         # Prepare preview data (first 100 rows)
         preview_df = merged_df.head(100).copy()
@@ -2261,30 +3289,65 @@ async def join_function_with_csv(
         )
 
 
+def _stream_parquet_as_csv(parquet_path: str, chunk_size: int = 50000):
+    """Yield CSV chunks from parquet via DuckDB without loading full data into memory."""
+    con = duckdb.connect()
+    try:
+        first = True
+        offset = 0
+        while True:
+            df_chunk = con.execute(
+                f"SELECT * FROM read_parquet('{parquet_path}') LIMIT {chunk_size} OFFSET {offset}"
+            ).fetchdf()
+            if df_chunk is None or len(df_chunk) == 0:
+                break
+            buf = io.StringIO()
+            df_chunk.to_csv(buf, index=False, header=first)
+            first = False
+            yield buf.getvalue()
+            if len(df_chunk) < chunk_size:
+                break
+            offset += chunk_size
+    finally:
+        con.close()
+
+
 @app.get("/data/download")
 async def download_session_data(
     x_session_id: Optional[str] = Header(default=None)
 ):
     """
     Download the current session data as a CSV file.
+    For DuckDB sessions: streams CSV from parquet (fast, no full load).
+    For in-memory sessions: returns CSV from DataFrame.
     """
     if not x_session_id or x_session_id not in SESSION_STORE:
         raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
     
-    df = SESSION_STORE[x_session_id]
+    session = SESSION_STORE[x_session_id]
     
-    # Convert DataFrame to CSV
+    # DuckDB session: stream CSV from parquet in chunks
+    if isinstance(session, dict) and "parquet_path" in session:
+        parquet_path = session["parquet_path"]
+        if not os.path.exists(parquet_path):
+            raise HTTPException(status_code=400, detail="Session data file not found.")
+        return StreamingResponse(
+            _stream_parquet_as_csv(parquet_path),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": "attachment; filename=data_with_metrics.csv",
+                "Cache-Control": "no-cache",
+            },
+        )
+    
+    df = session
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
     csv_content = csv_buffer.getvalue()
-    
-    # Return as downloadable file
     return Response(
         content=csv_content,
         media_type="text/csv",
-        headers={
-            "Content-Disposition": "attachment; filename=data_with_metrics.csv"
-        }
+        headers={"Content-Disposition": "attachment; filename=data_with_metrics.csv"},
     )
 
 
@@ -2299,18 +3362,365 @@ async def preview_session_data(
     if not x_session_id or x_session_id not in SESSION_STORE:
         raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
     
-    df = SESSION_STORE[x_session_id]
-    preview_df = df.head(limit).copy()
+    session = SESSION_STORE[x_session_id]
+    if isinstance(session, dict) and "parquet_path" in session:
+        parquet_path = session["parquet_path"]
+        if not os.path.exists(parquet_path):
+            raise HTTPException(status_code=400, detail="Session data file not found.")
+        con = duckdb.connect()
+        preview_df = con.execute(
+            f"SELECT * FROM read_parquet('{parquet_path}') LIMIT {limit}"
+        ).fetchdf()
+        con.close()
+        total_rows = session["num_rows"]
+        columns = session["columns"]
+    else:
+        df = session
+        preview_df = df.head(limit).copy()
+        total_rows = len(df)
+        columns = list(df.columns)
     
-    # Convert date columns to string for JSON serialization
     for col in preview_df.columns:
         if pd.api.types.is_datetime64_any_dtype(preview_df[col]):
             preview_df[col] = preview_df[col].dt.strftime('%Y-%m-%d')
     
     return {
-        "columns": list(df.columns),
+        "columns": columns,
         "preview": preview_df.fillna('').to_dict(orient='records'),
-        "total_rows": len(df)
+        "total_rows": total_rows,
+    }
+
+
+def _quote_col(col: str) -> str:
+    """Quote column name for DuckDB SQL."""
+    return f'"{col.replace(chr(34), chr(34) + chr(34))}"'
+
+
+def compute_pivot_duckdb(parquet_path: str, payload: PivotRequest) -> PivotResponse:
+    """
+    Run pivot aggregation on Parquet via DuckDB.
+    Returns columns + data matching frontend PivotResult (wide table: one row per row_key, value columns per col_key × value spec).
+    """
+    if not os.path.exists(parquet_path):
+        raise HTTPException(status_code=400, detail="Session data file not found")
+
+    con = duckdb.connect()
+    try:
+        desc = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
+        name_col = desc.columns[0]
+        type_col = desc.columns[1]
+        col_types = dict(zip(desc[name_col], desc[type_col]))
+        all_cols = set(col_types.keys())
+
+        def _is_numeric_col(col: str) -> bool:
+            t = col_types.get(col, "")
+            t_lower = str(t).lower()
+            return any(x in t_lower for x in ["int", "float", "double", "decimal", "numeric", "bigint", "smallint"])
+
+        row_fields = [c for c in payload.row_fields if c in all_cols]
+        col_fields = [c for c in payload.col_fields if c in all_cols]
+        values = [v for v in payload.values if v.col in all_cols]
+        if not values:
+            return PivotResponse(columns=row_fields, data=[])
+
+        # Build WHERE from filters
+        where_parts = []
+        for f in payload.filters:
+            if f.column not in all_cols:
+                continue
+            q = _quote_col(f.column)
+            op = f.operator
+            val = f.value
+            if op == "equals":
+                if isinstance(val, str):
+                    where_parts.append(f"{q} = '{str(val).replace(chr(39), chr(39)+chr(39))}'")
+                else:
+                    where_parts.append(f"{q} = {val}")
+            elif op == "not_equals":
+                if isinstance(val, str):
+                    where_parts.append(f"{q} <> '{str(val).replace(chr(39), chr(39)+chr(39))}'")
+                else:
+                    where_parts.append(f"{q} <> {val}")
+            elif op == "contains":
+                where_parts.append(f"LOWER(CAST({q} AS VARCHAR)) LIKE '%{str(val).lower().replace(chr(39), chr(39)+chr(39))}%'")
+            elif op == "not_contains":
+                where_parts.append(f"LOWER(CAST({q} AS VARCHAR)) NOT LIKE '%{str(val).lower().replace(chr(39), chr(39)+chr(39))}%'")
+            elif op == "in":
+                if isinstance(val, list):
+                    in_vals = []
+                    for x in val:
+                        if isinstance(x, str):
+                            in_vals.append(f"'{str(x).replace(chr(39), chr(39)+chr(39))}'")
+                        else:
+                            in_vals.append(str(x))
+                    where_parts.append(f"{q} IN ({','.join(in_vals)})")
+            elif op == "between" and isinstance(val, (list, tuple)) and len(val) >= 2:
+                a, b = val[0], val[1]
+                if isinstance(a, str):
+                    where_parts.append(f"{q} >= '{str(a).replace(chr(39), chr(39)+chr(39))}' AND {q} <= '{str(b).replace(chr(39), chr(39)+chr(39))}'")
+                else:
+                    where_parts.append(f"{q} >= {a} AND {q} <= {b}")
+
+        where_sql = " AND ".join(where_parts) if where_parts else "1=1"
+
+        # SELECT: row fields, col fields, value aggregates (non-numeric cols use COUNT/MIN/MAX on raw value)
+        select_parts = [_quote_col(c) for c in row_fields + col_fields]
+        value_aliases = []
+        for v in values:
+            q = _quote_col(v.col)
+            agg = v.agg
+            numeric = _is_numeric_col(v.col)
+            if agg == "sum":
+                if numeric:
+                    select_parts.append(f"SUM(CAST({q} AS DOUBLE)) AS {v.col}__{agg}")
+                else:
+                    select_parts.append(f"COUNT({q}) AS {v.col}__{agg}")
+            elif agg == "avg":
+                if numeric:
+                    select_parts.append(f"AVG(CAST({q} AS DOUBLE)) AS {v.col}__{agg}")
+                else:
+                    select_parts.append(f"COUNT({q}) AS {v.col}__{agg}")
+            elif agg == "min":
+                if numeric:
+                    select_parts.append(f"MIN(CAST({q} AS DOUBLE)) AS {v.col}__{agg}")
+                else:
+                    select_parts.append(f"COUNT({q}) AS {v.col}__{agg}")
+            elif agg == "max":
+                if numeric:
+                    select_parts.append(f"MAX(CAST({q} AS DOUBLE)) AS {v.col}__{agg}")
+                else:
+                    select_parts.append(f"COUNT({q}) AS {v.col}__{agg}")
+            elif agg == "count":
+                select_parts.append(f"COUNT({q}) AS {v.col}__{agg}")
+            elif agg == "countDistinct":
+                select_parts.append(f"COUNT(DISTINCT {q}) AS {v.col}__{agg}")
+            else:
+                agg = "sum"
+                if numeric:
+                    select_parts.append(f"SUM(CAST({q} AS DOUBLE)) AS {v.col}__{agg}")
+                else:
+                    select_parts.append(f"COUNT({q}) AS {v.col}__{agg}")
+            value_aliases.append(f"{v.col}__{agg}")
+
+        group_cols = row_fields + col_fields
+        if group_cols:
+            group_by = ", ".join([_quote_col(c) for c in group_cols])
+            sql = f"""
+            SELECT {", ".join(select_parts)}
+            FROM read_parquet('{parquet_path}')
+            WHERE {where_sql}
+            GROUP BY {group_by}
+            """
+        else:
+            sql = f"""
+            SELECT {", ".join(select_parts)}
+            FROM read_parquet('{parquet_path}')
+            WHERE {where_sql}
+            """
+        df = con.execute(sql).fetchdf()
+    finally:
+        con.close()
+
+    if df.empty:
+        out_columns = row_fields + [f"{v.col} ({v.agg})" for v in values] if not col_fields else row_fields
+        return PivotResponse(columns=out_columns, data=[])
+
+    def _clean_val(v):
+        if v is None:
+            return None
+        if isinstance(v, float) and (pd.isna(v) or v == float("inf") or v == float("-inf")):
+            return None
+        if isinstance(v, (pd.Timestamp,)):
+            return v.strftime("%Y-%m-%d")
+        return v
+
+    # Reshape to wide table matching frontend PivotResult
+    def display_col_key(parts):
+        s = "¦".join("" if p is None or (isinstance(p, float) and pd.isna(p)) else str(p) for p in parts)
+        return (s.strip() or "All").replace("¦", " / ")
+
+    row_cols = row_fields
+    col_cols = col_fields
+    sorted_row_keys = []
+    row_key_to_idx = {}
+    for _, r in df.iterrows():
+        key = tuple(r[c] for c in row_cols)
+        if key not in row_key_to_idx:
+            row_key_to_idx[key] = len(sorted_row_keys)
+            sorted_row_keys.append(key)
+
+    col_keys_set = set()
+    for _, r in df.iterrows():
+        key = tuple(r[c] for c in col_cols) if col_cols else ("",)
+        col_keys_set.add(key)
+    sorted_col_keys = sorted(col_keys_set, key=lambda k: "¦".join("" if x is None or (isinstance(x, float) and pd.isna(x)) else str(x) for x in k))
+
+    if not col_cols:
+        out_columns = list(row_cols) + [f"{v.col} ({v.agg})" for v in values]
+        data = []
+        for rk in sorted_row_keys:
+            row_dict = {}
+            for i, c in enumerate(row_cols):
+                val = rk[i] if i < len(rk) else None
+                if isinstance(val, (pd.Timestamp,)):
+                    val = val.strftime("%Y-%m-%d") if pd.notna(val) else None
+                row_dict[c] = val
+            sub = df
+            for i, c in enumerate(row_cols):
+                vv = rk[i] if i < len(rk) else None
+                if vv is None or (isinstance(vv, float) and pd.isna(vv)):
+                    sub = sub[sub[c].isna()]
+                else:
+                    sub = sub[sub[c] == vv]
+            for v in values:
+                alias = f"{v.col}__{v.agg}"
+                col_name = f"{v.col} ({v.agg})"
+                row_dict[col_name] = float(sub[alias].iloc[0]) if len(sub) and alias in sub.columns else None
+            data.append(row_dict)
+        for row in data:
+            for k in list(row.keys()):
+                row[k] = _clean_val(row[k])
+        return PivotResponse(columns=out_columns, data=data)
+
+    out_columns = list(row_cols) + [
+        f"{display_col_key(ck)} • {v.col} ({v.agg})"
+        for ck in sorted_col_keys
+        for v in values
+    ]
+    data = []
+    for rk in sorted_row_keys:
+        row_dict = {}
+        for i, c in enumerate(row_cols):
+            val = rk[i] if i < len(rk) else None
+            if isinstance(val, (pd.Timestamp,)):
+                val = val.strftime("%Y-%m-%d") if pd.notna(val) else None
+            row_dict[c] = val
+        sub = df
+        for i, c in enumerate(row_cols):
+            vv = rk[i] if i < len(rk) else None
+            if vv is None or (isinstance(vv, float) and pd.isna(vv)):
+                sub = sub[sub[c].isna()]
+            else:
+                sub = sub[sub[c] == vv]
+        for ck in sorted_col_keys:
+            sub2 = sub
+            for i, c in enumerate(col_cols):
+                vv = ck[i] if i < len(ck) else None
+                if vv is None or (isinstance(vv, float) and pd.isna(vv)):
+                    sub2 = sub2[sub2[c].isna()]
+                else:
+                    sub2 = sub2[sub2[c] == vv]
+            for v in values:
+                alias = f"{v.col}__{v.agg}"
+                col_name = f"{display_col_key(ck)} • {v.col} ({v.agg})"
+                row_dict[col_name] = float(sub2[alias].iloc[0]) if len(sub2) and alias in sub2.columns else None
+        data.append(row_dict)
+
+    for row in data:
+        for k in list(row.keys()):
+            row[k] = _clean_val(row[k])
+
+    return PivotResponse(columns=out_columns, data=data)
+
+
+@app.post("/pivot", response_model=PivotResponse, responses={400: {"model": ErrorResponse}})
+def pivot(
+    payload: PivotRequest,
+    x_session_id: Optional[str] = Header(default=None),
+) -> PivotResponse:
+    """
+    Run pivot aggregation on session data.
+    For DuckDB (large file) sessions: runs GROUP BY + aggregates in DuckDB and returns wide table.
+    Requires x-session-id header.
+    """
+    if not x_session_id or x_session_id not in SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
+    session = SESSION_STORE[x_session_id]
+    if not isinstance(session, dict) or "parquet_path" not in session:
+        raise HTTPException(status_code=400, detail="Pivot is only supported for large (DuckDB) sessions. Use the Pivot tab with an uploaded large file.")
+    parquet_path = session["parquet_path"]
+    return compute_pivot_duckdb(parquet_path, payload)
+
+
+@app.get("/data/session")
+async def get_session_data(
+    x_session_id: Optional[str] = Header(default=None)
+):
+    """
+    Get session data as JSON for frontend state refresh.
+    For DuckDB (large file) sessions: returns metadata + empty rows (analysis via backend).
+    For in-memory sessions: returns metadata + full rows, capped at 2000 for response size.
+    """
+    import numpy as np
+    
+    if not x_session_id or x_session_id not in SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
+    
+    session = SESSION_STORE[x_session_id]
+    
+    # DuckDB session: return metadata only, no full rows (fast response; analysis uses /insights)
+    if isinstance(session, dict) and "parquet_path" in session:
+        columns = session["columns"]
+        metric_columns = [c for c in columns if c not in {"cohort", "date", "time"}]
+        return {
+            "rows": [],
+            "columns": columns,
+            "metric_columns": metric_columns,
+            "numeric_columns": session.get("numeric_columns", session.get("metrics", [])),
+            "categorical_columns": session.get("categorical_columns", []),
+            "cohorts": session["cohorts"],
+            "date_min": session.get("date_min"),
+            "date_max": session.get("date_max"),
+            "row_count": session["num_rows"],
+        }
+    
+    df = session
+    # Cap rows for in-memory sessions to keep response fast (frontend can use /insights for full analysis)
+    max_rows = 2000
+    df_slice = df.head(max_rows)
+    
+    def clean_value(v):
+        if v is None:
+            return None
+        if isinstance(v, float):
+            if np.isnan(v) or np.isinf(v):
+                return None
+        return v
+    
+    df_copy = df_slice.copy()
+    for col in df_copy.columns:
+        if pd.api.types.is_datetime64_any_dtype(df_copy[col]):
+            df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d')
+    records = df_copy.to_dict(orient='records')
+    cleaned_records = [{k: clean_value(v) for k, v in r.items()} for r in records]
+    
+    columns = list(df.columns.astype(str))
+    metric_columns = [c for c in columns if c not in {"cohort", "date", "time"}]
+    numeric_columns = [c for c in metric_columns if pd.api.types.is_numeric_dtype(df[c])]
+    categorical_columns = []
+    for col in columns:
+        if col not in {"cohort", "date", "time"}:
+            if df[col].dtype == 'object' or df[col].dtype.name == 'category':
+                categorical_columns.append(col)
+            elif col in numeric_columns:
+                n = df[col].nunique()
+                if n < 20 and n < len(df) * 0.1:
+                    categorical_columns.append(col)
+    
+    cohorts = sorted(df["cohort"].dropna().unique().tolist()) if "cohort" in df.columns else []
+    date_min = df["date"].min().strftime("%Y-%m-%d") if "date" in df.columns and pd.notna(df["date"].min()) else None
+    date_max = df["date"].max().strftime("%Y-%m-%d") if "date" in df.columns and pd.notna(df["date"].max()) else None
+    
+    return {
+        "rows": cleaned_records,
+        "columns": columns,
+        "metric_columns": metric_columns,
+        "numeric_columns": numeric_columns,
+        "categorical_columns": sorted(categorical_columns),
+        "cohorts": cohorts,
+        "date_min": date_min,
+        "date_max": date_max,
+        "row_count": len(df),
     }
 
 
@@ -2324,12 +3734,106 @@ async def get_function_template() -> FunctionTemplateResponse:
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Health check endpoint with system status."""
+    import psutil
+    
+    # Get memory info
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    
+    return {
+        "status": "ok",
+        "active_sessions": len(SESSION_STORE),
+        "active_uploads": len(UPLOAD_PROGRESS),
+        "memory_percent": memory.percent,
+        "disk_percent": disk.percent,
+        "max_file_size_gb": MAX_FILE_SIZE / (1024**3),
+    }
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Clean up any orphaned temp files on startup."""
+    import logging
+    logging.info("Starting application with 5GB file upload support")
+    
+    # Clean up any orphaned temp directories from previous runs
+    temp_base = tempfile.gettempdir()
+    cleaned_count = 0
+    try:
+        for item in os.listdir(temp_base):
+            item_path = os.path.join(temp_base, item)
+            # Only clean up directories that look like our temp dirs
+            if os.path.isdir(item_path) and item.startswith('tmp'):
+                try:
+                    # Check if it contains our upload file
+                    upload_file = os.path.join(item_path, 'upload.csv')
+                    if os.path.exists(upload_file):
+                        shutil.rmtree(item_path, ignore_errors=True)
+                        cleaned_count += 1
+                except Exception:
+                    pass
+    except Exception as e:
+        logging.warning(f"Temp cleanup failed: {e}")
+    
+    if cleaned_count > 0:
+        logging.info(f"Cleaned up {cleaned_count} orphaned temp directories")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up temp files on shutdown."""
+    import logging
+    logging.info("Shutting down, cleaning up temp files...")
+    
+    # Clean up DuckDB session parquet files
+    for session_id, session in list(SESSION_STORE.items()):
+        try:
+            if isinstance(session, dict) and "parquet_path" in session:
+                parquet_path = session.get("parquet_path")
+                if parquet_path and os.path.exists(parquet_path):
+                    os.unlink(parquet_path)
+                temp_dir = os.path.dirname(parquet_path) if parquet_path else None
+                if temp_dir and os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+    
+    # Clean up all session temp files
+    for session_id, temp_path in list(SESSION_FILE_STORE.items()):
+        try:
+            if os.path.isdir(temp_path):
+                shutil.rmtree(temp_path, ignore_errors=True)
+            else:
+                temp_dir = os.path.dirname(temp_path)
+                if temp_dir and os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+    
+    # Clean up pending uploads
+    for upload_id, progress in list(UPLOAD_PROGRESS.items()):
+        try:
+            temp_dir = progress.get("temp_dir")
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
     import uvicorn
     # Render sets PORT environment variable, default to 8000 for local development
     port = int(os.environ.get("PORT", "8001"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    
+    # Configure uvicorn with extended timeouts for large file uploads (5GB support)
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=port,
+        timeout_keep_alive=300,  # 5 minutes keep-alive timeout
+        # Note: For production, consider setting these via environment variables:
+        # - limit_concurrency: limits concurrent connections
+        # - limit_max_requests: limits requests per worker
+    )
 

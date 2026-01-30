@@ -20,13 +20,13 @@ export type ReportFolder = {
   updated_at: string
 }
 
-// Types for saved reports
+// Types for saved reports (items optional when listing; full when loading one report)
 export type SavedReport = {
   id: string
   user_id: string
   folder_id: string | null
   name: string
-  items: ReportItemData[]
+  items?: ReportItemData[]
   created_at: string
   updated_at: string
   // Joined fields
@@ -97,9 +97,10 @@ export async function deleteFolder(folderId: string): Promise<void> {
 // =============================================================================
 
 export async function listAllReports(): Promise<SavedReport[]> {
+  // Select only list-needed columns; omit heavy `items` JSONB for fast list load
   const { data, error } = await supabase
     .from('saved_reports')
-    .select('*')
+    .select('id, user_id, folder_id, name, created_at, updated_at')
     .order('updated_at', { ascending: false })
 
   if (error) {

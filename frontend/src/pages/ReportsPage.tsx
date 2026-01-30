@@ -70,6 +70,7 @@ export function ReportsPage() {
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string; type: "folder" } | null>(null)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; type: "folder" | "report" } | null>(null)
+  const [openReportModal, setOpenReportModal] = useState<SavedReport | null>(null)
 
   // Load data
   const loadData = async () => {
@@ -160,9 +161,14 @@ export function ReportsPage() {
     }
   }
 
-  const handleOpenReport = (report: SavedReport) => {
-    // Store report ID to load in insights page
-    localStorage.setItem("load_report_id", report.id)
+  const handleOpenReportClick = (report: SavedReport) => {
+    setOpenReportModal(report)
+  }
+
+  const handleConfirmOpenInInsights = () => {
+    if (!openReportModal) return
+    localStorage.setItem("load_report_id", openReportModal.id)
+    setOpenReportModal(null)
     navigate("/insights")
   }
 
@@ -307,7 +313,7 @@ export function ReportsPage() {
                         className="flex items-center justify-between p-3 rounded-xl hover:bg-muted/50 group"
                       >
                         <button
-                          onClick={() => handleOpenReport(report)}
+                          onClick={() => handleOpenReportClick(report)}
                           className="flex items-center gap-3 flex-1 text-left"
                         >
                           <File className="h-5 w-5 text-blue-500" />
@@ -323,7 +329,7 @@ export function ReportsPage() {
                             variant="ghost"
                             size="sm"
                             className="h-8 opacity-0 group-hover:opacity-100"
-                            onClick={() => handleOpenReport(report)}
+                            onClick={() => handleOpenReportClick(report)}
                           >
                             Open
                             <ArrowRight className="h-4 w-4 ml-1" />
@@ -442,6 +448,27 @@ export function ReportsPage() {
             </Button>
             <Button variant="destructive" onClick={handleDelete} className="rounded-lg">
               Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Open report modal – redirects to Insights */}
+      <Dialog open={!!openReportModal} onOpenChange={(open) => !open && setOpenReportModal(null)}>
+        <DialogContent className="sm:max-w-md rounded-xl" style={{ backgroundColor: 'white', color: '#1a1a1a' }}>
+          <DialogHeader>
+            <DialogTitle style={{ color: '#1a1a1a' }}>Open report</DialogTitle>
+            <DialogDescription style={{ color: '#666' }}>
+              Opening "{openReportModal?.name}" will take you to the Insights page where you can view and edit the report.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpenReportModal(null)} className="rounded-lg">
+              Cancel
+            </Button>
+            <Button onClick={handleConfirmOpenInInsights} className="rounded-lg">
+              Open in Insights
+              <ArrowRight className="h-4 w-4 ml-2" />
             </Button>
           </DialogFooter>
         </DialogContent>

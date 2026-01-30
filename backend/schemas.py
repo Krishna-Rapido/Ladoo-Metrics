@@ -22,7 +22,7 @@ class DateRange(BaseModel):
 
 Aggregation = Literal["sum", "mean", "count"]
 
-InsightAggregation = Literal["sum", "count", "nunique", "mean", "median"]
+InsightAggregation = Literal["sum", "count", "nunique", "mean", "median", "sum_per_captain", "ratio"]
 
 
 class MetricSpec(BaseModel):
@@ -36,14 +36,17 @@ class InsightsRequest(BaseModel):
     test_cohort: str
     control_cohort: str
     metrics: List[MetricSpec] = Field(default_factory=list)
+    series_breakout: Optional[str] = None  # optional categorical column for chart breakout (e.g. consistency_segment)
 
 
 class InsightsTimeSeriesPoint(BaseModel):
     date: str  # YYYY-MM-DD
     cohort_type: Literal["test", "control"]
+    period: Optional[str] = None  # "pre" | "post" for 4-line chart (test pre/post, control pre/post)
     metric: str
     agg_func: InsightAggregation
     value: float
+    breakout_value: Optional[str] = None  # when series_breakout is set
 
 
 class InsightsSummaryRow(BaseModel):
@@ -64,6 +67,7 @@ class InsightsSummaryRow(BaseModel):
 class InsightsResponse(BaseModel):
     time_series: List[InsightsTimeSeriesPoint]
     summary: List[InsightsSummaryRow]
+    total_participants: Optional[int] = None  # nunique captains (test + control) in analysis range
 
 
 class MetricsRequest(BaseModel):
@@ -100,6 +104,34 @@ class MetricsResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: str
+
+
+# Pivot (DuckDB-backed sessions)
+PivotAggFn = Literal["sum", "avg", "min", "max", "count", "countDistinct"]
+PivotFilterOp = Literal["equals", "not_equals", "contains", "not_contains", "in", "between"]
+
+
+class PivotValueSpec(BaseModel):
+    col: str
+    agg: PivotAggFn
+
+
+class PivotFilterRule(BaseModel):
+    column: str
+    operator: PivotFilterOp
+    value: Any  # str, number, list, or [min, max] for between
+
+
+class PivotRequest(BaseModel):
+    row_fields: List[str] = Field(default_factory=list)
+    col_fields: List[str] = Field(default_factory=list)
+    values: List[PivotValueSpec] = Field(default_factory=list)
+    filters: List[PivotFilterRule] = Field(default_factory=list)
+
+
+class PivotResponse(BaseModel):
+    columns: List[str]
+    data: List[Dict[str, Any]]
 
 
 class FunnelRequest(BaseModel):
