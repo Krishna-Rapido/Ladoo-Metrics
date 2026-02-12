@@ -24,7 +24,7 @@ if [ -d "venv" ]; then
     echo "Virtual environment already exists, removing old one..."
     rm -rf venv
 fi
-python3.10 -m venv venv
+python3 -m venv venv
 
 # Activate venv and upgrade pip
 echo "[2/5] Upgrading pip..."

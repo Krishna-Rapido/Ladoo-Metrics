@@ -1,0 +1,218 @@
+Cursor Remote SSH Connection Diagnostic Report - myserver
+Generated on: 2026-02-12T16:53:12.384Z
+
+****************************************************************************
+* WARNING: This report may contain sensitive information.                  *
+* Please review and redact any sensitive information before sharing.       *
+****************************************************************************
+Start Time: 2026-02-12T16:53:11.323Z
+
+=== Program Versions ===
+----------------------------------------
+Node.js: Not installed
+cURL: curl 7.68.0 (x86_64-pc-linux-gnu) libcurl/7.68.0 OpenSSL/1.1.1f zlib/1.2.11 brotli/1.0.7 libidn2/2.2.0 libpsl/0.21.0 (+libidn2/2.2.0) libssh/0.9.3/openssl/zlib nghttp2/1.40.0 librtmp/2.3
+Wget: GNU Wget 1.20.3 built on linux-gnu.
+Base64: base64 (GNU coreutils) 8.30
+Grep: grep (GNU grep) 3.4
+
+=== Environment Variables ===
+----------------------------------------
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1026/bus
+  	export OLD_PS1="$PS1"
+  	export PS1="\[\033[31m\](prod)\[\033[00m\] $PS1"
+  fi;=
+HOME=/home/krishna.poddar
+  if ! [[ ${PS1} =~ .*\(prod\).* ]]
+LANG=C.UTF-8
+LANGUAGE=en_US:en
+LC_ADDRESS=en_US.UTF-8
+LC_ALL=en_US.UTF-8
+LC_COLLATE=en_US.UTF-8
+LC_CTYPE=en_US.UTF-8
+LC_IDENTIFICATION=en_US.UTF-8
+LC_MEASUREMENT=en_US.UTF-8
+LC_MESSAGES=en_US.UTF-8
+LC_MONETARY=en_US.UTF-8
+LC_NAME=en_US.UTF-8
+LC_NUMERIC=en_US.UTF-8
+LC_PAPER=en_US.UTF-8
+LC_TELEPHONE=en_US.UTF-8
+LC_TIME=en_US.UTF-8
+LOGNAME=krishna.poddar
+MOTD_SHOWN=pam
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+PROMPT_COMMAND=\
+PWD=/home/krishna.poddar
+SHELL=/bin/sh
+SHLVL=0
+SSH_CLIENT=172.16.1.2 41973 22
+SSH_CONNECTION=172.16.1.2 41973 172.18.39.236 22
+  then=
+USER=krishna.poddar
+_=/usr/bin/env
+XDG_DATA_DIRS=/usr/local/share:/usr/share:/var/lib/snapd/desktop
+XDG_RUNTIME_DIR=/run/user/1026
+XDG_SESSION_CLASS=user
+XDG_SESSION_ID=34
+XDG_SESSION_TYPE=tty
+
+=== Host Platform Information ===
+----------------------------------------
+OS Release Information:
+NAME="Ubuntu"
+VERSION="20.04.2 LTS (Focal Fossa)"
+ID=ubuntu
+ID_LIKE=debian
+PRETTY_NAME="Ubuntu 20.04.2 LTS"
+VERSION_ID="20.04"
+HOME_URL="https://www.ubuntu.com/"
+SUPPORT_URL="https://help.ubuntu.com/"
+BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+VERSION_CODENAME=focal
+UBUNTU_CODENAME=focal
+
+System Information:
+Linux laddoo-webserver-1 5.8.0-1038-gcp #40~20.04.1-Ubuntu SMP Thu Jul 15 11:55:03 UTC 2021 x86_64 x86_64 x86_64 GNU/Linux
+
+=== Network Connectivity Test ===
+----------------------------------------
+Attempting to download https://cursor.blob.core.windows.net/remote-releases/connectioncheck.txt
+Testing connection using curl...
+Starting download at: 2026-02-12T16:53:11.368Z
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+  0    39    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0
+HTTP/1.1 200 OK
+Content-Length: 39
+Content-Type: text/plain
+Content-MD5: oaP95PsjwBzMeHk5mxQiOA==
+Last-Modified: Thu, 05 Jun 2025 20:45:41 GMT
+ETag: 0x8DDA471EFBC9731
+Vary: Origin
+Server: Windows-Azure-Blob/1.0 Microsoft-HTTPAPI/2.0
+x-ms-request-id: a77c5a5c-201e-0049-2340-9c214f000000
+x-ms-version: 2009-09-19
+x-ms-lease-status: unlocked
+x-ms-blob-type: BlockBlob
+Date: Thu, 12 Feb 2026 16:53:11 GMT
+
+Command finished at: 2026-02-12T16:53:12.404Z
+
+=== SSH Configuration ===
+----------------------------------------
+User SSH Config:
+File not found: /home/krishna.poddar/.ssh/config
+
+System SSH Config:
+
+# This is the ssh client system-wide configuration file.  See
+# ssh_config(5) for more information.  This file provides defaults for
+# users, and the values can be changed in per-user configuration files
+# or on the command line.
+
+# Configuration data is parsed as follows:
+#  1. command line options
+#  2. user-specific file
+#  3. system-wide file
+# Any configuration value is only changed the first time it is set.
+# Thus, host-specific definitions should be at the beginning of the
+# configuration file, and defaults at the end.
+
+# Site-wide defaults for some commonly used options.  For a comprehensive
+# list of available options, their meanings and defaults, please see the
+# ssh_config(5) man page.
+
+Include /etc/ssh/ssh_config.d/*.conf
+
+Host *
+#   ForwardAgent no
+#   ForwardX11 no
+#   ForwardX11Trusted yes
+#   PasswordAuthentication yes
+#   HostbasedAuthentication no
+#   GSSAPIAuthentication no
+#   GSSAPIDelegateCredentials no
+#   GSSAPIKeyExchange no
+#   GSSAPITrustDNS no
+#   BatchMode no
+#   CheckHostIP yes
+#   AddressFamily any
+#   ConnectTimeout 0
+#   StrictHostKeyChecking ask
+#   IdentityFile ~/.ssh/id_rsa
+#   IdentityFile ~/.ssh/id_dsa
+#   IdentityFile ~/.ssh/id_ecdsa
+#   IdentityFile ~/.ssh/id_ed25519
+#   Port 22
+#   Ciphers aes128-ctr,aes192-ctr,aes256-ctr,aes128-cbc,3des-cbc
+#   MACs hmac-md5,hmac-sha1,umac-64@openssh.com
+#   EscapeChar ~
+#   Tunnel no
+#   TunnelDevice any:any
+#   PermitLocalCommand no
+#   VisualHostKey no
+#   ProxyCommand ssh -q -W %h:%p gateway.example.com
+#   RekeyLimit 1G 1h
+    SendEnv LANG LC_*
+    HashKnownHosts yes
+    GSSAPIAuthentication yes
+
+=== Additional System Information ===
+----------------------------------------
+Network Interfaces:
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+2: ens4: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1460 qdisc mq state UP group default qlen 1000
+    link/ether 42:01:ac:12:27:ec brd ff:ff:ff:ff:ff:ff
+    altname enp0s4
+    inet 172.18.39.236/32 scope global dynamic ens4
+       valid_lft 72878sec preferred_lft 72878sec
+    inet6 fe80::4001:acff:fe12:27ec/64 scope link 
+       valid_lft forever preferred_lft forever
+
+DNS Configuration:
+# This file is managed by man:systemd-resolved(8). Do not edit.
+#
+# This is a dynamic resolv.conf file for connecting local clients to the
+# internal DNS stub resolver of systemd-resolved. This file lists all
+# configured search domains.
+#
+# Run "resolvectl status" to see details about the uplink DNS servers
+# currently in use.
+#
+# Third party programs must not access this file directly, but only through the
+# symlink at /etc/resolv.conf. To manage man:resolv.conf(5) in a different way,
+# replace this symlink by a static file or a different symlink.
+#
+# See man:systemd-resolved.service(8) for details about the supported modes of
+# operation for /etc/resolv.conf.
+
+nameserver 127.0.0.53
+options edns0 trust-ad
+search c.production-data-12358.internal google.internal
+
+Current User Information:
+uid=1026(krishna.poddar) gid=1027(krishna.poddar) groups=1027(krishna.poddar),1001(google-sudoers)
+krishna.poddar
+
+Process Information:
+root        9186  0.0  0.0  12196  7196 ?        Ss   20:00   0:00 sshd: /usr/sbin/sshd -D [listener] 0 of 4-16 startups
+root       12201  0.0  0.0  13804  8968 ?        Ss   22:14   0:00 sshd: krishna.poddar [priv]
+krishna+   12274  0.0  0.0  13948  5256 ?        S    22:14   0:00 sshd: krishna.poddar@pts/2
+root       12783  0.0  0.0  13808  8760 ?        Ss   22:20   0:00 sshd: krishna.poddar [priv]
+krishna+   12856  0.0  0.0  13952  5140 ?        S    22:20   0:00 sshd: krishna.poddar@pts/0
+root       12874  0.0  0.0  13808  8804 ?        Ss   22:22   0:00 sshd: krishna.poddar [priv]
+krishna+   12947  0.0  0.0  13952  5860 ?        S    22:23   0:00 sshd: krishna.poddar@notty
+krishna+   13061  0.0  0.0   6440   736 ?        S    22:23   0:00 grep -i ssh
+
+============================================
+End of Diagnostic Report
+End Time: 2026-02-12T16:53:12.413Z
