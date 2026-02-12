@@ -18,6 +18,30 @@ fi
 
 cd "$FRONTEND_DIR"
 
+# Ensure Node.js and npm are installed
+echo "[0/4] Checking for Node.js and npm..."
+if ! command -v npm >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
+    echo "Node.js and/or npm not found. Attempting to install..."
+    # Try the apt repositories first
+    apt-get update -qq
+    apt-get install -y curl ca-certificates
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "curl not found and installation failed."
+        exit 1
+    fi
+    # Install NodeSource Node.js 20.x if not present
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
+    # Verify installation
+    if ! command -v npm >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
+        echo "ERROR: Failed to install Node.js and npm."
+        exit 1
+    fi
+    echo "Installed $(node --version) and $(npm --version)"
+else
+    echo "Found Node.js $(node --version) and npm $(npm --version)"
+fi
+
 # Create production environment file
 echo "[1/4] Creating production environment file..."
 cat > .env.production << 'EOF'
