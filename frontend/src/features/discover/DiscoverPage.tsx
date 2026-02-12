@@ -17,6 +17,82 @@ import type { DiscoverSection as DiscoverSectionType } from './DiscoverSidebarTa
 
 const SECTION_PARAM = 'section';
 
+/** Extracted to module scope to avoid re-creation on every DiscoverPage render. */
+function DiscoverVisualizationContent({ sessionId }: { sessionId: string | null }) {
+    // For visualization, we need column metadata but NOT the full dataset
+    // Aggregation happens on the backend via /data/visualize endpoint
+    const { columns, numericColumns, categoricalColumns, isLoading, error } = useDiscoverData({
+        sessionId,
+        useFullDataset: false, // Only fetch metadata, not full data
+    });
+
+    if (!sessionId) {
+        return (
+            <Card className="rounded-2xl">
+                <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+                    <Compass className="h-12 w-12 text-muted-foreground mb-4" />
+                    <p className="text-lg font-medium mb-2">No dataset available</p>
+                    <p className="text-sm text-muted-foreground">Create a dataset first to visualize</p>
+                </CardContent>
+            </Card>
+        );
+    }
+
+    if (isLoading) {
+        return (
+            <Card className="rounded-2xl">
+                <CardContent className="flex flex-col items-center justify-center py-16">
+                    <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mb-2" />
+                    <p className="text-sm text-muted-foreground">Loading column metadata...</p>
+                </CardContent>
+            </Card>
+        );
+    }
+
+    if (error) {
+        return (
+            <Card className="rounded-2xl">
+                <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+                    <p className="text-destructive mb-2 font-medium">Error loading metadata</p>
+                    <p className="text-sm text-muted-foreground mb-4">{error}</p>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                            // Trigger a reload by updating the sessionId dependency
+                            window.dispatchEvent(new CustomEvent('session-id-changed'));
+                        }}
+                        className="rounded-lg"
+                    >
+                        Retry
+                    </Button>
+                </CardContent>
+            </Card>
+        );
+    }
+
+    if (!columns || columns.length === 0) {
+        return (
+            <Card className="rounded-2xl">
+                <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+                    <BarChart3 className="h-12 w-12 text-muted-foreground mb-4" />
+                    <p className="text-lg font-medium mb-2">No columns available</p>
+                    <p className="text-sm text-muted-foreground">Dataset may be empty or not loaded</p>
+                </CardContent>
+            </Card>
+        );
+    }
+
+    return (
+        <DiscoverVisualization
+            sessionId={sessionId}
+            columns={columns}
+            numericColumns={numericColumns}
+            categoricalColumns={categoricalColumns}
+        />
+    );
+}
+
 export function DiscoverPage() {
     const { user } = useAuth();
     const username = user?.email ?? 'anonymous';
@@ -66,86 +142,15 @@ export function DiscoverPage() {
 
     const handleMetricsAdded = () => {
         if (sessionId) {
-            getSessionData(sessionId).then((data) => {
-                setSessionMeta({ row_count: data.row_count, columns: data.columns });
-            });
+            getSessionData(sessionId)
+                .then((data) => {
+                    setSessionMeta({ row_count: data.row_count, columns: data.columns });
+                })
+                .catch((err) => {
+                    console.error('Failed to refresh session metadata after metrics added:', err);
+                });
         }
     };
-
-    function DiscoverVisualizationContent({ sessionId }: { sessionId: string | null }) {
-        // For visualization, we need column metadata but NOT the full dataset
-        // Aggregation happens on the backend via /data/visualize endpoint
-        const { columns, numericColumns, categoricalColumns, isLoading, error } = useDiscoverData({
-            sessionId,
-            useFullDataset: false, // Only fetch metadata, not full data
-        });
-
-        if (!sessionId) {
-            return (
-                <Card className="rounded-2xl">
-                    <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-                        <Compass className="h-12 w-12 text-muted-foreground mb-4" />
-                        <p className="text-lg font-medium mb-2">No dataset available</p>
-                        <p className="text-sm text-muted-foreground">Create a dataset first to visualize</p>
-                    </CardContent>
-                </Card>
-            );
-        }
-
-        if (isLoading) {
-            return (
-                <Card className="rounded-2xl">
-                    <CardContent className="flex flex-col items-center justify-center py-16">
-                        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mb-2" />
-                        <p className="text-sm text-muted-foreground">Loading column metadata...</p>
-                    </CardContent>
-                </Card>
-            );
-        }
-
-        if (error) {
-            return (
-                <Card className="rounded-2xl">
-                    <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-                        <p className="text-destructive mb-2 font-medium">Error loading metadata</p>
-                        <p className="text-sm text-muted-foreground mb-4">{error}</p>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                                // Trigger a reload by updating the sessionId dependency
-                                window.dispatchEvent(new CustomEvent('session-id-changed'));
-                            }}
-                            className="rounded-lg"
-                        >
-                            Retry
-                        </Button>
-                    </CardContent>
-                </Card>
-            );
-        }
-
-        if (!columns || columns.length === 0) {
-            return (
-                <Card className="rounded-2xl">
-                    <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-                        <BarChart3 className="h-12 w-12 text-muted-foreground mb-4" />
-                        <p className="text-lg font-medium mb-2">No columns available</p>
-                        <p className="text-sm text-muted-foreground">Dataset may be empty or not loaded</p>
-                    </CardContent>
-                </Card>
-            );
-        }
-
-        return (
-            <DiscoverVisualization
-                sessionId={sessionId}
-                columns={columns}
-                numericColumns={numericColumns}
-                categoricalColumns={categoricalColumns}
-            />
-        );
-    }
 
     const [searchParams] = useSearchParams();
     const section = (searchParams.get(SECTION_PARAM) as DiscoverSectionType) || 'discover';

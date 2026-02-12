@@ -29,6 +29,8 @@ function getStatusText(progress: UploadProgress): string {
       return 'Processing CSV...';
     case 'completed':
       return 'Complete!';
+    case 'error':
+      return (progress as any).error ?? (progress as any).errorMessage ?? 'Error uploading';
     default:
       return 'Uploading...';
   }

@@ -87,17 +87,24 @@ export function DiscoverSecondaryFilters({ onApply, hideHeader }: DiscoverSecond
             return;
         }
         let cancelled = false;
-        getFunction(selectedFunctionId).then((func) => {
-            if (cancelled) return;
-            setSelectedFunction(func ?? null);
-            if (func?.parameters) {
-                const defaults: Record<string, string> = {};
-                func.parameters.forEach((param: FunctionParameter) => {
-                    defaults[param.name] = param.default ?? '';
-                });
-                setParameterValues(defaults);
-            }
-        });
+        getFunction(selectedFunctionId)
+            .then((func) => {
+                if (cancelled) return;
+                setSelectedFunction(func ?? null);
+                if (func?.parameters) {
+                    const defaults: Record<string, string> = {};
+                    func.parameters.forEach((param: FunctionParameter) => {
+                        defaults[param.name] = param.default ?? '';
+                    });
+                    setParameterValues(defaults);
+                }
+            })
+            .catch((err) => {
+                if (cancelled) return;
+                console.error('Failed to load function:', err);
+                setSelectedFunction(null);
+                setParameterValues({});
+            });
         return () => { cancelled = true; };
     }, [selectedFunctionId]);
 

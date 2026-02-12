@@ -241,7 +241,9 @@ export function DiscoverTransitionSection() {
                 .then((result) => {
                     if (!result.error) setTransResult(result);
                 })
-                .catch(() => {});
+                .catch((err) => {
+                    console.error('DiscoverTransitionSection refetch failed:', err);
+                });
         }
     };
 

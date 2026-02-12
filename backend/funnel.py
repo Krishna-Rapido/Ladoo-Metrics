@@ -5,15 +5,112 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
 import os
+import re
+import logging
+
+logger = logging.getLogger(__name__)
+
 pd.set_option('display.max_columns', None)
 from pyhive import presto
+
+# --- Input validation helpers ---
+
+# Allowlists for user-supplied identifiers used in SQL queries
+ALLOWED_CITIES = {
+    'delhi', 'bangalore', 'mumbai', 'hyderabad', 'chennai', 'kolkata',
+    'pune', 'ahmedabad', 'jaipur', 'lucknow', 'chandigarh', 'kochi',
+    'coimbatore', 'indore', 'nagpur', 'bhopal', 'visakhapatnam',
+    'patna', 'vadodara', 'guwahati', 'surat', 'noida', 'gurgaon',
+    'thiruvananthapuram', 'mysore', 'mangalore', 'bhubaneswar',
+    'ranchi', 'dehradun', 'agra', 'varanasi', 'amritsar', 'ludhiana',
+    'kanpur', 'nashik', 'rajkot', 'madurai', 'aurangabad', 'jodhpur',
+    'raipur', 'gwalior', 'vijayawada', 'meerut', 'faridabad',
+    'navi mumbai', 'thane', 'pimpri-chinchwad', 'kalyan-dombivali',
+    'vasai-virar', 'salem', 'warangal', 'guntur', 'bhiwandi',
+}
+
+ALLOWED_SERVICE_CATEGORIES = {
+    'bike_taxi', 'auto', 'cab', 'link', 'c2c', 'delivery', 'auto_c2c',
+}
+
+ALLOWED_SERVICE_VALUES = {
+    'two_wheeler', 'three_wheeler', 'four_wheeler',
+}
+
+ALLOWED_TIME_LEVELS = {'daily', 'weekly', 'monthly'}
+ALLOWED_TOD_LEVELS = {'daily', 'afternoon', 'evening', 'morning', 'night', 'all'}
+
+# Regex for YYYYMMDD date format
+_DATE_RE = re.compile(r'^\d{8}$')
+
+# Regex for UUID (experiment_id)
+_UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+
+# Regex for safe identifiers (alphanumeric + underscores + hyphens + spaces, lowercase)
+_SAFE_IDENT_RE = re.compile(r'^[a-z0-9_\- ]+$')
+
+
+def _validate_date(value: str, label: str = "date") -> str:
+    """Validate and return a YYYYMMDD date string."""
+    if not _DATE_RE.match(value):
+        raise ValueError(f"Invalid {label} format: expected YYYYMMDD, got '{value}'")
+    # Also verify it's a real date
+    datetime.strptime(value, '%Y%m%d')
+    return value
+
+
+def _validate_city(value: str) -> str:
+    """Validate city against allowlist (case-insensitive) and return lowercase."""
+    normalized = value.strip().lower()
+    if normalized not in ALLOWED_CITIES:
+        # Fallback: allow if it matches a safe identifier pattern (new cities may be added)
+        if not _SAFE_IDENT_RE.match(normalized):
+            raise ValueError(f"Invalid city: '{value}'. Must be alphanumeric.")
+        logger.warning("City '%s' not in allowlist but passes safe-identifier check.", normalized)
+    return normalized
+
+
+def _validate_service_category(value: str) -> str:
+    """Validate service_category against allowlist."""
+    normalized = value.strip().lower()
+    if normalized not in ALLOWED_SERVICE_CATEGORIES:
+        if not _SAFE_IDENT_RE.match(normalized):
+            raise ValueError(f"Invalid service_category: '{value}'.")
+        logger.warning("service_category '%s' not in allowlist but passes safe-identifier check.", normalized)
+    return normalized
+
+
+def _validate_service_value(value: str) -> str:
+    """Validate service_value against allowlist."""
+    normalized = value.strip().lower()
+    if normalized not in ALLOWED_SERVICE_VALUES:
+        if not _SAFE_IDENT_RE.match(normalized):
+            raise ValueError(f"Invalid service_value: '{value}'.")
+        logger.warning("service_value '%s' not in allowlist but passes safe-identifier check.", normalized)
+    return normalized
+
+
+def _validate_experiment_id(value: str) -> str:
+    """Validate experiment_id as UUID or safe alphanumeric string."""
+    stripped = value.strip()
+    if _UUID_RE.match(stripped):
+        return stripped
+    # Allow alphanumeric with hyphens/underscores
+    if re.match(r'^[a-zA-Z0-9_-]+$', stripped):
+        return stripped
+    raise ValueError(f"Invalid experiment_id: '{value}'. Must be a UUID or alphanumeric.")
+
+
+def _escape_sql_string(value: str) -> str:
+    """Escape single quotes in a string for safe SQL interpolation."""
+    return value.replace("'", "''")
 
 
 def get_presto_connection(username: str):
     """Create a Presto connection with the given username"""
     # Read Presto host from environment variable, fallback to default
     presto_host = os.environ.get('PRESTO_HOST', 'bi-trino-4.serving.data.production.internal')
-    presto_port = os.environ.get('PRESTO_PORT', '80')
+    presto_port = int(os.environ.get('PRESTO_PORT', '80'))
     presto_connection = presto.connect(presto_host, presto_port, username=username)
     return presto_connection
 
@@ -1099,7 +1196,27 @@ def get_experiment_performance(
     """
     import io
     from datetime import timedelta
-    
+
+    # --- Validate & sanitize all user-supplied inputs ---
+    try:
+        start_date = _validate_date(start_date, "start_date")
+        end_date = _validate_date(end_date, "end_date")
+        experiment_id = _validate_experiment_id(experiment_id)
+        city = _validate_city(city)
+        service_value = _validate_service_value(service_value)
+    except ValueError as ve:
+        return {
+            "csv": "",
+            "row_count": 0,
+            "columns": [],
+            "error": str(ve),
+        }
+
+    # Escape single quotes as an extra safety layer
+    experiment_id = _escape_sql_string(experiment_id)
+    city = _escape_sql_string(city)
+    service_value = _escape_sql_string(service_value)
+
     presto_connection = get_presto_connection(username)
 
     # Calculate extended start date for weekly CTE (14 days before start_date)
@@ -1280,12 +1397,12 @@ def get_experiment_performance(
             "preview": df.head(10).to_dict('records'),
         }
     except Exception as e:
+        logger.exception("get_experiment_performance query failed. Query: %s", query)
         return {
             "csv": "",
             "row_count": 0,
             "columns": [],
             "error": str(e),
-            "query": query,
         }
 
 
@@ -1298,6 +1415,13 @@ def _fetch_segment_transition_raw(
     service_value: str = 'two_wheeler',
 ):
     """Run Presto query and return raw captain-level segment data (yyyymmdd, captain_id, consistency_segment)."""
+    # --- Validate & sanitize all user-supplied inputs ---
+    start_date = _validate_date(start_date, "start_date")
+    end_date = _validate_date(end_date, "end_date")
+    city = _escape_sql_string(_validate_city(city))
+    service_category = _escape_sql_string(_validate_service_category(service_category))
+    service_value = _escape_sql_string(_validate_service_value(service_value))
+
     presto_connection = get_presto_connection(username)
     query = f"""
     -- Get DAU captain IDs (captains who were online on each day)

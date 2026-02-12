@@ -302,16 +302,16 @@ export function InsightsPage() {
       metricsByKey[analysisParams.selections[0]?.metricKey ?? ""]
     const series = metricForTrend
       ? computeTrendSeries({
-          rows: parsed.rows,
-          testCohort: analysisParams.testCohort,
-          controlCohort: analysisParams.controlCohort,
-          metric: metricForTrend,
-          agg: metricForTrend.type === "ratio" ? "ratio" : trendAgg,
-          dateRange: unionRange,
-          pre: analysisParams.pre,
-          post: analysisParams.post,
-          breakoutCol: trendBreakoutCol || null,
-        })
+        rows: parsed.rows,
+        testCohort: analysisParams.testCohort,
+        controlCohort: analysisParams.controlCohort,
+        metric: metricForTrend,
+        agg: metricForTrend.type === "ratio" ? "ratio" : trendAgg,
+        dateRange: unionRange,
+        pre: analysisParams.pre,
+        post: analysisParams.post,
+        breakoutCol: trendBreakoutCol || null,
+      })
       : { data: [], lines: [] }
 
     const totalParticipants = computeTotalParticipants(parsed.rows, [
@@ -489,12 +489,12 @@ export function InsightsPage() {
                       metricOptions={
                         analysisParams
                           ? analysisParams.selections
-                              .map((s) => metricsByKey[s.metricKey])
-                              .filter(Boolean)
-                              .map((m) => ({ key: m.key, label: m.label }))
+                            .map((s) => metricsByKey[s.metricKey])
+                            .filter(Boolean)
+                            .map((m) => ({ key: m.key, label: m.label }))
                           : []
                       }
-                      aggOptions={["sum","sum_per_captain","avg","median","count","count_distinct","ratio"] as AggMethod[]}
+                      aggOptions={["sum", "sum_per_captain", "avg", "median", "count", "count_distinct", "ratio"] as AggMethod[]}
                       breakoutOptions={categoricalColumns}
                       series={computed?.series ?? { data: [], lines: [] }}
                     />
@@ -532,27 +532,30 @@ export function InsightsPage() {
                       if (sessionId && parsed) {
                         try {
                           const sessionData = await getSessionData(sessionId)
-                          
+
                           // Transform rows from API format to frontend format
-                          const transformedRows: RawRow[] = sessionData.rows.map((row) => {
-                            const time = row.date || row.time
-                            const timeDate = time ? new Date(`${time}T00:00:00`) : new Date()
-                            
-                            const transformedRow: RawRow = {
-                              cohort: String(row.cohort ?? ""),
-                              captain_id: String(row.captain_id ?? ""),
-                              time: timeDate,
-                            }
-                            
-                            // Copy all other fields
-                            for (const [key, value] of Object.entries(row)) {
-                              if (key === "cohort" || key === "captain_id" || key === "time" || key === "date") continue
-                              transformedRow[key] = value
-                            }
-                            
-                            return transformedRow
-                          })
-                          
+                          const transformedRows: RawRow[] = sessionData.rows
+                            .map((row) => {
+                              const time = row.date || row.time
+                              if (!time) return null // Skip rows with no date/time
+                              const timeDate = new Date(`${time}T00:00:00`)
+
+                              const transformedRow: RawRow = {
+                                cohort: String(row.cohort ?? ""),
+                                captain_id: String(row.captain_id ?? ""),
+                                time: timeDate,
+                              }
+
+                              // Copy all other fields
+                              for (const [key, value] of Object.entries(row)) {
+                                if (key === "cohort" || key === "captain_id" || key === "time" || key === "date") continue
+                                transformedRow[key] = value
+                              }
+
+                              return transformedRow
+                            })
+                            .filter((row): row is RawRow => row !== null)
+
                           // Update the parsed state with fresh data from backend
                           setParsed({
                             ...parsed,

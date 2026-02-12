@@ -263,7 +263,7 @@ CREATE TABLE IF NOT EXISTS public.calculated_columns (
     expression TEXT NOT NULL,
     output_column TEXT NOT NULL,
     input_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
-    is_validated BOOLEAN DEFAULT false,
+    is_validated BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

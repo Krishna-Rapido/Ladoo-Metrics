@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+import ast
 import io
+import logging
 import os
+import re
 import secrets
 import tempfile
 import shutil
+import time as _time
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Union
 
 import duckdb
 import pandas as pd
 import numpy as np
+from cachetools import TTLCache
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, FileResponse, StreamingResponse
+
+logger = logging.getLogger(__name__)
 
 import schemas
 from schemas import (
@@ -129,7 +137,8 @@ UPLOAD_PROGRESS: Dict[str, dict] = {}
 FUNNEL_SESSION_STORE: Dict[str, pd.DataFrame] = {}
 
 # Segment transition raw data cache: same query (dates, city, filters) reuses raw DF; period changes need no Presto call
-SEGMENT_TRANSITION_STORE: Dict[str, pd.DataFrame] = {}
+# Bounded TTLCache: max 64 entries, entries expire after 1 hour
+SEGMENT_TRANSITION_STORE: TTLCache = TTLCache(maxsize=64, ttl=3600)
 
 
 def _segment_transition_cache_key(
@@ -162,8 +171,8 @@ if allowed_origins_env:
     # Production: use specific origins from env var
     allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
 else:
-    # Development: allow localhost and wildcard (less secure, for dev only)
-    allowed_origins = ["http://localhost:5173", "*"]
+    # Development: allow localhost only (credentials=True is incompatible with wildcard "*")
+    allowed_origins = ["http://localhost:5173"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -172,6 +181,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Unique prefix for temp directories created by this app
+APP_TEMP_PREFIX = "ladoo_metrics_tmp_"
+
+# Default preview row limit to prevent loading multi-GB files entirely into memory
+DEFAULT_PREVIEW_LIMIT = 10_000
+
+# Stale upload threshold in seconds (1 hour)
+STALE_UPLOAD_THRESHOLD = int(os.environ.get("STALE_UPLOAD_THRESHOLD", "3600"))
 
 
 def is_duckdb_session(session_id: str) -> bool:
@@ -529,7 +547,7 @@ async def upload_csv(file: UploadFile = File(...)) -> UploadResponse:
     session_id = secrets.token_hex(16)
     
     # Create temp file for streaming
-    temp_dir = tempfile.mkdtemp()
+    temp_dir = tempfile.mkdtemp(prefix=APP_TEMP_PREFIX)
     temp_path = os.path.join(temp_dir, "upload.csv")
     
     try:
@@ -634,7 +652,7 @@ async def init_chunked_upload(request: Request):
         raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {MAX_FILE_SIZE / (1024**3):.1f}GB")
     
     upload_id = secrets.token_hex(16)
-    temp_dir = tempfile.mkdtemp()
+    temp_dir = tempfile.mkdtemp(prefix=APP_TEMP_PREFIX)
     temp_path = os.path.join(temp_dir, "upload.csv")
     
     UPLOAD_PROGRESS[upload_id] = {
@@ -644,6 +662,7 @@ async def init_chunked_upload(request: Request):
         "bytes_uploaded": 0,
         "temp_path": temp_path,
         "temp_dir": temp_dir,
+        "created_at": _time.time(),
     }
     
     return {"upload_id": upload_id, "max_chunk_size": CHUNK_SIZE}
@@ -976,7 +995,31 @@ def compute_insights_duckdb(payload: InsightsRequest, parquet_path: str) -> Insi
         ts_start = min(start_candidates) if start_candidates else None
         ts_end = max(end_candidates) if end_candidates else None
         
-        # Build date filter clause
+        # --- Validate date strings before interpolation ---
+        def _validate_iso_date(d: str, label: str) -> str:
+            """Validate YYYY-MM-DD (or similar) date string."""
+            if d is None:
+                return None
+            d = d.strip()
+            # Accept YYYY-MM-DD or YYYYMMDD
+            if re.match(r'^\d{4}-\d{2}-\d{2}$', d):
+                datetime.strptime(d, '%Y-%m-%d')
+                return d
+            if re.match(r'^\d{8}$', d):
+                datetime.strptime(d, '%Y%m%d')
+                return d
+            raise HTTPException(status_code=400, detail=f"Invalid {label} date format: '{d}'. Expected YYYY-MM-DD.")
+        
+        if ts_start:
+            ts_start = _validate_iso_date(ts_start, "start_date")
+        if ts_end:
+            ts_end = _validate_iso_date(ts_end, "end_date")
+
+        # --- Sanitize cohort names (escape single quotes) ---
+        safe_test_cohort = payload.test_cohort.replace("'", "''") if payload.test_cohort else ""
+        safe_control_cohort = payload.control_cohort.replace("'", "''") if payload.control_cohort else ""
+
+        # Build date filter clause (validated values only)
         date_filter = ""
         if ts_start and ts_end:
             date_filter = f"AND date >= '{ts_start}' AND date <= '{ts_end}'"
@@ -990,6 +1033,17 @@ def compute_insights_duckdb(payload: InsightsRequest, parquet_path: str) -> Insi
         pre_end = payload.pre_period.end_date if payload.pre_period else None
         post_start = payload.post_period.start_date if payload.post_period else None
         post_end = payload.post_period.end_date if payload.post_period else None
+
+        # Validate period dates
+        if pre_start:
+            pre_start = _validate_iso_date(pre_start, "pre_period.start_date")
+        if pre_end:
+            pre_end = _validate_iso_date(pre_end, "pre_period.end_date")
+        if post_start:
+            post_start = _validate_iso_date(post_start, "post_period.start_date")
+        if post_end:
+            post_end = _validate_iso_date(post_end, "post_period.end_date")
+
         period_case = "NULL"
         if pre_start and pre_end and post_start and post_end:
             period_case = f"""CASE
@@ -1017,7 +1071,7 @@ def compute_insights_duckdb(payload: InsightsRequest, parquet_path: str) -> Insi
                 SELECT 
                     CAST(date AS DATE) as date,
                     CASE 
-                        WHEN cohort = '{payload.test_cohort}' THEN 'test' 
+                        WHEN cohort = '{safe_test_cohort}' THEN 'test' 
                         ELSE 'control' 
                     END as cohort_type,
                     {period_case} as period,
@@ -1026,7 +1080,7 @@ def compute_insights_duckdb(payload: InsightsRequest, parquet_path: str) -> Insi
                     {sql_agg} as value
                     {breakout_select}
                 FROM read_parquet('{parquet_path}')
-                WHERE cohort IN ('{payload.test_cohort}', '{payload.control_cohort}')
+                WHERE cohort IN ('{safe_test_cohort}', '{safe_control_cohort}')
                 {date_filter}
                 GROUP BY CAST(date AS DATE), cohort_type, period
                     {breakout_group}
@@ -1039,7 +1093,7 @@ def compute_insights_duckdb(payload: InsightsRequest, parquet_path: str) -> Insi
                 SELECT 
                     CAST(date AS DATE) as date,
                     CASE 
-                        WHEN cohort = '{payload.test_cohort}' THEN 'test' 
+                        WHEN cohort = '{safe_test_cohort}' THEN 'test' 
                         ELSE 'control' 
                     END as cohort_type,
                     {period_case} as period,
@@ -1047,7 +1101,7 @@ def compute_insights_duckdb(payload: InsightsRequest, parquet_path: str) -> Insi
                     '{agg}' as agg_func,
                     {sql_agg} as value
                 FROM read_parquet('{parquet_path}')
-                WHERE cohort IN ('{payload.test_cohort}', '{payload.control_cohort}')
+                WHERE cohort IN ('{safe_test_cohort}', '{safe_control_cohort}')
                 {date_filter}
                 GROUP BY CAST(date AS DATE), cohort_type, period
                 ORDER BY date, cohort_type, period
@@ -1057,7 +1111,7 @@ def compute_insights_duckdb(payload: InsightsRequest, parquet_path: str) -> Insi
                 SELECT 
                     CAST(date AS DATE) as date,
                     CASE 
-                        WHEN cohort = '{payload.test_cohort}' THEN 'test' 
+                        WHEN cohort = '{safe_test_cohort}' THEN 'test' 
                         ELSE 'control' 
                     END as cohort_type,
                     {period_case} as period,
@@ -1066,7 +1120,7 @@ def compute_insights_duckdb(payload: InsightsRequest, parquet_path: str) -> Insi
                     {sql_agg} as value,
                     COALESCE(CAST({quote_col(breakout_col)} AS VARCHAR), 'Unknown') as breakout_value
                 FROM read_parquet('{parquet_path}')
-                WHERE cohort IN ('{payload.test_cohort}', '{payload.control_cohort}')
+                WHERE cohort IN ('{safe_test_cohort}', '{safe_control_cohort}')
                 {date_filter}
                 GROUP BY CAST(date AS DATE), cohort_type, period, breakout_value
                 ORDER BY date, cohort_type, period, breakout_value
@@ -1107,19 +1161,19 @@ def compute_insights_duckdb(payload: InsightsRequest, parquet_path: str) -> Insi
             summary_query = f"""
                 WITH pre_data AS (
                     SELECT 
-                        CASE WHEN cohort = '{payload.test_cohort}' THEN 'test' ELSE 'control' END as cohort_type,
+                        CASE WHEN cohort = '{safe_test_cohort}' THEN 'test' ELSE 'control' END as cohort_type,
                         {sql_agg} as value
                     FROM read_parquet('{parquet_path}')
-                    WHERE cohort IN ('{payload.test_cohort}', '{payload.control_cohort}')
+                    WHERE cohort IN ('{safe_test_cohort}', '{safe_control_cohort}')
                     {pre_filter}
                     GROUP BY cohort_type
                 ),
                 post_data AS (
                     SELECT 
-                        CASE WHEN cohort = '{payload.test_cohort}' THEN 'test' ELSE 'control' END as cohort_type,
+                        CASE WHEN cohort = '{safe_test_cohort}' THEN 'test' ELSE 'control' END as cohort_type,
                         {sql_agg} as value
                     FROM read_parquet('{parquet_path}')
-                    WHERE cohort IN ('{payload.test_cohort}', '{payload.control_cohort}')
+                    WHERE cohort IN ('{safe_test_cohort}', '{safe_control_cohort}')
                     {post_filter}
                     GROUP BY cohort_type
                 )
@@ -1176,7 +1230,7 @@ def compute_insights_duckdb(payload: InsightsRequest, parquet_path: str) -> Insi
             tp_query = f"""
                 SELECT COUNT(DISTINCT captain_id) as n
                 FROM read_parquet('{parquet_path}')
-                WHERE cohort IN ('{payload.test_cohort}', '{payload.control_cohort}')
+                WHERE cohort IN ('{safe_test_cohort}', '{safe_control_cohort}')
                 {date_filter}
             """
             try:
@@ -3489,41 +3543,38 @@ async def preview_session_data(
     limit: Optional[int] = None
 ):
     """
-    Get session data. 
-    - If limit is None or 0: returns the FULL dataset (used for visualization)
-    - If limit is specified: returns a preview with that many rows
+    Get session data preview.
+    - If limit is None or 0: returns up to DEFAULT_PREVIEW_LIMIT rows (safe cap to avoid OOM on multi-GB files).
+    - If limit is specified: returns that many rows.
     
-    IMPORTANT: For visualization, always use limit=None or limit=0 to get the full dataset.
-    Using a preview/limit for visualization will produce incorrect aggregations and charts.
+    NOTE: For full-dataset work (aggregation/charts), use /data/visualize which
+    runs aggregation queries via DuckDB without loading the entire file into memory.
     """
     if not x_session_id or x_session_id not in SESSION_STORE:
         raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
     
     session = SESSION_STORE[x_session_id]
-    fetch_all = limit is None or limit == 0
+
+    # Enforce a safe default cap: never load multi-GB files fully into memory via preview
+    if limit is None or limit == 0:
+        effective_limit = DEFAULT_PREVIEW_LIMIT
+    else:
+        effective_limit = limit
     
     if isinstance(session, dict) and "parquet_path" in session:
         parquet_path = session["parquet_path"]
         if not os.path.exists(parquet_path):
             raise HTTPException(status_code=400, detail="Session data file not found.")
         con = duckdb.connect()
-        if fetch_all:
-            preview_df = con.execute(
-                f"SELECT * FROM read_parquet('{parquet_path}')"
-            ).fetchdf()
-        else:
-            preview_df = con.execute(
-                f"SELECT * FROM read_parquet('{parquet_path}') LIMIT {limit}"
-            ).fetchdf()
+        preview_df = con.execute(
+            f"SELECT * FROM read_parquet('{parquet_path}') LIMIT {int(effective_limit)}"
+        ).fetchdf()
         con.close()
         total_rows = session["num_rows"]
         columns = session["columns"]
     else:
         df = session
-        if fetch_all:
-            preview_df = df.copy()
-        else:
-            preview_df = df.head(limit).copy()
+        preview_df = df.head(effective_limit).copy()
         total_rows = len(df)
         columns = list(df.columns)
     
@@ -3661,11 +3712,10 @@ async def visualize_session_data(
         )
         
     except Exception as e:
-        import traceback
-        error_trace = traceback.format_exc()
+        logger.exception("Error aggregating visualization data")
         return VisualizationResponse(
             success=False,
-            error=f"Error aggregating data: {str(e)}\n\n{error_trace}",
+            error="Internal error while aggregating data",
             total_rows=0
         )
 
@@ -3676,8 +3726,6 @@ def validate_pandas_expression(expression: str) -> tuple[bool, Optional[str]]:
     Only allows safe pandas operations, no exec/eval/imports.
     Returns (is_safe, error_message)
     """
-    import re
-    
     # Forbidden patterns
     forbidden_patterns = [
         r'exec\s*\(',
@@ -3710,6 +3758,104 @@ def validate_pandas_expression(expression: str) -> tuple[bool, Optional[str]]:
         return False, "Expression must reference 'df' (the DataFrame)"
     
     return True, None
+
+
+# --- Safe expression evaluator using AST ---
+
+# Allowed AST node types for safe pandas expressions
+_SAFE_AST_NODES = {
+    ast.Expression, ast.BinOp, ast.UnaryOp, ast.BoolOp,
+    ast.Compare, ast.Call, ast.Attribute, ast.Subscript,
+    ast.Index, ast.Slice, ast.Name, ast.Load,
+    ast.Constant, ast.Num, ast.Str,  # Num/Str for older Python compat
+    ast.List, ast.Tuple, ast.Dict,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+    ast.USub, ast.UAdd, ast.Not, ast.Invert,
+    ast.And, ast.Or,
+    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+    ast.Is, ast.IsNot, ast.In, ast.NotIn,
+    ast.IfExp, ast.Starred, ast.keyword,
+    ast.FormattedValue, ast.JoinedStr,
+}
+
+# Whitelisted top-level names that may appear in expressions
+_SAFE_NAMES = {'df', 'pd', 'np', 'True', 'False', 'None', 'abs', 'round', 'len', 'min', 'max', 'sum', 'int', 'float', 'str', 'bool', 'list', 'dict', 'tuple', 'range', 'enumerate', 'zip', 'map', 'filter', 'sorted', 'reversed'}
+
+# Blacklisted attribute names (dangerous I/O and code-execution methods)
+_BLOCKED_ATTRS = {
+    'read_pickle', 'to_pickle', 'read_csv', 'to_csv', 'read_excel', 'to_excel',
+    'read_json', 'to_json', 'read_parquet', 'to_parquet', 'read_feather', 'to_feather',
+    'read_hdf', 'to_hdf', 'read_sql', 'to_sql', 'read_clipboard', 'to_clipboard',
+    'read_fwf', 'read_html', 'to_html', 'read_xml', 'to_xml', 'read_orc',
+    'read_sas', 'read_spss', 'read_stata', 'to_stata', 'read_gbq', 'to_gbq',
+    'read_table', 'to_markdown', 'to_latex',
+    'load', 'save', 'savez', 'savez_compressed', 'fromfile', 'tofile',
+    'system', 'popen', 'exec', 'eval',
+}
+
+
+def _validate_ast_tree(tree: ast.AST) -> tuple[bool, Optional[str]]:
+    """Walk the AST and reject disallowed nodes / attributes."""
+    for node in ast.walk(tree):
+        if type(node) not in _SAFE_AST_NODES:
+            return False, f"Disallowed expression element: {type(node).__name__}"
+        # Check attribute accesses
+        if isinstance(node, ast.Attribute):
+            if node.attr.startswith('_'):
+                return False, f"Access to private/dunder attribute '{node.attr}' is not allowed"
+            if node.attr in _BLOCKED_ATTRS:
+                return False, f"Method '{node.attr}' is not allowed for security reasons"
+        # Check name references
+        if isinstance(node, ast.Name) and node.id not in _SAFE_NAMES:
+            return False, f"Name '{node.id}' is not allowed in expressions"
+    return True, None
+
+
+def safe_eval(expression: str, df: pd.DataFrame) -> object:
+    """
+    Safely evaluate a pandas expression.
+    Uses AST validation to restrict allowed operations, then evaluates
+    with a minimal namespace.
+    """
+    # Parse the expression
+    try:
+        tree = ast.parse(expression, mode='eval')
+    except SyntaxError as e:
+        raise ValueError(f"Invalid expression syntax: {e}")
+    
+    # Validate AST
+    is_safe, error = _validate_ast_tree(tree)
+    if not is_safe:
+        raise ValueError(f"Expression rejected: {error}")
+    
+    # Build safe namespace (no __builtins__, no risky methods)
+    safe_ns = {
+        '__builtins__': {},
+        'df': df,
+        'pd': pd,
+        'np': np,
+        'abs': abs,
+        'round': round,
+        'len': len,
+        'min': min,
+        'max': max,
+        'sum': sum,
+        'int': int,
+        'float': float,
+        'str': str,
+        'bool': bool,
+        'list': list,
+        'dict': dict,
+        'tuple': tuple,
+        'range': range,
+        'True': True,
+        'False': False,
+        'None': None,
+    }
+    
+    # Compile and evaluate
+    code = compile(tree, '<expression>', 'eval')
+    return eval(code, safe_ns)
 
 
 @app.post("/calculated-columns/test", response_model=CalculatedColumnTestResponse)
@@ -3759,9 +3905,8 @@ async def test_calculated_column(
             if len(df) > 1000:
                 df = df.head(1000).copy()
         
-        # Execute expression in safe namespace
-        safe_dict = {'df': df, 'pd': pd, 'np': np}
-        result = eval(payload.expression, {"__builtins__": {}}, safe_dict)
+        # Execute expression in safe namespace (AST-validated)
+        result = safe_eval(payload.expression, df)
         
         # Result should be a Series
         if not isinstance(result, pd.Series):
@@ -3836,9 +3981,8 @@ async def apply_calculated_column(
             df = con.execute(f"SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
             con.close()
             
-            # Execute expression
-            safe_dict = {'df': df, 'pd': pd, 'np': np}
-            result = eval(payload.expression, {"__builtins__": {}}, safe_dict)
+            # Execute expression (AST-validated)
+            result = safe_eval(payload.expression, df)
             
             if not isinstance(result, pd.Series):
                 return CalculatedColumnApplyResponse(
@@ -3876,9 +4020,8 @@ async def apply_calculated_column(
             # In-memory DataFrame session
             df = session
             
-            # Execute expression
-            safe_dict = {'df': df, 'pd': pd, 'np': np}
-            result = eval(payload.expression, {"__builtins__": {}}, safe_dict)
+            # Execute expression (AST-validated)
+            result = safe_eval(payload.expression, df)
             
             if not isinstance(result, pd.Series):
                 return CalculatedColumnApplyResponse(
@@ -4531,11 +4674,28 @@ def health():
     }
 
 
+async def _cleanup_stale_uploads():
+    """Periodically clean up stale upload entries and their temp directories."""
+    while True:
+        await asyncio.sleep(300)  # Run every 5 minutes
+        try:
+            now = _time.time()
+            for upload_id, progress in list(UPLOAD_PROGRESS.items()):
+                created_at = progress.get("created_at", 0)
+                if now - created_at > STALE_UPLOAD_THRESHOLD:
+                    temp_dir = progress.get("temp_dir")
+                    if temp_dir and os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    UPLOAD_PROGRESS.pop(upload_id, None)
+                    logger.info("Cleaned up stale upload %s (age: %.0fs)", upload_id, now - created_at)
+        except Exception:
+            logger.exception("Error during stale upload cleanup")
+
+
 @app.on_event("startup")
 async def startup_event():
-    """Clean up any orphaned temp files on startup."""
-    import logging
-    logging.info("Starting application with 5GB file upload support")
+    """Clean up any orphaned temp files on startup and start background cleanup task."""
+    logger.info("Starting application with 5GB file upload support")
     
     # Clean up any orphaned temp directories from previous runs
     temp_base = tempfile.gettempdir()
@@ -4543,28 +4703,27 @@ async def startup_event():
     try:
         for item in os.listdir(temp_base):
             item_path = os.path.join(temp_base, item)
-            # Only clean up directories that look like our temp dirs
-            if os.path.isdir(item_path) and item.startswith('tmp'):
+            # Only clean up directories created by this app (matching our prefix)
+            if os.path.isdir(item_path) and item.startswith(APP_TEMP_PREFIX):
                 try:
-                    # Check if it contains our upload file
-                    upload_file = os.path.join(item_path, 'upload.csv')
-                    if os.path.exists(upload_file):
-                        shutil.rmtree(item_path, ignore_errors=True)
-                        cleaned_count += 1
+                    shutil.rmtree(item_path, ignore_errors=True)
+                    cleaned_count += 1
                 except Exception:
                     pass
     except Exception as e:
-        logging.warning(f"Temp cleanup failed: {e}")
+        logger.warning("Temp cleanup failed: %s", e)
     
     if cleaned_count > 0:
-        logging.info(f"Cleaned up {cleaned_count} orphaned temp directories")
+        logger.info("Cleaned up %d orphaned temp directories", cleaned_count)
+    
+    # Start background task to clean up stale uploads
+    asyncio.create_task(_cleanup_stale_uploads())
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up temp files on shutdown."""
-    import logging
-    logging.info("Shutting down, cleaning up temp files...")
+    logger.info("Shutting down, cleaning up temp files...")
     
     # Clean up DuckDB session parquet files
     for session_id, session in list(SESSION_STORE.items()):
