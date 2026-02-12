@@ -53,6 +53,7 @@ import {
 import {
   joinFunctionWithCsv,
   previewFunctionResult,
+  downloadFunctionOutput,
   downloadSessionData,
   type FunctionJoinResponse,
   type FunctionPreviewResponse,
@@ -88,6 +89,7 @@ export function AddMetricsTab({ sessionId, username, onMetricsAdded }: AddMetric
   // Preview state
   const [isPreviewing, setIsPreviewing] = useState(false)
   const [previewResult, setPreviewResult] = useState<FunctionPreviewResponse | null>(null)
+  const [isDownloadingFunctionOutput, setIsDownloadingFunctionOutput] = useState(false)
 
   // Join configuration
   const [joinColumns, setJoinColumns] = useState<'captain_id' | 'captain_id_yyyymmdd'>('captain_id_yyyymmdd')
@@ -219,6 +221,29 @@ export function AddMetricsTab({ sessionId, username, onMetricsAdded }: AddMetric
       })
     } finally {
       setIsPreviewing(false)
+    }
+  }
+
+  // Download full function output as CSV (runs function again and streams result)
+  const handleDownloadFunctionOutput = async () => {
+    if (!selectedFunction) return
+    setIsDownloadingFunctionOutput(true)
+    try {
+      const filename = selectedFunction.name
+        ? `${selectedFunction.name.replace(/\s+/g, '_').toLowerCase()}_output.csv`
+        : 'function_output.csv'
+      await downloadFunctionOutput(
+        {
+          code: selectedFunction.code,
+          parameters: parameterValues,
+          username,
+        },
+        filename
+      )
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to download function output')
+    } finally {
+      setIsDownloadingFunctionOutput(false)
     }
   }
 
@@ -560,11 +585,32 @@ export function AddMetricsTab({ sessionId, username, onMetricsAdded }: AddMetric
 
               {previewResult?.success && (
                 <div className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="h-5 w-5 text-emerald-500" />
-                    <span className="text-sm text-emerald-600">
-                      Function returned {previewResult.row_count} rows with {previewResult.columns?.length || 0} columns
-                    </span>
+                  <div className="flex items-center justify-between gap-4 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+                      <span className="text-sm text-emerald-600">
+                        Function returned {previewResult.row_count} rows with {previewResult.columns?.length || 0} columns
+                      </span>
+                    </div>
+                    <Button
+                      onClick={handleDownloadFunctionOutput}
+                      disabled={isDownloadingFunctionOutput}
+                      variant="outline"
+                      size="sm"
+                      className="rounded-lg shrink-0"
+                    >
+                      {isDownloadingFunctionOutput ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Preparing...
+                        </>
+                      ) : (
+                        <>
+                          <Download className="h-4 w-4 mr-2" />
+                          Download function output
+                        </>
+                      )}
+                    </Button>
                   </div>
 
                   {/* Statistics for all columns */}

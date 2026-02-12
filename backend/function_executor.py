@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 import traceback
 import re
+import os
 from pyhive import presto
 
 
@@ -52,8 +53,9 @@ FORBIDDEN_PATTERNS = [
 
 def get_presto_connection(username: str):
     """Create a Presto connection with the given username"""
-    presto_host = 'bi-trino-4.serving.data.production.internal'
-    presto_port = '80'
+    # Read Presto host from environment variable, fallback to default
+    presto_host = os.environ.get('PRESTO_HOST', 'bi-trino-4.serving.data.production.internal')
+    presto_port = os.environ.get('PRESTO_PORT', '80')
     presto_connection = presto.connect(presto_host, presto_port, username=username)
     return presto_connection
 

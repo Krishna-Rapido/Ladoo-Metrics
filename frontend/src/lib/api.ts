@@ -184,7 +184,7 @@ export async function uploadCsv(
     if (file.size > LARGE_FILE_THRESHOLD) {
         return uploadCsvChunked(file, onProgress);
     }
-    
+
     // For smaller files, use simple upload with XHR for progress
     return uploadCsvSimple(file, onProgress);
 }
@@ -200,7 +200,7 @@ async function uploadCsvSimple(
         const xhr = new XMLHttpRequest();
         const form = new FormData();
         form.append('file', file);
-        
+
         xhr.upload.onprogress = (event) => {
             if (event.lengthComputable && onProgress) {
                 onProgress({
@@ -211,7 +211,7 @@ async function uploadCsvSimple(
                 });
             }
         };
-        
+
         xhr.onload = async () => {
             if (xhr.status >= 200 && xhr.status < 300) {
                 try {
@@ -239,7 +239,7 @@ async function uploadCsvSimple(
                 reject(new Error(error));
             }
         };
-        
+
         xhr.onerror = () => {
             const error = 'Network error during upload';
             onProgress?.({
@@ -251,7 +251,7 @@ async function uploadCsvSimple(
             });
             reject(new Error(error));
         };
-        
+
         xhr.open('POST', `${BASE_URL}/upload`);
         xhr.send(form);
     });
@@ -271,7 +271,7 @@ async function uploadCsvChunked(
         totalBytes: file.size,
         progress: 0,
     });
-    
+
     const initRes = await fetch(`${BASE_URL}/upload/init`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -280,7 +280,7 @@ async function uploadCsvChunked(
             file_size: file.size,
         }),
     });
-    
+
     if (!initRes.ok) {
         const error = await initRes.text();
         onProgress?.({
@@ -292,29 +292,29 @@ async function uploadCsvChunked(
         });
         throw new Error(error);
     }
-    
+
     const { upload_id } = await initRes.json();
-    
+
     // Upload file in chunks
     let bytesUploaded = 0;
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-    
+
     for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, file.size);
         const chunk = file.slice(start, end);
-        
+
         const chunkForm = new FormData();
         chunkForm.append('file', chunk, `chunk_${i}`);
-        
+
         const chunkRes = await fetch(`${BASE_URL}/upload/chunk/${upload_id}`, {
             method: 'POST',
             body: chunkForm,
         });
-        
+
         if (!chunkRes.ok) {
             // Cancel upload on error
-            await fetch(`${BASE_URL}/upload/${upload_id}`, { method: 'DELETE' }).catch(() => {});
+            await fetch(`${BASE_URL}/upload/${upload_id}`, { method: 'DELETE' }).catch(() => { });
             const error = await chunkRes.text();
             onProgress?.({
                 status: 'error',
@@ -325,7 +325,7 @@ async function uploadCsvChunked(
             });
             throw new Error(error);
         }
-        
+
         bytesUploaded = end;
         onProgress?.({
             status: 'uploading',
@@ -334,7 +334,7 @@ async function uploadCsvChunked(
             progress: (bytesUploaded / file.size) * 90, // Reserve 10% for processing
         });
     }
-    
+
     // Complete upload and process file
     onProgress?.({
         status: 'processing',
@@ -342,11 +342,11 @@ async function uploadCsvChunked(
         totalBytes: file.size,
         progress: 95,
     });
-    
+
     const completeRes = await fetch(`${BASE_URL}/upload/complete/${upload_id}`, {
         method: 'POST',
     });
-    
+
     if (!completeRes.ok) {
         const error = await completeRes.text();
         onProgress?.({
@@ -358,17 +358,17 @@ async function uploadCsvChunked(
         });
         throw new Error(error);
     }
-    
+
     const data = (await completeRes.json()) as UploadResponse;
     setSessionId(data.session_id);
-    
+
     onProgress?.({
         status: 'completed',
         bytesUploaded: file.size,
         totalBytes: file.size,
         progress: 100,
     });
-    
+
     return data;
 }
 
@@ -1102,6 +1102,57 @@ export async function previewFunctionResult(
     return await res.json();
 }
 
+export type SessionInitFromFunctionResponse = {
+    session_id: string;
+    row_count: number;
+    columns: string[];
+};
+
+/**
+ * Create a session from function output (Discover flow).
+ * Sets session_id in localStorage and dispatches 'session-id-changed' so Discover page can refresh.
+ */
+export async function initSessionFromFunction(
+    request: FunctionTestRequest
+): Promise<SessionInitFromFunctionResponse> {
+    const res = await fetch(`${BASE_URL}/session/init-from-function`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+    });
+    if (!res.ok) throw new Error('Failed to create session from function');
+    const data = (await res.json()) as SessionInitFromFunctionResponse;
+    localStorage.setItem('session_id', data.session_id);
+    window.dispatchEvent(new CustomEvent('session-id-changed'));
+    return data;
+}
+
+/**
+ * Download the full output of a function as CSV.
+ * Runs the function and streams the result as a file (same params as preview).
+ */
+export async function downloadFunctionOutput(
+    request: FunctionTestRequest,
+    filename: string = 'function_output.csv'
+): Promise<void> {
+    const res = await fetch(`${BASE_URL}/functions/preview/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+    });
+    if (!res.ok) throw new Error('Failed to download function output');
+
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+}
+
 export async function joinFunctionWithCsv(
     request: FunctionJoinRequest,
     sessionId: string
@@ -1134,7 +1185,7 @@ export async function downloadSessionData(sessionId: string): Promise<void> {
         headers,
     });
     if (!res.ok) throw new Error('Failed to download data');
-    
+
     const blob = await res.blob();
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1168,4 +1219,367 @@ export async function getSessionData(sessionId: string): Promise<SessionDataResp
     });
     if (!res.ok) throw new Error('Failed to get session data');
     return await res.json();
+}
+
+export type SessionPreviewResponse = {
+    columns: string[];
+    preview: Record<string, unknown>[];
+    total_rows: number;
+};
+
+export async function previewSessionData(sessionId: string, limit?: number): Promise<SessionPreviewResponse> {
+    const headers = new Headers();
+    headers.set('x-session-id', sessionId);
+
+    // If limit is undefined or 0, fetch full dataset
+    const url = limit === undefined || limit === 0
+        ? `${BASE_URL}/data/preview`
+        : `${BASE_URL}/data/preview?limit=${limit}`;
+
+    const res = await fetch(url, {
+        method: 'GET',
+        headers,
+    });
+    if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(errorText || 'Failed to preview session data');
+    }
+    return await res.json();
+}
+
+/**
+ * Fetch the FULL dataset for visualization (no limit).
+ * This should be used for visualization to ensure all data is plotted correctly.
+ */
+export async function fetchFullSessionData(sessionId: string): Promise<SessionPreviewResponse> {
+    return previewSessionData(sessionId, 0); // 0 means fetch full dataset
+}
+
+// =============================================================================
+// VISUALIZATION API
+// =============================================================================
+
+export type VisualizationRequest = {
+    x_axis: string;
+    y_axes: string[];
+    aggregations: Record<string, 'sum' | 'mean' | 'count' | 'median'>;
+    series?: string | null;
+    chart_type?: string;
+};
+
+export type VisualizationResponse = {
+    success: boolean;
+    error?: string | null;
+    data: Record<string, unknown>[];
+    columns: string[];
+    total_rows: number;
+};
+
+/**
+ * Get aggregated data for visualization.
+ * This endpoint aggregates data on the backend, avoiding transfer of millions of rows.
+ */
+export async function getVisualizationData(
+    sessionId: string,
+    request: VisualizationRequest
+): Promise<VisualizationResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    headers.set('x-session-id', sessionId);
+
+    const res = await fetch(`${BASE_URL}/data/visualize`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+    });
+
+    if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(errorText || 'Failed to get visualization data');
+    }
+
+    return await res.json();
+}
+
+// =============================================================================
+// CALCULATED COLUMNS API
+// =============================================================================
+
+export type CalculatedColumnTestRequest = {
+    expression: string;
+    session_id: string;
+};
+
+export type CalculatedColumnTestResponse = {
+    success: boolean;
+    error?: string | null;
+    preview?: Record<string, unknown>[] | null;
+    preview_column?: string | null;
+    row_count: number;
+};
+
+export type CalculatedColumnApplyRequest = {
+    expression: string;
+    output_column: string;
+    session_id: string;
+};
+
+export type CalculatedColumnApplyResponse = {
+    success: boolean;
+    error?: string | null;
+    preview?: Record<string, unknown>[] | null;
+    new_column?: string | null;
+    row_count: number;
+    columns?: string[] | null;
+};
+
+export async function testCalculatedColumn(
+    request: CalculatedColumnTestRequest
+): Promise<CalculatedColumnTestResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    headers.set('x-session-id', request.session_id);
+
+    const res = await fetch(`${BASE_URL}/calculated-columns/test`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to test calculated column');
+    }
+    return await res.json();
+}
+
+export async function applyCalculatedColumn(
+    request: CalculatedColumnApplyRequest
+): Promise<CalculatedColumnApplyResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    headers.set('x-session-id', request.session_id);
+
+    const res = await fetch(`${BASE_URL}/calculated-columns/apply`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to apply calculated column');
+    }
+    return await res.json();
+}
+
+// =============================================================================
+// DISCOVER: EXPERIMENT PERFORMANCE & SEGMENT TRANSITIONS
+// =============================================================================
+
+export type ExperimentPerformanceRequest = {
+    username: string;
+    experiment_id: string;
+    start_date?: string;
+    end_date?: string;
+    time_level?: 'daily' | 'weekly' | 'monthly';
+    tod_level?: 'daily' | 'afternoon' | 'evening' | 'morning' | 'night' | 'all';
+    city?: string;
+    service_value?: 'two_wheeler' | 'three_wheeler' | 'four_wheeler';
+};
+
+export type CohortBreakdown = {
+    cohort: string;
+    unique_captains: number;
+};
+
+export type ExperimentPerformanceResponse = {
+    row_count: number;
+    columns: string[];
+    experiment_id: string;
+    total_unique_captains?: number;
+    cohort_breakdown: CohortBreakdown[];
+    preview: Record<string, any>[];
+    csv?: string;
+    error?: string;
+};
+
+export async function getExperimentPerformance(
+    req: ExperimentPerformanceRequest
+): Promise<ExperimentPerformanceResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/discover/experiment-performance`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to fetch experiment performance data');
+    }
+    return await res.json();
+}
+
+export async function downloadExperimentPerformance(
+    req: ExperimentPerformanceRequest,
+    filename?: string
+): Promise<void> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/discover/experiment-performance/download`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to download experiment performance data');
+    }
+
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || `experiment_${req.experiment_id?.slice(0, 8) || 'data'}_${req.city || 'all'}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+}
+
+export type SegmentTransitionRequest = {
+    username: string;
+    start_date?: string;
+    end_date?: string;
+    city?: string;
+    service_category?: string;
+    service_value?: string;
+    filter_type?: 'dau' | 'mau' | 'dtu' | 'mtu' | null;
+    period?: 'D' | 'W' | 'M'; // Sankey aggregation: D=daily, W=weekly, M=monthly
+};
+
+export type SankeyNode = {
+    name: string;
+    color: string;
+    segment: string;
+    period: string;
+    total: number;
+};
+
+export type SankeyLink = {
+    source: number;
+    target: number;
+    value: number;
+    color: string;
+};
+
+export type SankeyNodeMeta = {
+    period: string;
+    segment: string;
+    total: number;
+};
+
+export type SankeyLinkMeta = {
+    from_period: string;
+    from_segment: string;
+    to_period: string;
+    to_segment: string;
+    value: number;
+};
+
+export type SankeyData = {
+    // Plotly format
+    node_labels: string[];
+    node_colors: string[];
+    node_x: number[];
+    node_y: number[];
+    node_meta: SankeyNodeMeta[];
+    link_source: number[];
+    link_target: number[];
+    link_value: number[];
+    link_color: string[];
+    link_meta: SankeyLinkMeta[];
+    periods: string[];
+    segments: string[];
+    segment_colors: string[];
+};
+
+export type SegmentTransitionResponse = {
+    row_count: number;
+    columns: string[];
+    data: Record<string, any>[];
+    sankey_data?: SankeyData;
+    error?: string;
+};
+
+export async function getSegmentTransitions(
+    req: SegmentTransitionRequest
+): Promise<SegmentTransitionResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/discover/segment-transitions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to fetch segment transitions data');
+    }
+    return await res.json();
+}
+
+export type SegmentTransitionCaptainsRequest = SegmentTransitionRequest & {
+    from_period: string;
+    to_period: string;
+    from_segment: string;
+    to_segment: string;
+};
+
+export type SegmentTransitionCaptainsResponse = {
+    captain_ids: string[];
+    count: number;
+};
+
+export async function getSegmentTransitionCaptains(
+    req: SegmentTransitionCaptainsRequest
+): Promise<SegmentTransitionCaptainsResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/discover/segment-transitions/captains`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to fetch captains for edge');
+    }
+    return await res.json();
+}
+
+export async function downloadSegmentTransitions(
+    req: SegmentTransitionRequest,
+    filename?: string
+): Promise<void> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/discover/segment-transitions/download`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to download segment transitions data');
+    }
+
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || `segment_transitions_${req.city || 'all'}_${req.start_date}_to_${req.end_date}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
 }

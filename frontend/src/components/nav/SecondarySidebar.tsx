@@ -1,6 +1,6 @@
 import { useLocation } from 'react-router-dom';
 import { DashboardSecondaryNav } from '@/features/dashboard/DashboardSecondaryNav';
-import { DiscoverSecondaryFilters } from '@/features/discover/DiscoverSecondaryFilters';
+import { DiscoverSidebarTabs } from '@/features/discover/DiscoverSidebarTabs';
 import { InsightsSecondaryConfig } from '@/features/insights/InsightsSecondaryConfig';
 
 interface SecondarySidebarProps {
@@ -16,7 +16,7 @@ export function SecondarySidebar({ onAction }: SecondarySidebarProps) {
     }
 
     if (location.pathname.startsWith('/discover')) {
-        return <DiscoverSecondaryFilters onApply={onAction} />;
+        return <DiscoverSidebarTabs />;
     }
 
     if (location.pathname.startsWith('/insights')) {

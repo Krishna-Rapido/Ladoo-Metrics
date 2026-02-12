@@ -1,0 +1,36 @@
+[Unit]
+Description=Ladoo Metrics Backend API
+After=network.target
+
+[Service]
+Type=simple
+User=ladoo
+Group=ladoo
+WorkingDirectory=/opt/ladoo-metrics/backend
+Environment="PATH=/opt/ladoo-metrics/backend/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PORT=8001"
+Environment="PRESTO_HOST=bi-trino-4.serving.data.production.internal"
+Environment="PRESTO_PORT=80"
+# Uncomment and set ALLOWED_ORIGINS for production CORS (comma-separated)
+# Example: Environment="ALLOWED_ORIGINS=https://ladoo-metrics.example.com,http://localhost:5173"
+ExecStart=/opt/ladoo-metrics/backend/venv/bin/python /opt/ladoo-metrics/backend/main.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ladoo-metrics
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ladoo-metrics/backend/temp_uploads /var/log/ladoo-metrics
+ReadOnlyPaths=/opt/ladoo-metrics
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

@@ -251,9 +251,62 @@ CREATE TRIGGER set_updated_at_metric_functions
     FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
 -- =============================================================================
+-- CALCULATED COLUMNS TABLE
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS public.calculated_columns (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    folder_id UUID REFERENCES public.function_folders(id) ON DELETE SET NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    expression TEXT NOT NULL,
+    output_column TEXT NOT NULL,
+    input_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
+    is_validated BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_calculated_columns_user_id ON public.calculated_columns(user_id);
+CREATE INDEX IF NOT EXISTS idx_calculated_columns_folder_id ON public.calculated_columns(folder_id);
+CREATE INDEX IF NOT EXISTS idx_calculated_columns_validated ON public.calculated_columns(is_validated);
+
+ALTER TABLE public.calculated_columns ENABLE ROW LEVEL SECURITY;
+
+-- Drop existing policies if they exist
+DROP POLICY IF EXISTS "All users can view calculated columns" ON public.calculated_columns;
+DROP POLICY IF EXISTS "Users can insert own calculated columns" ON public.calculated_columns;
+DROP POLICY IF EXISTS "Users can update own calculated columns" ON public.calculated_columns;
+DROP POLICY IF EXISTS "Users can delete own calculated columns" ON public.calculated_columns;
+
+-- All authenticated users can view ALL calculated columns (shared library)
+CREATE POLICY "All users can view calculated columns"
+    ON public.calculated_columns FOR SELECT TO authenticated USING (true);
+
+-- Users can insert their own calculated columns
+CREATE POLICY "Users can insert own calculated columns"
+    ON public.calculated_columns FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+
+-- Users can update their own calculated columns
+CREATE POLICY "Users can update own calculated columns"
+    ON public.calculated_columns FOR UPDATE
+    USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+-- Users can delete their own calculated columns
+CREATE POLICY "Users can delete own calculated columns"
+    ON public.calculated_columns FOR DELETE USING (auth.uid() = user_id);
+
+DROP TRIGGER IF EXISTS set_updated_at_calculated_columns ON public.calculated_columns;
+CREATE TRIGGER set_updated_at_calculated_columns
+    BEFORE UPDATE ON public.calculated_columns
+    FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- =============================================================================
 -- VERIFICATION: Run these to check the tables were created successfully
 -- =============================================================================
 -- SELECT * FROM public.report_folders LIMIT 5;
 -- SELECT * FROM public.saved_reports LIMIT 5;
 -- SELECT * FROM public.function_folders LIMIT 5;
 -- SELECT * FROM public.metric_functions LIMIT 5;
+-- SELECT * FROM public.calculated_columns LIMIT 5;

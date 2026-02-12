@@ -502,3 +502,143 @@ class FunctionJoinResponse(BaseModel):
 class FunctionTemplateResponse(BaseModel):
     template: str
 
+
+class SessionInitFromFunctionResponse(BaseModel):
+    """Response when creating a session from function output (Discover flow)."""
+    session_id: str
+    row_count: int
+    columns: List[str]
+
+
+# =============================================================================
+# EXPERIMENT PERFORMANCE SCHEMAS
+# =============================================================================
+
+class ExperimentPerformanceRequest(BaseModel):
+    username: str
+    experiment_id: str
+    start_date: str = "20251221"
+    end_date: str = "20251221"
+    time_level: Literal["daily", "weekly", "monthly"] = "daily"
+    tod_level: Literal["daily", "afternoon", "evening", "morning", "night", "all"] = "daily"
+    city: str = "delhi"
+    service_value: Literal["two_wheeler", "three_wheeler", "four_wheeler"] = "two_wheeler"
+
+
+class CohortBreakdown(BaseModel):
+    cohort: str
+    unique_captains: int
+
+
+class ExperimentPerformanceResponse(BaseModel):
+    row_count: int
+    columns: List[str]
+    experiment_id: str
+    total_unique_captains: Optional[int] = None
+    cohort_breakdown: List[CohortBreakdown] = []
+    preview: List[Dict[str, Any]] = []
+    csv: Optional[str] = None
+    error: Optional[str] = None
+
+
+# =============================================================================
+# SEGMENT TRANSITION SCHEMAS
+# =============================================================================
+
+class SegmentTransitionRequest(BaseModel):
+    username: str
+    start_date: str = "20260105"
+    end_date: str = "20260115"
+    city: str = "delhi"
+    service_category: str = "bike_taxi"
+    service_value: str = "two_wheeler"
+    filter_type: Optional[Literal["dau", "mau", "dtu", "mtu"]] = None
+    period: Literal["D", "W", "M"] = "D"  # Sankey aggregation: D=daily, W=weekly, M=monthly
+
+
+class TransitionRow(BaseModel):
+    yyyymmdd: str
+    consistency_segment: str
+    total_captain: int
+    transitions: Dict[str, int]
+
+
+class SegmentTransitionResponse(BaseModel):
+    row_count: int
+    columns: List[str]
+    data: List[Dict[str, Any]]
+    sankey_data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+class SegmentTransitionCaptainsRequest(BaseModel):
+    username: str
+    start_date: str = "20260105"
+    end_date: str = "20260115"
+    city: str = "delhi"
+    service_category: str = "bike_taxi"
+    service_value: str = "two_wheeler"
+    filter_type: Optional[Literal["dau", "mau", "dtu", "mtu"]] = None
+    period: Literal["D", "W", "M"] = "D"
+    from_period: str
+    to_period: str
+    from_segment: str  # daily, weekly, monthly, quarterly, rest
+    to_segment: str
+
+
+class SegmentTransitionCaptainsResponse(BaseModel):
+    captain_ids: List[str]
+    count: int
+
+
+# =============================================================================
+# VISUALIZATION SCHEMAS
+# =============================================================================
+
+class VisualizationRequest(BaseModel):
+    x_axis: str
+    y_axes: List[str]  # List of metric columns
+    aggregations: Dict[str, str] = Field(default_factory=dict)  # {metric: 'sum'|'mean'|'count'|'median'}
+    series: Optional[str] = None  # Optional series/group-by column
+    chart_type: Optional[str] = 'line'  # 'line'|'bar'|'area'|'scatter'
+
+
+class VisualizationResponse(BaseModel):
+    success: bool
+    error: Optional[str] = None
+    data: List[Dict[str, Any]] = Field(default_factory=list)
+    columns: List[str] = Field(default_factory=list)
+    total_rows: int = 0
+
+
+# =============================================================================
+# CALCULATED COLUMNS SCHEMAS
+# =============================================================================
+
+class CalculatedColumnTestRequest(BaseModel):
+    expression: str  # pandas expression, e.g., "df['col_a'] / df['col_b']"
+    session_id: str
+
+
+class CalculatedColumnTestResponse(BaseModel):
+    success: bool
+    error: Optional[str] = None
+    preview: Optional[List[Dict[str, Any]]] = None
+    preview_column: Optional[str] = None
+    row_count: int = 0
+
+
+class CalculatedColumnApplyRequest(BaseModel):
+    expression: str  # pandas expression
+    output_column: str  # name of the new column
+    session_id: str
+
+
+class CalculatedColumnApplyResponse(BaseModel):
+    success: bool
+    error: Optional[str] = None
+    preview: Optional[List[Dict[str, Any]]] = None
+    new_column: Optional[str] = None
+    row_count: int = 0
+    columns: Optional[List[str]] = None
+

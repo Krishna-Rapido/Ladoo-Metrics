@@ -11,6 +11,7 @@ from typing import Dict, Optional, Union
 
 import duckdb
 import pandas as pd
+import numpy as np
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, FileResponse, StreamingResponse
@@ -69,8 +70,21 @@ from schemas import (
     FunctionJoinRequest,
     FunctionJoinResponse,
     FunctionTemplateResponse,
+    SessionInitFromFunctionResponse,
     PivotRequest,
     PivotResponse,
+    ExperimentPerformanceRequest,
+    ExperimentPerformanceResponse,
+    SegmentTransitionRequest,
+    SegmentTransitionResponse,
+    SegmentTransitionCaptainsRequest,
+    SegmentTransitionCaptainsResponse,
+    CalculatedColumnTestRequest,
+    CalculatedColumnTestResponse,
+    CalculatedColumnApplyRequest,
+    CalculatedColumnApplyResponse,
+    VisualizationRequest,
+    VisualizationResponse,
 )
 from function_executor import (
     test_function,
@@ -114,14 +128,46 @@ UPLOAD_PROGRESS: Dict[str, dict] = {}
 # Funnel analysis session store - separate from main session store
 FUNNEL_SESSION_STORE: Dict[str, pd.DataFrame] = {}
 
+# Segment transition raw data cache: same query (dates, city, filters) reuses raw DF; period changes need no Presto call
+SEGMENT_TRANSITION_STORE: Dict[str, pd.DataFrame] = {}
+
+
+def _segment_transition_cache_key(
+    username: str,
+    start_date: str,
+    end_date: str,
+    city: str,
+    service_category: str,
+    service_value: str,
+    filter_type: Optional[str],
+) -> str:
+    return "|".join([
+        username or "",
+        start_date or "",
+        end_date or "",
+        city or "",
+        service_category or "",
+        service_value or "",
+        filter_type or "",
+    ])
+
 # Report builder session store - maps report_id to list of report items
 REPORT_STORE: Dict[str, list[dict]] = {}
 
+# CORS configuration - supports production and development
+# For production, set ALLOWED_ORIGINS env var (comma-separated)
+# Example: ALLOWED_ORIGINS="https://ladoo-metrics.example.com,http://localhost:5173"
+allowed_origins_env = os.environ.get("ALLOWED_ORIGINS", "")
+if allowed_origins_env:
+    # Production: use specific origins from env var
+    allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
+else:
+    # Development: allow localhost and wildcard (less secure, for dev only)
+    allowed_origins = ["http://localhost:5173", "*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://internal-tools-v1-1.onrender.com",  # Your frontend URL
-                    "http://localhost:5173", 
-                    "*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -3063,6 +3109,92 @@ async def preview_function_result(
         )
 
 
+@app.post("/functions/preview/download")
+async def download_function_output(request: FunctionPreviewRequest):
+    """
+    Execute a function and stream the full result as a CSV file.
+    Uses chunked streaming for large result sets.
+    """
+    try:
+        result_df, error, _ = execute_function(
+            code=request.code,
+            parameters=request.parameters,
+            username=request.username
+        )
+        if error:
+            raise HTTPException(status_code=400, detail=error)
+
+        # Build CSV in chunks for streaming
+        def csv_chunk_generator():
+            buffer = io.StringIO()
+            # Format for CSV
+            out_df = result_df.copy()
+            for col in out_df.columns:
+                if pd.api.types.is_datetime64_any_dtype(out_df[col]):
+                    out_df[col] = out_df[col].dt.strftime('%Y-%m-%d')
+            out_df = out_df.fillna('')
+            chunk_size = 10000
+            # Write header once
+            out_df.head(0).to_csv(buffer, index=False)
+            header = buffer.getvalue()
+            buffer.truncate(0)
+            buffer.seek(0)
+            yield header
+            for start in range(0, len(out_df), chunk_size):
+                chunk = out_df.iloc[start : start + chunk_size]
+                chunk.to_csv(buffer, index=False, header=False)
+                yield buffer.getvalue()
+                buffer.truncate(0)
+                buffer.seek(0)
+
+        filename = "function_output.csv"
+        return StreamingResponse(
+            csv_chunk_generator(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Cache-Control": "no-cache",
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/session/init-from-function", response_model=SessionInitFromFunctionResponse)
+async def init_session_from_function(request: FunctionPreviewRequest) -> SessionInitFromFunctionResponse:
+    """
+    Create a new session from function output (Discover flow).
+    Runs the function and stores the result as the session data; no CSV upload required.
+    """
+    try:
+        result_df, error, _ = execute_function(
+            code=request.code,
+            parameters=request.parameters,
+            username=request.username
+        )
+        if error:
+            raise HTTPException(status_code=400, detail=error)
+
+        session_id = secrets.token_hex(16)
+        SESSION_STORE[session_id] = result_df.copy()
+
+        return SessionInitFromFunctionResponse(
+            session_id=session_id,
+            row_count=len(result_df),
+            columns=list(result_df.columns.astype(str)),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/functions/join", response_model=FunctionJoinResponse)
 async def join_function_with_csv(
     request: FunctionJoinRequest,
@@ -3354,29 +3486,44 @@ async def download_session_data(
 @app.get("/data/preview")
 async def preview_session_data(
     x_session_id: Optional[str] = Header(default=None),
-    limit: int = 100
+    limit: Optional[int] = None
 ):
     """
-    Get a preview of the current session data.
+    Get session data. 
+    - If limit is None or 0: returns the FULL dataset (used for visualization)
+    - If limit is specified: returns a preview with that many rows
+    
+    IMPORTANT: For visualization, always use limit=None or limit=0 to get the full dataset.
+    Using a preview/limit for visualization will produce incorrect aggregations and charts.
     """
     if not x_session_id or x_session_id not in SESSION_STORE:
         raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
     
     session = SESSION_STORE[x_session_id]
+    fetch_all = limit is None or limit == 0
+    
     if isinstance(session, dict) and "parquet_path" in session:
         parquet_path = session["parquet_path"]
         if not os.path.exists(parquet_path):
             raise HTTPException(status_code=400, detail="Session data file not found.")
         con = duckdb.connect()
-        preview_df = con.execute(
-            f"SELECT * FROM read_parquet('{parquet_path}') LIMIT {limit}"
-        ).fetchdf()
+        if fetch_all:
+            preview_df = con.execute(
+                f"SELECT * FROM read_parquet('{parquet_path}')"
+            ).fetchdf()
+        else:
+            preview_df = con.execute(
+                f"SELECT * FROM read_parquet('{parquet_path}') LIMIT {limit}"
+            ).fetchdf()
         con.close()
         total_rows = session["num_rows"]
         columns = session["columns"]
     else:
         df = session
-        preview_df = df.head(limit).copy()
+        if fetch_all:
+            preview_df = df.copy()
+        else:
+            preview_df = df.head(limit).copy()
         total_rows = len(df)
         columns = list(df.columns)
     
@@ -3389,6 +3536,378 @@ async def preview_session_data(
         "preview": preview_df.fillna('').to_dict(orient='records'),
         "total_rows": total_rows,
     }
+
+
+@app.post("/data/visualize", response_model=VisualizationResponse)
+async def visualize_session_data(
+    payload: VisualizationRequest,
+    x_session_id: Optional[str] = Header(default=None)
+):
+    """
+    Get aggregated data for visualization.
+    This endpoint aggregates the full dataset on the backend based on visualization parameters,
+    avoiding the need to transfer millions of rows to the frontend.
+    """
+    session_id = x_session_id
+    if not session_id or session_id not in SESSION_STORE:
+        return VisualizationResponse(
+            success=False,
+            error="Invalid or missing session_id. Upload data first.",
+            total_rows=0
+        )
+    
+    try:
+        session = SESSION_STORE[session_id]
+        
+        # Load full dataset
+        if isinstance(session, dict) and "parquet_path" in session:
+            parquet_path = session["parquet_path"]
+            if not os.path.exists(parquet_path):
+                return VisualizationResponse(
+                    success=False,
+                    error="Session data file not found.",
+                    total_rows=0
+                )
+            con = duckdb.connect()
+            df = con.execute(f"SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
+            con.close()
+            total_rows = session["num_rows"]
+        else:
+            df = session
+            total_rows = len(df)
+        
+        # Validate columns exist
+        required_cols = [payload.x_axis] + payload.y_axes
+        if payload.series:
+            required_cols.append(payload.series)
+        
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            return VisualizationResponse(
+                success=False,
+                error=f"Columns not found: {', '.join(missing_cols)}",
+                total_rows=total_rows
+            )
+        
+        # Prepare aggregation dictionary
+        groupby_cols = [payload.x_axis]
+        if payload.series:
+            groupby_cols.append(payload.series)
+        
+        # Build aggregation dict for each metric
+        agg_dict = {}
+        for y_axis in payload.y_axes:
+            agg_func = payload.aggregations.get(y_axis, 'sum')
+            
+            if agg_func == 'sum':
+                agg_dict[y_axis] = 'sum'
+            elif agg_func == 'mean':
+                agg_dict[y_axis] = 'mean'
+            elif agg_func == 'count':
+                agg_dict[y_axis] = 'count'
+            elif agg_func == 'median':
+                agg_dict[y_axis] = 'median'
+            else:
+                agg_dict[y_axis] = 'sum'  # Default to sum
+        
+        # Perform aggregation
+        if payload.series:
+            # Group by x_axis and series
+            grouped = df.groupby(groupby_cols, observed=True, dropna=False).agg(agg_dict).reset_index()
+            
+            # Reshape for chart: create columns like metric_seriesValue
+            result_data = []
+            for _, row in grouped.iterrows():
+                record = {payload.x_axis: str(row[payload.x_axis])}
+                series_value = str(row[payload.series])
+                
+                for y_axis in payload.y_axes:
+                    key = f"{y_axis}_{series_value}"
+                    value = row[y_axis]
+                    record[key] = float(value) if pd.notna(value) else 0.0
+                
+                result_data.append(record)
+        else:
+            # Group by x_axis only
+            grouped = df.groupby(groupby_cols, observed=True, dropna=False).agg(agg_dict).reset_index()
+            
+            # Convert to records
+            result_data = []
+            for _, row in grouped.iterrows():
+                record = {payload.x_axis: str(row[payload.x_axis])}
+                
+                for y_axis in payload.y_axes:
+                    value = row[y_axis]
+                    record[y_axis] = float(value) if pd.notna(value) else 0.0
+                
+                result_data.append(record)
+        
+        # Get columns
+        result_columns = list(result_data[0].keys()) if result_data else []
+        
+        # Format dates if needed
+        for record in result_data:
+            for key, value in record.items():
+                if isinstance(value, pd.Timestamp):
+                    record[key] = value.strftime('%Y-%m-%d')
+                elif pd.isna(value):
+                    record[key] = ''
+        
+        return VisualizationResponse(
+            success=True,
+            data=result_data,
+            columns=result_columns,
+            total_rows=total_rows
+        )
+        
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        return VisualizationResponse(
+            success=False,
+            error=f"Error aggregating data: {str(e)}\n\n{error_trace}",
+            total_rows=0
+        )
+
+
+def validate_pandas_expression(expression: str) -> tuple[bool, Optional[str]]:
+    """
+    Validate pandas expression for security.
+    Only allows safe pandas operations, no exec/eval/imports.
+    Returns (is_safe, error_message)
+    """
+    import re
+    
+    # Forbidden patterns
+    forbidden_patterns = [
+        r'exec\s*\(',
+        r'eval\s*\(',
+        r'__import__',
+        r'import\s+',
+        r'from\s+\w+\s+import',
+        r'open\s*\(',
+        r'file\s*\(',
+        r'input\s*\(',
+        r'compile\s*\(',
+        r'globals\s*\(',
+        r'locals\s*\(',
+        r'vars\s*\(',
+        r'dir\s*\(',
+        r'getattr\s*\(',
+        r'setattr\s*\(',
+        r'__builtins__',
+        r'__class__',
+        r'__bases__',
+        r'__subclasses__',
+    ]
+    
+    for pattern in forbidden_patterns:
+        if re.search(pattern, expression, re.IGNORECASE):
+            return False, f"Forbidden pattern detected: {pattern}"
+    
+    # Must reference df (the DataFrame)
+    if 'df' not in expression:
+        return False, "Expression must reference 'df' (the DataFrame)"
+    
+    return True, None
+
+
+@app.post("/calculated-columns/test", response_model=CalculatedColumnTestResponse)
+async def test_calculated_column(
+    payload: CalculatedColumnTestRequest,
+    x_session_id: Optional[str] = Header(default=None)
+):
+    """
+    Test a calculated column expression without applying it to the session.
+    Returns a preview of what the column would look like.
+    """
+    session_id = payload.session_id or x_session_id
+    if not session_id or session_id not in SESSION_STORE:
+        return CalculatedColumnTestResponse(
+            success=False,
+            error="Invalid or missing session_id",
+            row_count=0
+        )
+    
+    # Validate expression security
+    is_safe, security_error = validate_pandas_expression(payload.expression)
+    if not is_safe:
+        return CalculatedColumnTestResponse(
+            success=False,
+            error=f"Security Error: {security_error}",
+            row_count=0
+        )
+    
+    try:
+        # Get session DataFrame
+        session = SESSION_STORE[session_id]
+        if isinstance(session, dict) and "parquet_path" in session:
+            # DuckDB session - load into pandas for calculation
+            parquet_path = session["parquet_path"]
+            if not os.path.exists(parquet_path):
+                return CalculatedColumnTestResponse(
+                    success=False,
+                    error="Session data file not found",
+                    row_count=0
+                )
+            con = duckdb.connect()
+            df = con.execute(f"SELECT * FROM read_parquet('{parquet_path}') LIMIT 1000").fetchdf()
+            con.close()
+        else:
+            # In-memory DataFrame
+            df = session.copy()
+            if len(df) > 1000:
+                df = df.head(1000).copy()
+        
+        # Execute expression in safe namespace
+        safe_dict = {'df': df, 'pd': pd, 'np': np}
+        result = eval(payload.expression, {"__builtins__": {}}, safe_dict)
+        
+        # Result should be a Series
+        if not isinstance(result, pd.Series):
+            return CalculatedColumnTestResponse(
+                success=False,
+                error="Expression must return a pandas Series",
+                row_count=0
+            )
+        
+        # Create preview DataFrame
+        preview_df = df.copy()
+        preview_df['_calculated_column'] = result
+        
+        return CalculatedColumnTestResponse(
+            success=True,
+            preview=preview_df.fillna('').head(100).to_dict(orient='records'),
+            preview_column='_calculated_column',
+            row_count=len(df)
+        )
+        
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        return CalculatedColumnTestResponse(
+            success=False,
+            error=f"Execution Error: {str(e)}\n\n{error_trace}",
+            row_count=0
+        )
+
+
+@app.post("/calculated-columns/apply", response_model=CalculatedColumnApplyResponse)
+async def apply_calculated_column(
+    payload: CalculatedColumnApplyRequest,
+    x_session_id: Optional[str] = Header(default=None)
+):
+    """
+    Apply a calculated column expression to the session data.
+    Adds the new column to the session DataFrame/Parquet file.
+    """
+    session_id = payload.session_id or x_session_id
+    if not session_id or session_id not in SESSION_STORE:
+        return CalculatedColumnApplyResponse(
+            success=False,
+            error="Invalid or missing session_id",
+            row_count=0
+        )
+    
+    # Validate expression security
+    is_safe, security_error = validate_pandas_expression(payload.expression)
+    if not is_safe:
+        return CalculatedColumnApplyResponse(
+            success=False,
+            error=f"Security Error: {security_error}",
+            row_count=0
+        )
+    
+    try:
+        session = SESSION_STORE[session_id]
+        
+        if isinstance(session, dict) and "parquet_path" in session:
+            # DuckDB session - need to update parquet file
+            parquet_path = session["parquet_path"]
+            if not os.path.exists(parquet_path):
+                return CalculatedColumnApplyResponse(
+                    success=False,
+                    error="Session data file not found",
+                    row_count=0
+                )
+            
+            # Load full DataFrame
+            con = duckdb.connect()
+            df = con.execute(f"SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
+            con.close()
+            
+            # Execute expression
+            safe_dict = {'df': df, 'pd': pd, 'np': np}
+            result = eval(payload.expression, {"__builtins__": {}}, safe_dict)
+            
+            if not isinstance(result, pd.Series):
+                return CalculatedColumnApplyResponse(
+                    success=False,
+                    error="Expression must return a pandas Series",
+                    row_count=0
+                )
+            
+            # Add new column
+            df[payload.output_column] = result
+            
+            # Save back to parquet
+            df.to_parquet(parquet_path, index=False)
+            
+            # Update session metadata
+            session["columns"] = list(df.columns)
+            session["num_rows"] = len(df)
+            
+            # Update numeric/categorical columns if cached
+            if "numeric_columns" in session:
+                # Re-check column types
+                numeric_cols = []
+                categorical_cols = []
+                for col in df.columns:
+                    if pd.api.types.is_numeric_dtype(df[col]):
+                        numeric_cols.append(col)
+                    else:
+                        categorical_cols.append(col)
+                session["numeric_columns"] = numeric_cols
+                session["categorical_columns"] = categorical_cols
+            
+            preview_df = df.head(100).copy()
+            
+        else:
+            # In-memory DataFrame session
+            df = session
+            
+            # Execute expression
+            safe_dict = {'df': df, 'pd': pd, 'np': np}
+            result = eval(payload.expression, {"__builtins__": {}}, safe_dict)
+            
+            if not isinstance(result, pd.Series):
+                return CalculatedColumnApplyResponse(
+                    success=False,
+                    error="Expression must return a pandas Series",
+                    row_count=0
+                )
+            
+            # Add new column
+            df[payload.output_column] = result
+            
+            preview_df = df.head(100).copy()
+        
+        return CalculatedColumnApplyResponse(
+            success=True,
+            preview=preview_df.fillna('').to_dict(orient='records'),
+            new_column=payload.output_column,
+            row_count=len(df),
+            columns=list(df.columns)
+        )
+        
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        return CalculatedColumnApplyResponse(
+            success=False,
+            error=f"Execution Error: {str(e)}\n\n{error_trace}",
+            row_count=0
+        )
 
 
 def _quote_col(col: str) -> str:
@@ -3730,6 +4249,267 @@ async def get_function_template() -> FunctionTemplateResponse:
     Get the template code for creating a new metric function.
     """
     return FunctionTemplateResponse(template=FUNCTION_TEMPLATE)
+
+
+# =============================================================================
+# DISCOVER: EXPERIMENT PERFORMANCE & SEGMENT TRANSITIONS
+# =============================================================================
+
+@app.post("/discover/experiment-performance", response_model=ExperimentPerformanceResponse, responses={400: {"model": ErrorResponse}})
+async def get_experiment_performance_data(payload: ExperimentPerformanceRequest) -> ExperimentPerformanceResponse:
+    """
+    Query experiment performance data from Presto.
+    Extracts captain_ids from experiment table and joins with metrics.
+    """
+    try:
+        from funnel import get_experiment_performance
+        result = get_experiment_performance(
+            username=payload.username,
+            experiment_id=payload.experiment_id,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            time_level=payload.time_level,
+            tod_level=payload.tod_level,
+            city=payload.city,
+            service_value=payload.service_value,
+        )
+        
+        if result.get("error"):
+            return ExperimentPerformanceResponse(
+                row_count=0,
+                columns=[],
+                experiment_id=payload.experiment_id,
+                error=result["error"],
+            )
+        
+        # Convert cohort_breakdown to proper format
+        cohort_breakdown = [
+            {"cohort": item["cohort"], "unique_captains": item["unique_captains"]}
+            for item in result.get("cohort_breakdown", [])
+        ]
+        
+        return ExperimentPerformanceResponse(
+            row_count=result.get("row_count", 0),
+            columns=result.get("columns", []),
+            experiment_id=result.get("experiment_id", payload.experiment_id),
+            total_unique_captains=result.get("total_unique_captains"),
+            cohort_breakdown=cohort_breakdown,
+            preview=result.get("preview", []),
+            csv=result.get("csv"),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch experiment performance data: {exc}")
+
+
+@app.post("/discover/experiment-performance/download")
+async def download_experiment_performance(payload: ExperimentPerformanceRequest):
+    """
+    Download experiment performance data as CSV.
+    """
+    try:
+        from funnel import get_experiment_performance
+        result = get_experiment_performance(
+            username=payload.username,
+            experiment_id=payload.experiment_id,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            time_level=payload.time_level,
+            tod_level=payload.tod_level,
+            city=payload.city,
+            service_value=payload.service_value,
+        )
+        
+        if result.get("error"):
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        csv_content = result.get("csv", "")
+        if not csv_content:
+            raise HTTPException(status_code=400, detail="No data available for download")
+        
+        # Create filename
+        filename = f"experiment_{payload.experiment_id[:8]}_{payload.city}_{payload.start_date}_to_{payload.end_date}.csv"
+        
+        return StreamingResponse(
+            iter([csv_content]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to download experiment data: {exc}")
+
+
+@app.post("/discover/segment-transitions", response_model=SegmentTransitionResponse, responses={400: {"model": ErrorResponse}})
+async def get_segment_transitions_data(payload: SegmentTransitionRequest) -> SegmentTransitionResponse:
+    """
+    Query captain consistency segment transitions from Presto.
+    Raw DF is cached by (username, dates, city, service, filter_type). Changing period only recomputes Sankey in memory (no Presto).
+    """
+    try:
+        from funnel import get_segment_transitions, _fetch_segment_transition_raw
+        key = _segment_transition_cache_key(
+            payload.username,
+            payload.start_date,
+            payload.end_date,
+            payload.city,
+            payload.service_category,
+            payload.service_value,
+            payload.filter_type,
+        )
+        raw_df = SEGMENT_TRANSITION_STORE.get(key)
+        if raw_df is None:
+            raw_df = _fetch_segment_transition_raw(
+                username=payload.username,
+                start_date=payload.start_date,
+                end_date=payload.end_date,
+                city=payload.city,
+                service_category=payload.service_category,
+                service_value=payload.service_value,
+            )
+            SEGMENT_TRANSITION_STORE[key] = raw_df
+        result = get_segment_transitions(
+            username=payload.username,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            city=payload.city,
+            service_category=payload.service_category,
+            service_value=payload.service_value,
+            filter_type=payload.filter_type,
+            period=payload.period,
+            raw_df=raw_df,
+        )
+        
+        if result.get("error"):
+            return SegmentTransitionResponse(
+                row_count=0,
+                columns=[],
+                data=[],
+                sankey_data=None,
+                error=result["error"],
+            )
+        
+        return SegmentTransitionResponse(
+            row_count=result.get("row_count", 0),
+            columns=result.get("columns", []),
+            data=result.get("data", []),
+            sankey_data=result.get("sankey_data"),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch segment transitions data: {exc}")
+
+
+@app.post("/discover/segment-transitions/download")
+async def download_segment_transitions(payload: SegmentTransitionRequest):
+    """
+    Download segment transitions data (transition table) as CSV. Uses cached raw DF when available.
+    """
+    try:
+        from funnel import get_segment_transitions, _fetch_segment_transition_raw
+        key = _segment_transition_cache_key(
+            payload.username,
+            payload.start_date,
+            payload.end_date,
+            payload.city,
+            payload.service_category,
+            payload.service_value,
+            payload.filter_type,
+        )
+        raw_df = SEGMENT_TRANSITION_STORE.get(key)
+        if raw_df is None:
+            raw_df = _fetch_segment_transition_raw(
+                username=payload.username,
+                start_date=payload.start_date,
+                end_date=payload.end_date,
+                city=payload.city,
+                service_category=payload.service_category,
+                service_value=payload.service_value,
+            )
+            SEGMENT_TRANSITION_STORE[key] = raw_df
+        result = get_segment_transitions(
+            username=payload.username,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            city=payload.city,
+            service_category=payload.service_category,
+            service_value=payload.service_value,
+            filter_type=payload.filter_type,
+            period=payload.period,
+            raw_df=raw_df,
+        )
+        
+        if result.get("error"):
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        data = result.get("data", [])
+        if not data:
+            raise HTTPException(status_code=400, detail="No data available for download")
+        
+        # Convert to CSV
+        df = pd.DataFrame(data)
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        csv_content = csv_buffer.getvalue()
+        
+        # Create filename
+        filename = f"segment_transitions_{payload.city}_{payload.start_date}_to_{payload.end_date}.csv"
+        
+        return StreamingResponse(
+            iter([csv_content]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to download segment transitions data: {exc}")
+
+
+@app.post("/discover/segment-transitions/captains", response_model=SegmentTransitionCaptainsResponse)
+async def get_segment_transition_captains(payload: SegmentTransitionCaptainsRequest) -> SegmentTransitionCaptainsResponse:
+    """
+    Return captain IDs for a node (segment+period) or link (transition). Uses cached raw DF when available (no Presto).
+    """
+    try:
+        from funnel import get_segment_transition_captains, _fetch_segment_transition_raw
+        key = _segment_transition_cache_key(
+            payload.username,
+            payload.start_date,
+            payload.end_date,
+            payload.city,
+            payload.service_category,
+            payload.service_value,
+            payload.filter_type,
+        )
+        raw_df = SEGMENT_TRANSITION_STORE.get(key)
+        if raw_df is None:
+            raw_df = _fetch_segment_transition_raw(
+                username=payload.username,
+                start_date=payload.start_date,
+                end_date=payload.end_date,
+                city=payload.city,
+                service_category=payload.service_category,
+                service_value=payload.service_value,
+            )
+            SEGMENT_TRANSITION_STORE[key] = raw_df
+        captain_ids = get_segment_transition_captains(
+            username=payload.username,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            city=payload.city,
+            service_category=payload.service_category,
+            service_value=payload.service_value,
+            filter_type=payload.filter_type,
+            period=payload.period,
+            from_period=payload.from_period,
+            to_period=payload.to_period,
+            from_segment=payload.from_segment,
+            to_segment=payload.to_segment,
+            raw_df=raw_df,
+        )
+        return SegmentTransitionCaptainsResponse(captain_ids=captain_ids, count=len(captain_ids))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/health")

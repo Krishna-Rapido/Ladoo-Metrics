@@ -301,3 +301,120 @@ export async function moveFunctionToFolder(functionId: string, folderId: string 
 
   if (error) throw error
 }
+
+// =============================================================================
+// CALCULATED COLUMNS TYPES & OPERATIONS
+// =============================================================================
+
+export type CalculatedColumn = {
+  id: string
+  user_id: string
+  folder_id: string | null
+  name: string
+  description: string | null
+  expression: string
+  output_column: string
+  input_columns: string[]
+  is_validated: boolean
+  created_at: string
+  updated_at: string
+  // Joined fields
+  user_email?: string
+}
+
+export async function listAllCalculatedColumns(): Promise<CalculatedColumn[]> {
+  const { data, error } = await supabase
+    .from('calculated_columns')
+    .select('*')
+    .order('updated_at', { ascending: false })
+
+  if (error) {
+    if (error.code === 'PGRST205' || error.message?.includes('Could not find the table')) {
+      // Table doesn't exist yet - return empty array instead of throwing
+      // User can still create calculated columns, they just won't be saved to Supabase
+      console.warn('calculated_columns table not found. Run migration SQL to enable saving calculated columns.')
+      return []
+    }
+    throw error
+  }
+  return data || []
+}
+
+export async function getCalculatedColumn(columnId: string): Promise<CalculatedColumn | null> {
+  const { data, error } = await supabase
+    .from('calculated_columns')
+    .select('*')
+    .eq('id', columnId)
+    .single()
+
+  if (error) {
+    if (error.code === 'PGRST116') return null // Not found
+    throw error
+  }
+  return data
+}
+
+export async function createCalculatedColumn(
+  name: string,
+  description: string | null,
+  expression: string,
+  outputColumn: string,
+  inputColumns: string[],
+  folderId: string | null = null
+): Promise<CalculatedColumn> {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error('You must be logged in to create calculated columns')
+
+  const { data, error } = await supabase
+    .from('calculated_columns')
+    .insert({
+      user_id: user.id,
+      folder_id: folderId,
+      name,
+      description,
+      expression,
+      output_column: outputColumn,
+      input_columns: inputColumns,
+      is_validated: true, // Columns are validated before saving
+    })
+    .select()
+    .single()
+
+  if (error) {
+    if (error.code === 'PGRST205' || error.message?.includes('Could not find the table')) {
+      throw new Error('Database table not set up. Please run the migration SQL in your Supabase Dashboard to save calculated columns.')
+    }
+    throw error
+  }
+  return data
+}
+
+export async function updateCalculatedColumn(
+  columnId: string,
+  updates: Partial<Pick<CalculatedColumn, 'name' | 'description' | 'expression' | 'output_column' | 'input_columns' | 'folder_id'>>
+): Promise<void> {
+  const { error } = await supabase
+    .from('calculated_columns')
+    .update(updates)
+    .eq('id', columnId)
+
+  if (error) throw error
+}
+
+export async function deleteCalculatedColumn(columnId: string): Promise<void> {
+  const { error } = await supabase
+    .from('calculated_columns')
+    .delete()
+    .eq('id', columnId)
+
+  if (error) throw error
+}
+
+export async function moveCalculatedColumnToFolder(columnId: string, folderId: string | null): Promise<void> {
+  const { error } = await supabase
+    .from('calculated_columns')
+    .update({ folder_id: folderId })
+    .eq('id', columnId)
+
+  if (error) throw error
+}

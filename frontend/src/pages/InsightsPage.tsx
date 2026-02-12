@@ -21,7 +21,7 @@ import {
 } from "@/features/insights/analysis/computeExecutiveSummary"
 import { computePValue } from "@/features/insights/analysis/computePValue"
 import { ladooDerivedRatioMetrics } from "@/features/insights/metrics/metricCatalog"
-import { getSessionId, getSessionData, fetchInsights, type InsightsRequest, type InsightsResponse } from "@/lib/api"
+import { getSessionId, getSessionData, fetchInsights, type InsightsRequest, type InsightsResponse, type InsightAggregation } from "@/lib/api"
 import { useAuth } from "@/contexts/AuthContext"
 import { useReport } from "@/contexts/ReportContext"
 import type { RawRow } from "@/features/insights/types"
@@ -118,8 +118,8 @@ export function InsightsPage() {
   }, [parsed])
 
   // Map frontend agg to backend InsightAggregation (for request and for filtering time_series)
-  const aggToBackend = (agg: AggMethod): string => {
-    const map: Record<string, string> = {
+  const aggToBackend = (agg: AggMethod): InsightAggregation => {
+    const map: Record<string, InsightAggregation> = {
       sum: 'sum',
       sum_per_captain: 'sum_per_captain',
       avg: 'mean',
@@ -216,7 +216,7 @@ export function InsightsPage() {
       testPost: row.test_post,
       deltaTest: row.test_delta,
       did: row.diff_in_diff,
-      liftPct: row.diff_in_diff_pct,
+      liftPct: row.diff_in_diff_pct ?? null,
     }))
 
     const firstMetric = backendResults.summary[0]?.metric
@@ -229,9 +229,9 @@ export function InsightsPage() {
     const hasPeriod = filteredTimeSeries.some((p) => p.period != null && (p.period === 'pre' || p.period === 'post'))
     const hasBreakout = filteredTimeSeries.some((p) => p.breakout_value != null && p.breakout_value !== '')
 
-    const trendData: Record<string, Record<string, number | null>> = {}
+    const trendData: Record<string, Record<string, number | string | null>> = {}
     for (const point of filteredTimeSeries) {
-      if (!trendData[point.date]) trendData[point.date] = { date: point.date } as Record<string, number | string | null>
+      if (!trendData[point.date]) trendData[point.date] = { date: point.date }
       const seg = hasPeriod ? segmentKey(point.cohort_type, point.period ?? null) : point.cohort_type
       const seriesKey = hasBreakout && point.breakout_value
         ? `${point.breakout_value}::${seg}`
