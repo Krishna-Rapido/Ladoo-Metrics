@@ -44,31 +44,31 @@ const COLORS = [
 
 type AggregationType = 'sum' | 'mean' | 'count' | 'median';
 
-export function DiscoverVisualization({ 
+export function DiscoverVisualization({
     sessionId,
-    columns, 
-    numericColumns, 
-    categoricalColumns 
+    columns,
+    numericColumns,
+    categoricalColumns
 }: DiscoverVisualizationProps) {
     const [chartType, setChartType] = useState<ChartType>('line');
     const [xAxis, setXAxis] = useState<string>('');
     const [yAxes, setYAxes] = useState<string[]>([]);
     const [series, setSeries] = useState<string>('__none__');
     const [aggregations, setAggregations] = useState<Record<string, AggregationType>>({});
-    
+
     // Aggregated chart data from backend
     const [chartData, setChartData] = useState<Record<string, any>[]>([]);
     const [isLoadingChart, setIsLoadingChart] = useState(false);
     const [chartError, setChartError] = useState<string | null>(null);
-    
+
     // Helper to get actual series value (convert __none__ to empty string)
     const actualSeries = series === '__none__' ? '' : series;
-    
+
     // Helper to get aggregation for a metric (default to 'sum')
     const getAggregation = (metric: string): AggregationType => {
         return aggregations[metric] || 'sum';
     };
-    
+
     // Fetch aggregated data from backend when visualization params change
     useEffect(() => {
         if (!sessionId || !xAxis || yAxes.length === 0) {
@@ -299,7 +299,7 @@ export function DiscoverVisualization({
         );
     };
 
-    if (!data || data.length === 0) {
+    if (!columns || columns.length === 0) {
         return (
             <Card className="rounded-2xl">
                 <CardContent className="flex flex-col items-center justify-center py-16 text-center">
@@ -334,11 +334,10 @@ export function DiscoverVisualization({
                             <button
                                 key={type}
                                 onClick={() => setChartType(type as ChartType)}
-                                className={`p-4 rounded-xl border-2 transition-all ${
-                                    chartType === type
+                                className={`p-4 rounded-xl border-2 transition-all ${chartType === type
                                         ? 'border-emerald-500 bg-emerald-50 shadow-md'
                                         : 'border-slate-200 bg-white hover:border-emerald-300'
-                                }`}
+                                    }`}
                             >
                                 <div className="text-3xl mb-2">{icon}</div>
                                 <div className="text-sm font-medium text-slate-700">{label}</div>
@@ -406,10 +405,9 @@ export function DiscoverVisualization({
                                                 text-sm font-semibold transition-all whitespace-nowrap
                                                 rounded-full border
                                                 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2
-                                                ${
-                                                    isSelected
-                                                        ? 'bg-emerald-100 text-emerald-700 border-emerald-300 hover:bg-emerald-200'
-                                                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 hover:border-emerald-300'
+                                                ${isSelected
+                                                    ? 'bg-emerald-100 text-emerald-700 border-emerald-300 hover:bg-emerald-200'
+                                                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 hover:border-emerald-300'
                                                 }
                                             `}
                                         >
@@ -419,7 +417,7 @@ export function DiscoverVisualization({
                                     );
                                 })}
                             </div>
-                            
+
                             {/* Selected metrics with aggregation selectors */}
                             {yAxes.length > 0 && (
                                 <div className="pt-3 border-t border-slate-200 space-y-2">
