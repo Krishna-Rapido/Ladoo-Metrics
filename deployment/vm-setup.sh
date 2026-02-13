@@ -30,21 +30,17 @@ curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
 apt-get install -y nodejs
 
 # Install Nginx
-echo "[5/8] Installing Nginx..."
+echo "[5/7] Installing Nginx..."
 apt-get install -y nginx
 
-# Install apache2-utils for htpasswd
-echo "[6/8] Installing apache2-utils (for htpasswd)..."
-apt-get install -y apache2-utils
-
 # Install Cloudflared
-echo "[7/8] Installing Cloudflared..."
+echo "[6/7] Installing Cloudflared..."
 wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
 dpkg -i cloudflared-linux-amd64.deb || apt-get install -f -y
 rm -f cloudflared-linux-amd64.deb
 
 # Install UFW firewall
-echo "[8/8] Installing and configuring UFW firewall..."
+echo "[7/7] Installing and configuring UFW firewall..."
 apt-get install -y ufw
 # Allow SSH
 ufw allow 22/tcp

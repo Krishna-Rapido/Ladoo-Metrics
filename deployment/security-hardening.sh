@@ -92,18 +92,8 @@ EOF
 
 echo "Log rotation configured"
 
-# Secure Nginx password file
-echo "[4/5] Securing Nginx password file..."
-if [ -f /etc/nginx/.htpasswd ]; then
-    chmod 640 /etc/nginx/.htpasswd
-    chown root:www-data /etc/nginx/.htpasswd
-    echo "Password file secured"
-else
-    echo "⚠ Warning: /etc/nginx/.htpasswd not found. Create it with: htpasswd -c /etc/nginx/.htpasswd username"
-fi
-
 # Systemd service security (already in service file, but verify)
-echo "[5/5] Verifying systemd service security..."
+echo "[4/4] Verifying systemd service security..."
 if [ -f /etc/systemd/system/ladoo-metrics.service ]; then
     echo "✓ systemd service file exists"
     # Check if it has security settings
@@ -129,9 +119,7 @@ echo "  ✓ Dedicated user 'ladoo' created"
 echo "  ✓ File permissions set"
 echo "  ✓ UFW firewall configured (ports 22, 80 open)"
 echo "  ✓ Log rotation configured (30 days retention)"
-echo "  ✓ Nginx password file secured"
 echo ""
 echo "Next steps:"
-echo "  1. Create Nginx password file: htpasswd -c /etc/nginx/.htpasswd username"
-echo "  2. Test firewall: ufw status"
-echo "  3. Verify service runs as 'ladoo' user: systemctl status ladoo-metrics"
+echo "  1. Test firewall: ufw status"
+echo "  2. Verify service runs as 'ladoo' user: systemctl status ladoo-metrics"

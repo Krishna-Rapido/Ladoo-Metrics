@@ -95,11 +95,7 @@ if [ -d "venv" ]; then
     echo "Virtual environment already exists, removing old one..."
     rm -rf venv
 fi
-<<<<<<< HEAD
 $PYTHON_BIN -m venv venv
-=======
-python3 -m venv venv
->>>>>>> 609cea4b8b0e57f6e1d650185c56db1fb77c73b7
 
 # Activate venv and upgrade pip
 echo "[2/5] Upgrading pip..."
@@ -130,11 +126,11 @@ fi
 
 # Set ownership
 echo "[5/5] Setting file permissions..."
-chown -R ladoo:ladoo "$BACKEND_DIR"
+chown -R krishna.poddar "$BACKEND_DIR"
 
 # Create temp directory for uploads
 mkdir -p "$BACKEND_DIR/temp_uploads"
-chown -R ladoo:ladoo "$BACKEND_DIR/temp_uploads"
+chown -R krishna.poddar "$BACKEND_DIR/temp_uploads"
 chmod 755 "$BACKEND_DIR/temp_uploads"
 
 echo ""

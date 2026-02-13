@@ -49,13 +49,12 @@ echo ""
 
 # 3. Check Nginx proxy
 echo "=== Nginx Proxy ==="
-# Note: This will fail if basic auth is not set up, which is expected
 NGINX_TEST=$(curl -s -w "%{http_code}" -o /dev/null http://localhost/health 2>/dev/null || echo "000")
-if [ "$NGINX_TEST" = "401" ] || [ "$NGINX_TEST" = "200" ]; then
+if [ "$NGINX_TEST" = "200" ]; then
     check "Nginx is responding (HTTP $NGINX_TEST)"
 else
     check "Nginx is responding"
-    echo "  Warning: Got HTTP $NGINX_TEST (401 is expected if auth not configured)"
+    echo "  Warning: Got HTTP $NGINX_TEST (expected 200)"
 fi
 echo ""
 

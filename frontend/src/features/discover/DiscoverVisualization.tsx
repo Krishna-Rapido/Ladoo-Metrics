@@ -335,8 +335,8 @@ export function DiscoverVisualization({
                                 key={type}
                                 onClick={() => setChartType(type as ChartType)}
                                 className={`p-4 rounded-xl border-2 transition-all ${chartType === type
-                                        ? 'border-emerald-500 bg-emerald-50 shadow-md'
-                                        : 'border-slate-200 bg-white hover:border-emerald-300'
+                                    ? 'border-emerald-500 bg-emerald-50 shadow-md'
+                                    : 'border-slate-200 bg-white hover:border-emerald-300'
                                     }`}
                             >
                                 <div className="text-3xl mb-2">{icon}</div>

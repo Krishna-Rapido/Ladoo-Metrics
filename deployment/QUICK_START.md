@@ -6,8 +6,6 @@ This is a condensed version of the deployment process. For detailed instructions
 
 - SSH access to VM: `ssh krishna.poddar@172.18.39.236`
 - Root/sudo access
-- Cloudflare account with a domain
-- Basic auth username/password ready
 
 ## Deployment Steps
 
@@ -33,45 +31,40 @@ bash deployment/deploy-backend.sh
 # 5. Deploy frontend
 bash deployment/deploy-frontend.sh
 
-# 6. Create Nginx password file
-htpasswd -c /etc/nginx/.htpasswd <username>
-# Enter password when prompted
-
-# 7. Configure Nginx
+# 6. Configure Nginx
 cp deployment/nginx-ladoo-metrics.conf /etc/nginx/sites-available/ladoo-metrics
 ln -s /etc/nginx/sites-available/ladoo-metrics /etc/nginx/sites-enabled/
 rm /etc/nginx/sites-enabled/default  # Optional
 nginx -t
 systemctl reload nginx
 
-# 8. Set up systemd service
+# 7. Set up systemd service (backend)
 cp deployment/ladoo-metrics.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable ladoo-metrics
 systemctl start ladoo-metrics
 
-# 9. Security hardening
+# 8. Security hardening
 bash deployment/security-hardening.sh
 
-# 10. Verify deployment
+# 9. Verify deployment
 bash deployment/verify-deployment.sh
 
-# 11. Configure Cloudflare Tunnel (see DEPLOYMENT_INSTRUCTIONS.md for details)
-cloudflared tunnel login
-cloudflared tunnel create ladoo-metrics
-# Create /etc/cloudflared/config.yml (see instructions)
-# Add DNS CNAME in Cloudflare dashboard
+# 10. Start Cloudflare Quick Tunnel (no domain needed!)
 cp deployment/cloudflare-tunnel.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable cloudflare-tunnel
 systemctl start cloudflare-tunnel
+
+# 11. Get your public URL
+journalctl -u cloudflare-tunnel --no-pager -n 20 | grep trycloudflare
+# Look for a line like: https://random-words.trycloudflare.com
 ```
 
 ## Environment Variables
 
 Edit `/etc/systemd/system/ladoo-metrics.service` to set:
 
-- `ALLOWED_ORIGINS` - Your Cloudflare tunnel URL (e.g., `https://ladoo-metrics.example.com`)
 - `PRESTO_HOST` - If different from default
 - `PRESTO_PORT` - If different from default (80)
 
@@ -83,15 +76,21 @@ systemctl restart ladoo-metrics
 
 ## Access the Application
 
-After Cloudflare Tunnel is configured:
-- URL: `https://ladoo-metrics.<your-domain>`
-- Authentication: Basic auth (username/password from step 6)
+After the Cloudflare Quick Tunnel starts:
+- URL: Check `journalctl -u cloudflare-tunnel --no-pager -n 20 | grep trycloudflare`
+- The URL looks like: `https://random-words.trycloudflare.com`
+
+> **Note:** The URL changes each time the tunnel service restarts. Run the
+> `journalctl` command above to get the current URL.
 
 ## Troubleshooting
 
 ```bash
 # Check backend logs
 journalctl -u ladoo-metrics -f
+
+# Check tunnel logs / get public URL
+journalctl -u cloudflare-tunnel -f
 
 # Check Nginx logs
 tail -f /var/log/nginx/ladoo-metrics-error.log
@@ -105,5 +104,5 @@ systemctl status cloudflare-tunnel
 curl http://localhost:8001/health
 
 # Test through Nginx
-curl -u username:password http://localhost/health
+curl http://localhost/health
 ```

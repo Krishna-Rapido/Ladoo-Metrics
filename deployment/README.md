@@ -12,7 +12,7 @@ This directory contains all scripts and configuration files needed to deploy Lad
 - **verify-deployment.sh** - Verification script to test all components
 
 ### Configuration Files
-- **nginx-ladoo-metrics.conf** - Nginx reverse proxy configuration with basic auth
+- **nginx-ladoo-metrics.conf** - Nginx reverse proxy configuration
 - **ladoo-metrics.service** - systemd service file for the backend
 - **cloudflare-tunnel.service** - systemd service file for Cloudflare Tunnel
 
@@ -46,9 +46,6 @@ This directory contains all scripts and configuration files needed to deploy Lad
 
 5. **Configure Nginx**
    ```bash
-   # Create password file
-   sudo htpasswd -c /etc/nginx/.htpasswd username
-   
    # Install config
    sudo cp deployment/nginx-ladoo-metrics.conf /etc/nginx/sites-available/ladoo-metrics
    sudo ln -s /etc/nginx/sites-available/ladoo-metrics /etc/nginx/sites-enabled/
@@ -89,7 +86,6 @@ The backend uses these environment variables (set in systemd service):
 ## Security Notes
 
 - Backend runs as dedicated `ladoo` user (non-root)
-- Basic auth protects the entire application
 - UFW firewall only allows SSH (22) and HTTP (80)
 - Backend port 8001 is only accessible from localhost
 - All traffic goes through Cloudflare Tunnel (HTTPS)

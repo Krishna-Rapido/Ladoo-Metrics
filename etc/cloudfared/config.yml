@@ -1,0 +1,18 @@
+# This file is NOT needed when using Cloudflare Quick Tunnels.
+#
+# Quick Tunnel (no domain / no account required):
+#   cloudflared tunnel --url http://localhost:80
+#
+# The quick-tunnel systemd service is at:
+#   deployment/cloudflare-tunnel.service
+#
+# If you later obtain a Cloudflare account + domain, you can switch to a
+# named tunnel by filling in this config and updating the service file.
+#
+# tunnel: <TUNNEL_ID>
+# credentials-file: /root/.cloudflared/<TUNNEL_ID>.json
+#
+# ingress:
+#   - hostname: ladoo-metrics.yourdomain.com
+#     service: http://localhost:80
+#   - service: http_status:404

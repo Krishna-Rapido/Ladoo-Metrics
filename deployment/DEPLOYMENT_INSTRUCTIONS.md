@@ -7,8 +7,7 @@ This guide walks you through deploying Ladoo Metrics on the internal Ubuntu VM.
 Before starting, ensure you have:
 - SSH access to the VM: `ssh krishna.poddar@172.18.39.236`
 - Root or sudo access on the VM
-- A Cloudflare account with a domain managed in Cloudflare
-- Basic auth username and password ready
+- **No domain or Cloudflare account needed** — we use a free Quick Tunnel
 
 ## Step 1: System Setup
 
@@ -66,17 +65,6 @@ This builds the frontend with production settings.
 
 ## Step 5: Configure Nginx
 
-### 5a. Create Basic Auth Password File
-
-```bash
-# Create password file (replace 'username' with your desired username)
-htpasswd -c /etc/nginx/.htpasswd username
-# Enter password when prompted
-# For additional users later: htpasswd /etc/nginx/.htpasswd anotheruser
-```
-
-### 5b. Install Nginx Configuration
-
 ```bash
 # Copy Nginx config
 cp /opt/ladoo-metrics/deployment/nginx-ladoo-metrics.conf /etc/nginx/sites-available/ladoo-metrics
@@ -116,50 +104,30 @@ systemctl status ladoo-metrics
 journalctl -u ladoo-metrics -f
 ```
 
-## Step 7: Configure Cloudflare Tunnel
+## Step 7: Set Up Cloudflare Quick Tunnel
 
-### 7a. Authenticate Cloudflared
+A **Quick Tunnel** gives you a free public `https://<random>.trycloudflare.com` URL.
+No Cloudflare account, no domain, and no DNS configuration required.
 
-```bash
-cloudflared tunnel login
-# This will open a browser - authenticate with your Cloudflare account
-```
-
-### 7b. Create Tunnel
+### 7a. Install Cloudflared (if not already installed)
 
 ```bash
-cloudflared tunnel create ladoo-metrics
-# Note the tunnel ID from the output
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
+  -o /tmp/cloudflared.deb && apt install -y /tmp/cloudflared.deb
 ```
 
-### 7c. Create Configuration
+### 7b. Test the Tunnel (optional)
 
-Create `/etc/cloudflared/config.yml`:
-
-```yaml
-tunnel: <TUNNEL_ID>
-credentials-file: /root/.cloudflared/<TUNNEL_ID>.json
-
-ingress:
-  - hostname: ladoo-metrics.<your-domain>
-    service: http://localhost:80
-  - service: http_status:404
+```bash
+# Quick smoke test — press Ctrl+C to stop
+cloudflared tunnel --url http://localhost:80
+# Look for a line like:
+#   INF +---------------------------------------------------+
+#   INF |  https://random-words-here.trycloudflare.com      |
+#   INF +---------------------------------------------------+
 ```
 
-Replace:
-- `<TUNNEL_ID>` with the ID from step 7b
-- `<your-domain>` with your Cloudflare-managed domain
-
-### 7d. Create DNS Record
-
-In Cloudflare dashboard:
-1. Go to your domain's DNS settings
-2. Add a CNAME record:
-   - Name: `ladoo-metrics`
-   - Target: `<TUNNEL_ID>.cfargotunnel.com`
-   - Proxy: Enabled (orange cloud)
-
-### 7e. Set Up Cloudflared Service
+### 7c. Set Up as a systemd Service
 
 ```bash
 # Copy service file
@@ -168,13 +136,21 @@ cp /opt/ladoo-metrics/deployment/cloudflare-tunnel.service /etc/systemd/system/
 # Reload systemd
 systemctl daemon-reload
 
-# Enable and start
+# Enable (starts on boot) and start
 systemctl enable cloudflare-tunnel
 systemctl start cloudflare-tunnel
-
-# Check status
-systemctl status cloudflare-tunnel
 ```
+
+### 7d. Get Your Public URL
+
+```bash
+journalctl -u cloudflare-tunnel --no-pager -n 20 | grep trycloudflare
+```
+
+The URL looks like `https://random-words-here.trycloudflare.com`. Open it in a browser to access the Ladoo Metrics UI.
+
+> **Note:** The URL changes every time the `cloudflare-tunnel` service restarts.
+> Run the command above to get the current URL after a restart.
 
 ## Step 8: Verify Deployment
 
@@ -188,22 +164,20 @@ curl http://localhost:8001/health
 ### 8b. Test Through Nginx
 
 ```bash
-curl -u username:password http://localhost/health
+curl http://localhost/health
 # Should return the same JSON
 ```
 
 ### 8c. Test Frontend
 
 ```bash
-curl -u username:password http://localhost/
+curl http://localhost/
 # Should return HTML
 ```
 
 ### 8d. Test Cloudflare Tunnel
 
-Visit `https://ladoo-metrics.<your-domain>` in a browser. You should see:
-1. Basic auth prompt
-2. After authentication, the Ladoo Metrics frontend
+Get the URL with `journalctl -u cloudflare-tunnel --no-pager -n 20 | grep trycloudflare`, then open it in a browser. You should see the Ladoo Metrics frontend.
 
 ### 8e. Test Presto Connectivity
 
@@ -269,7 +243,6 @@ cloudflared tunnel --config /etc/cloudflared/config.yml run
 
 ## Security Notes
 
-- Basic auth password file is at `/etc/nginx/.htpasswd` - keep it secure
 - Backend runs as `ladoo` user (non-root)
 - Only ports 22 (SSH) and 80 (HTTP) are open via UFW
 - Backend port 8001 is only accessible from localhost

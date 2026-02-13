@@ -1,11 +1,15 @@
 [Unit]
-Description=Cloudflare Tunnel for Ladoo Metrics
-After=network.target
+Description=Cloudflare Quick Tunnel for Ladoo Metrics
+After=network.target nginx.service
 
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/cloudflared tunnel --config /etc/cloudflared/config.yml run
+# Quick Tunnel: no Cloudflare account or domain needed.
+# Gives a random public https://<random>.trycloudflare.com URL.
+# The assigned URL is printed to the journal on startup — check with:
+#   journalctl -u cloudflare-tunnel -n 20 | grep trycloudflare
+ExecStart=/usr/local/bin/cloudflared tunnel --url http://localhost:80
 Restart=always
 RestartSec=5
 StandardOutput=journal
