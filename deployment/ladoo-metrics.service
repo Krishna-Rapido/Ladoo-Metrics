@@ -13,7 +13,7 @@ Environment="PRESTO_HOST=bi-trino-4.serving.data.production.internal"
 Environment="PRESTO_PORT=80"
 # CORS: not needed when frontend & API are same-origin behind Nginx.
 # If you ever serve the API on a separate origin, uncomment and set:
-Environment="ALLOWED_ORIGINS=https://inns-weights-clause-pencil.trycloudflare.com"
+# Environment="ALLOWED_ORIGINS=http://laddoo.labs.plectrum.dev"
 ExecStart=/opt/ladoo-metrics/backend/venv/bin/python /opt/ladoo-metrics/backend/main.py
 Restart=always
 RestartSec=5

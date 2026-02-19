@@ -33,18 +33,12 @@ apt-get install -y nodejs
 echo "[5/7] Installing Nginx..."
 apt-get install -y nginx
 
-# Install Cloudflared
-echo "[6/7] Installing Cloudflared..."
-wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-dpkg -i cloudflared-linux-amd64.deb || apt-get install -f -y
-rm -f cloudflared-linux-amd64.deb
-
 # Install UFW firewall
-echo "[7/7] Installing and configuring UFW firewall..."
+echo "[6/7] Installing and configuring UFW firewall..."
 apt-get install -y ufw
 # Allow SSH
 ufw allow 22/tcp
-# Allow HTTP (for Cloudflare tunnel)
+# Allow HTTP
 ufw allow 80/tcp
 # Enable firewall (non-interactive)
 ufw --force enable
@@ -71,7 +65,6 @@ echo "Installed versions:"
 python3 --version
 node --version
 nginx -v
-cloudflared --version
 echo ""
 echo "Next steps:"
 echo "1. Clone the repository to /opt/ladoo-metrics/"
@@ -79,4 +72,3 @@ echo "2. Run deployment/deploy-backend.sh"
 echo "3. Run deployment/deploy-frontend.sh"
 echo "4. Configure Nginx (deployment/nginx-ladoo-metrics.conf)"
 echo "5. Set up systemd service (deployment/ladoo-metrics.service)"
-echo "6. Configure Cloudflare Tunnel"

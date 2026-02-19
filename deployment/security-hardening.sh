@@ -46,8 +46,8 @@ chmod 755 "$LOG_DIR"
 echo "[2/5] Configuring UFW firewall..."
 # Allow SSH (critical - don't lock yourself out!)
 ufw allow 22/tcp comment 'SSH'
-# Allow HTTP (for Cloudflare tunnel)
-ufw allow 80/tcp comment 'HTTP for Cloudflare Tunnel'
+# Allow HTTP
+ufw allow 80/tcp comment 'HTTP'
 # Deny all other incoming by default
 ufw default deny incoming
 ufw default allow outgoing

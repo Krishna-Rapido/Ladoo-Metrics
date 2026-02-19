@@ -7,7 +7,6 @@ This guide walks you through deploying Ladoo Metrics on the internal Ubuntu VM.
 Before starting, ensure you have:
 - SSH access to the VM: `ssh krishna.poddar@172.18.39.236`
 - Root or sudo access on the VM
-- **No domain or Cloudflare account needed** — we use a free Quick Tunnel
 
 ## Step 1: System Setup
 
@@ -25,7 +24,6 @@ This will install:
 - Python 3.10+
 - Node.js 18 LTS
 - Nginx
-- Cloudflared
 - UFW firewall
 - Creates `ladoo` system user
 
@@ -104,82 +102,30 @@ systemctl status ladoo-metrics
 journalctl -u ladoo-metrics -f
 ```
 
-## Step 7: Set Up Cloudflare Quick Tunnel
+## Step 7: Verify Deployment
 
-A **Quick Tunnel** gives you a free public `https://<random>.trycloudflare.com` URL.
-No Cloudflare account, no domain, and no DNS configuration required.
-
-### 7a. Install Cloudflared (if not already installed)
-
-```bash
-curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
-  -o /tmp/cloudflared.deb && apt install -y /tmp/cloudflared.deb
-```
-
-### 7b. Test the Tunnel (optional)
-
-```bash
-# Quick smoke test — press Ctrl+C to stop
-cloudflared tunnel --url http://localhost:80
-# Look for a line like:
-#   INF +---------------------------------------------------+
-#   INF |  https://random-words-here.trycloudflare.com      |
-#   INF +---------------------------------------------------+
-```
-
-### 7c. Set Up as a systemd Service
-
-```bash
-# Copy service file
-cp /opt/ladoo-metrics/deployment/cloudflare-tunnel.service /etc/systemd/system/
-
-# Reload systemd
-systemctl daemon-reload
-
-# Enable (starts on boot) and start
-systemctl enable cloudflare-tunnel
-systemctl start cloudflare-tunnel
-```
-
-### 7d. Get Your Public URL
-
-```bash
-journalctl -u cloudflare-tunnel --no-pager -n 20 | grep trycloudflare
-```
-
-The URL looks like `https://random-words-here.trycloudflare.com`. Open it in a browser to access the Ladoo Metrics UI.
-
-> **Note:** The URL changes every time the `cloudflare-tunnel` service restarts.
-> Run the command above to get the current URL after a restart.
-
-## Step 8: Verify Deployment
-
-### 8a. Test Backend Directly
+### 7a. Test Backend Directly
 
 ```bash
 curl http://localhost:8001/health
 # Should return JSON with status: "ok"
 ```
 
-### 8b. Test Through Nginx
+### 7b. Test Through Nginx
 
 ```bash
 curl http://localhost/health
 # Should return the same JSON
 ```
 
-### 8c. Test Frontend
+### 7c. Test Frontend
 
 ```bash
 curl http://localhost/
 # Should return HTML
 ```
 
-### 8d. Test Cloudflare Tunnel
-
-Get the URL with `journalctl -u cloudflare-tunnel --no-pager -n 20 | grep trycloudflare`, then open it in a browser. You should see the Ladoo Metrics frontend.
-
-### 8e. Test Presto Connectivity
+### 7d. Test Presto Connectivity
 
 Use the Captain Dashboards feature to run a query. If Presto is not reachable:
 1. Check network connectivity: `ping bi-trino-4.serving.data.production.internal`
@@ -214,16 +160,6 @@ nginx -t
 systemctl status nginx
 ```
 
-### Cloudflare Tunnel Not Working
-
-```bash
-# Check tunnel logs
-journalctl -u cloudflare-tunnel -f
-
-# Test tunnel manually
-cloudflared tunnel --config /etc/cloudflared/config.yml run
-```
-
 ### Presto Connection Issues
 
 1. Verify DNS resolution:
@@ -246,7 +182,6 @@ cloudflared tunnel --config /etc/cloudflared/config.yml run
 - Backend runs as `ladoo` user (non-root)
 - Only ports 22 (SSH) and 80 (HTTP) are open via UFW
 - Backend port 8001 is only accessible from localhost
-- All traffic goes through Cloudflare Tunnel (HTTPS)
 
 ## Maintenance
 
@@ -279,5 +214,4 @@ tail -f /var/log/nginx/ladoo-metrics-error.log
 ```bash
 systemctl restart ladoo-metrics
 systemctl restart nginx
-systemctl restart cloudflare-tunnel
 ```

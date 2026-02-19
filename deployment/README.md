@@ -5,7 +5,7 @@ This directory contains all scripts and configuration files needed to deploy Lad
 ## Files Overview
 
 ### Setup Scripts
-- **vm-setup.sh** - Initial system setup (Python, Node, Nginx, Cloudflared, UFW)
+- **vm-setup.sh** - Initial system setup (Python, Node, Nginx, UFW)
 - **deploy-backend.sh** - Backend deployment (venv, dependencies, Presto test)
 - **deploy-frontend.sh** - Frontend build for production
 - **security-hardening.sh** - Security configuration (permissions, firewall, log rotation)
@@ -14,7 +14,6 @@ This directory contains all scripts and configuration files needed to deploy Lad
 ### Configuration Files
 - **nginx-ladoo-metrics.conf** - Nginx reverse proxy configuration
 - **ladoo-metrics.service** - systemd service file for the backend
-- **cloudflare-tunnel.service** - systemd service file for Cloudflare Tunnel
 
 ### Documentation
 - **DEPLOYMENT_INSTRUCTIONS.md** - Step-by-step deployment guide
@@ -71,9 +70,6 @@ This directory contains all scripts and configuration files needed to deploy Lad
    sudo bash deployment/verify-deployment.sh
    ```
 
-9. **Configure Cloudflare Tunnel**
-   See `DEPLOYMENT_INSTRUCTIONS.md` for detailed Cloudflare Tunnel setup.
-
 ## Environment Variables
 
 The backend uses these environment variables (set in systemd service):
@@ -88,7 +84,6 @@ The backend uses these environment variables (set in systemd service):
 - Backend runs as dedicated `ladoo` user (non-root)
 - UFW firewall only allows SSH (22) and HTTP (80)
 - Backend port 8001 is only accessible from localhost
-- All traffic goes through Cloudflare Tunnel (HTTPS)
 - Logs are rotated daily, kept for 30 days
 
 ## Troubleshooting

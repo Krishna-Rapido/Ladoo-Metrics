@@ -114,15 +114,6 @@ else
 fi
 echo ""
 
-# 8. Check Cloudflare Tunnel (if configured)
-echo "=== Cloudflare Tunnel ==="
-if systemctl is-active --quiet cloudflare-tunnel 2>/dev/null; then
-    check "Cloudflare Tunnel service is running"
-else
-    check "Cloudflare Tunnel service is running"
-    echo "  Info: Cloudflare Tunnel not configured or not running"
-fi
-echo ""
 
 # Summary
 echo "=== Summary ==="

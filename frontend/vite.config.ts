@@ -15,8 +15,6 @@ export default defineConfig({
     // Or, provide an array of specific allowed hostnames
     allowedHosts: [
       '*',
-      'https://exhaust-jobs-color-greatly.trycloudflare.com ',
-      'https://inns-weights-clause-pencil.trycloudflare.com',
       '192.168.1.100',
       'localhost:5173',
       'localhost:8001'
