@@ -307,18 +307,11 @@ export function InsightsReportTab() {
                     </SelectTrigger>
                     <SelectContent>
                       {savedReports.length === 0 ? (
-                        <div className="px-2 py-4 text-sm text-muted-foreground text-center">
-                          No saved reports
-                        </div>
+                        <option disabled>No saved reports</option>
                       ) : (
                         savedReports.map((report) => (
                           <SelectItem key={report.id} value={report.id}>
-                            <div className="flex items-center justify-between w-full">
-                              <span className="truncate">{report.name}</span>
-                              <span className="text-xs text-muted-foreground ml-2">
-                                {new Date(report.updated_at).toLocaleDateString()}
-                              </span>
-                            </div>
+                            {report.name} — {new Date(report.updated_at).toLocaleDateString()}
                           </SelectItem>
                         ))
                       )}
@@ -472,19 +465,13 @@ export function InsightsReportTab() {
                     <SelectValue placeholder={isLoadingFolders ? "Loading folders..." : "Select folder"} />
                   </div>
                 </SelectTrigger>
-                <SelectContent style={{ backgroundColor: 'white', color: '#1a1a1a' }}>
+                <SelectContent>
                   <SelectItem value="root">
-                    <div className="flex items-center gap-2">
-                      <Folder className="h-4 w-4 text-gray-500" />
-                      <span>Reports (root)</span>
-                    </div>
+                    📁 Reports (root)
                   </SelectItem>
                   {folders.map((folder) => (
                     <SelectItem key={folder.id} value={folder.id}>
-                      <div className="flex items-center gap-2">
-                        <Folder className="h-4 w-4 text-amber-500" />
-                        <span>{folder.name}</span>
-                      </div>
+                      📂 {folder.name}
                     </SelectItem>
                   ))}
                 </SelectContent>

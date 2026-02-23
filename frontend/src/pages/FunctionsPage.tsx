@@ -433,21 +433,21 @@ export function FunctionsPage() {
                     {currentFolderItems.functions.map((func) => (
                       <div
                         key={func.id}
-                        className="flex items-center justify-between p-3 rounded-xl hover:bg-muted/50 group"
+                        className="flex items-center justify-between p-3 rounded-xl hover:bg-muted/50 group overflow-hidden"
                       >
                         <button
                           onClick={() => handleViewFunction(func)}
-                          className="flex items-center gap-3 flex-1 text-left"
+                          className="flex items-center gap-3 flex-1 text-left min-w-0 overflow-hidden"
                         >
-                          <Code className="h-5 w-5 text-emerald-500" />
-                          <div className="flex-1 min-w-0">
+                          <Code className="h-5 w-5 text-emerald-500 shrink-0" />
+                          <div className="flex-1 min-w-0 overflow-hidden">
                             <div className="font-medium truncate flex items-center gap-2">
                               {func.name}
                               {func.is_validated && (
-                                <Badge variant="secondary" className="text-xs">Validated</Badge>
+                                <Badge variant="secondary" className="text-xs shrink-0">Validated</Badge>
                               )}
                             </div>
-                            <div className="text-xs text-muted-foreground">
+                            <div className="text-xs text-muted-foreground truncate">
                               {func.output_columns?.length || 0} output columns • {func.parameters?.length || 0} parameters
                             </div>
                             {func.description && (

@@ -8,7 +8,6 @@ import {
   CheckCircle2,
   XCircle,
   ChevronDown,
-  FolderOpen,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -472,17 +471,11 @@ export function FunctionEditor({ username, onFunctionSaved }: FunctionEditorProp
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="root">
-                    <div className="flex items-center gap-2">
-                      <FolderOpen className="h-4 w-4" />
-                      Root folder
-                    </div>
+                    📁 Root folder
                   </SelectItem>
                   {folders.map((folder) => (
                     <SelectItem key={folder.id} value={folder.id}>
-                      <div className="flex items-center gap-2">
-                        <FolderOpen className="h-4 w-4" />
-                        {folder.name}
-                      </div>
+                      📂 {folder.name}
                     </SelectItem>
                   ))}
                 </SelectContent>

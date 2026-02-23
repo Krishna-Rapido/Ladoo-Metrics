@@ -497,15 +497,7 @@ export function AddMetricsTab({ sessionId, username, onMetricsAdded }: AddMetric
                   <SelectContent>
                     {functions.map((func) => (
                       <SelectItem key={func.id} value={func.id}>
-                        <div className="flex items-center gap-2">
-                          <Code className="h-4 w-4 text-emerald-500" />
-                          <span>{func.name}</span>
-                          {func.output_columns && (
-                            <Badge variant="secondary" className="text-xs">
-                              {func.output_columns.length} columns
-                            </Badge>
-                          )}
-                        </div>
+                        {func.name}{func.output_columns ? ` (${func.output_columns.length} columns)` : ''}
                       </SelectItem>
                     ))}
                   </SelectContent>
