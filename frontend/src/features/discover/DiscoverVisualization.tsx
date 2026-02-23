@@ -429,8 +429,8 @@ export function DiscoverVisualization({
                                             </span>
                                             <Select
                                                 value={getAggregation(col)}
-                                                onValueChange={(value: AggregationType) => {
-                                                    setAggregations({ ...aggregations, [col]: value });
+                                                onValueChange={(value: string) => {
+                                                    setAggregations({ ...aggregations, [col]: value as AggregationType });
                                                 }}
                                             >
                                                 <SelectTrigger className="w-32 h-8 text-xs rounded-lg">
