@@ -122,27 +122,30 @@ export interface AIExplainInsightsResponse {
 // API calls
 // ---------------------------------------------------------------------------
 
+/** Default timeout for AI requests (ms). LLM calls can be slow; 120 s is generous. */
+const AI_TIMEOUT_MS = 120_000
+
 export async function generateMetric(req: AIGenerateMetricRequest): Promise<AIGenerateMetricResponse> {
-  const { data } = await axios.post(`${BASE_URL}/ai/generate-metric`, req)
+  const { data } = await axios.post(`${BASE_URL}/ai/generate-metric`, req, { timeout: AI_TIMEOUT_MS })
   return data
 }
 
 export async function refineMetric(req: AIRefineMetricRequest): Promise<AIGenerateMetricResponse> {
-  const { data } = await axios.post(`${BASE_URL}/ai/refine-metric`, req)
+  const { data } = await axios.post(`${BASE_URL}/ai/refine-metric`, req, { timeout: AI_TIMEOUT_MS })
   return data
 }
 
 export async function suggestMetrics(req: AISuggestMetricsRequest): Promise<AISuggestMetricsResponse> {
-  const { data } = await axios.post(`${BASE_URL}/ai/suggest-metrics`, req)
+  const { data } = await axios.post(`${BASE_URL}/ai/suggest-metrics`, req, { timeout: AI_TIMEOUT_MS })
   return data
 }
 
 export async function discoverProblems(req: AIDiscoverProblemsRequest): Promise<AIDiscoverProblemsResponse> {
-  const { data } = await axios.post(`${BASE_URL}/ai/discover-problems`, req)
+  const { data } = await axios.post(`${BASE_URL}/ai/discover-problems`, req, { timeout: AI_TIMEOUT_MS })
   return data
 }
 
 export async function explainInsights(req: AIExplainInsightsRequest): Promise<AIExplainInsightsResponse> {
-  const { data } = await axios.post(`${BASE_URL}/ai/explain-insights`, req)
+  const { data } = await axios.post(`${BASE_URL}/ai/explain-insights`, req, { timeout: AI_TIMEOUT_MS })
   return data
 }

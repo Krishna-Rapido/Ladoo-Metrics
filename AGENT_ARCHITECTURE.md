@@ -17,7 +17,7 @@ The system adds four agents that any user can invoke:
 
 ## The Core Idea: LLM as Presto Query Author
 
-Every agent ultimately does one thing: it uses Claude to write a `compute_metrics()` function, then pipes it through the existing `function_executor.py` sandbox. The agent system is not separate infrastructure — it is a prompt-driven front-end to the function system that already exists.
+Every agent ultimately does one thing: it uses GPT-4o (via the OpenAI API) to write a `compute_metrics()` function, then pipes it through the existing `function_executor.py` sandbox. The agent system is not separate infrastructure — it is a prompt-driven front-end to the function system that already exists.
 
 ```
 User describes a metric
@@ -193,7 +193,7 @@ gross_days = COUNT(DISTINCT yyyymmdd WHERE gross_pings > 0)
 accepted_days = COUNT(DISTINCT yyyymmdd WHERE accepted_pings > 0)
 ao_days = COUNT(DISTINCT yyyymmdd WHERE online_events > 0 AND gross_pings > 0)
 
-dapr = accepted_pings / accepted_pings (from DAPR table — pre-computed)
+dapr = accepted_pings / gross_pings (from DAPR table — pre-computed)
 idle_fraction = idle_lh / total_lh
 engagement_rate = net_days / online_days
 acceptance_rate = accepted_pings / gross_pings
@@ -284,11 +284,10 @@ def compute_metrics(params):
 
 ```python
 class MetricGenAgent:
-    def __init__(self, anthropic_client):
-        self.client = anthropic_client
-        self.model = "claude-sonnet-4-6"
+    def __init__(self):
+        self.model = "gpt-4o"
 
-    async def generate(
+    def generate(
         self,
         description: str,
         context: str = "",
@@ -296,14 +295,16 @@ class MetricGenAgent:
         function_catalog: list[dict] = [],
         test_immediately: bool = False,
     ) -> MetricGenResult:
-
+        client = get_openai_client()
         prompt = self._build_prompt(description, context, function_catalog)
 
-        response = self.client.messages.create(
+        response = client.chat.completions.create(
             model=self.model,
             max_tokens=4096,
-            system=METRIC_GEN_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[
+                {"role": "system", "content": METRIC_GEN_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ]
         )
 
         code = self._extract_code(response.content[0].text)
@@ -569,14 +570,14 @@ New Pydantic models for all AI request/response types.
 ### Step 4: Backend — `requirements.txt` addition
 
 ```
-anthropic>=0.40.0
+openai>=1.0.0
 apscheduler>=3.10.0     # for scheduled discovery scans
 ```
 
 ### Step 5: Environment variable
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
 ```
 
 ### Step 6: Supabase — new tables

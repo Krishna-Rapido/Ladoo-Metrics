@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS public.ai_generated_metrics (
     times_used INTEGER DEFAULT 0,
     saved_to_library BOOLEAN DEFAULT false,
     library_function_id UUID REFERENCES public.metric_functions(id),
-    user_rating INTEGER                          -- 1-5 thumbs up/down from analyst
+    user_rating INTEGER CHECK (user_rating BETWEEN 1 AND 5)  -- 1-5 thumbs up/down from analyst
 );
 
 CREATE INDEX IF NOT EXISTS idx_ai_generated_metrics_created_by ON public.ai_generated_metrics(created_by);

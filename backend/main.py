@@ -2392,11 +2392,32 @@ async def execute_custom_dashboard_query(payload: schemas.CustomDashboardQueryRe
         unique_remaining = list(dict.fromkeys(remaining))  # deduplicate, preserve order
         raise HTTPException(status_code=400, detail=f"Missing parameter values for: {', '.join(unique_remaining)}")
 
+    # Validate read-only: reject DML/DDL statements
+    _FORBIDDEN_SQL = re.compile(
+        r'\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|MERGE|CALL|EXECUTE)\b',
+        re.IGNORECASE,
+    )
+    if _FORBIDDEN_SQL.search(query):
+        raise HTTPException(status_code=400, detail="Only read-only SELECT queries are allowed.")
+
+    MAX_ROWS = 50_000
+    conn = None
     try:
         conn = get_presto_connection(payload.username)
         result_df = pd.read_sql(query, conn)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Query execution failed: {exc}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    if len(result_df) > MAX_ROWS:
+        result_df = result_df.head(MAX_ROWS)
 
     data = result_df.replace({float('nan'): None, float('inf'): None, float('-inf'): None}).to_dict('records')
 

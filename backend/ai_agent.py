@@ -299,14 +299,8 @@ Do not hedge everything. A useful explanation takes a clear position.
 
 DISCOVERY_CHECKS = [
     "daily_captain_count_trend",
-    "weekly_to_rest_churn_rate",
-    "segment_concentration_shift",
     "ping_acceptance_rate_trend",
     "idle_fraction_trend",
-    "morning_peak_dropout_rate",
-    "rides_per_online_day_trend",
-    "uhp_captain_degradation",
-    "new_captain_daily_activation",
 ]
 
 
@@ -745,7 +739,13 @@ class ProblemDiscoveryAgent:
         """Execute a Presto query and return DataFrame."""
         from function_executor import get_presto_connection
         conn = get_presto_connection(username)
-        return pd.read_sql(sql, conn)
+        try:
+            return pd.read_sql(sql, conn)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _zscore_findings(
         self,
@@ -837,7 +837,7 @@ class ProblemDiscoveryAgent:
         return self._zscore_findings(
             df, "daily_captain_count", "yyyymmdd",
             label=f"Daily active captains ({city or 'all cities'})",
-            segment=f"daily, {service_category}, {city or 'all'}",
+            segment=f"all services, {city or 'all'}",
             hypothesis_template="Supply may be shrinking — check if recent policy/incentive changes deterred captains from working.",
             action_template="Run segment transition analysis for daily captains. Check DAU trend in Dashboard.",
         )
@@ -897,7 +897,7 @@ class ProblemDiscoveryAgent:
         return self._zscore_findings(
             df, "idle_fraction", "yyyymmdd",
             label=f"Idle fraction ({city or 'all'})",
-            segment=f"{service_category}, {city or 'all'}",
+            segment=f"all services, {city or 'all'}",
             hypothesis_template=(
                 "Rising idle fraction means captains are online but not earning — "
                 "supply is outpacing demand or ping matching is degrading."
@@ -996,16 +996,16 @@ class NarrativeExplainerAgent:
         ]
 
         for row in summary_rows:
-            metric = str(row.get("metricKey") or row.get("metric", ""))[:34]
-            agg = str(row.get("agg") or row.get("agg_func", ""))[:14]
-            ctrl_pre = _fmt(row.get("controlPre") or row.get("control_pre"))
-            ctrl_post = _fmt(row.get("controlPost") or row.get("control_post"))
-            d_ctrl = _fmt(row.get("deltaControl") or row.get("control_delta"))
-            test_pre = _fmt(row.get("testPre") or row.get("test_pre"))
-            test_post = _fmt(row.get("testPost") or row.get("test_post"))
-            d_test = _fmt(row.get("deltaTest") or row.get("test_delta"))
-            did = _fmt(row.get("did") or row.get("diff_in_diff"))
-            lift = _fmt(row.get("liftPct") or row.get("diff_in_diff_pct"))
+            metric = str(_get_first(row, "metricKey", "metric") or "")[:34]
+            agg = str(_get_first(row, "agg", "agg_func") or "")[:14]
+            ctrl_pre = _fmt(_get_first(row, "controlPre", "control_pre"))
+            ctrl_post = _fmt(_get_first(row, "controlPost", "control_post"))
+            d_ctrl = _fmt(_get_first(row, "deltaControl", "control_delta"))
+            test_pre = _fmt(_get_first(row, "testPre", "test_pre"))
+            test_post = _fmt(_get_first(row, "testPost", "test_post"))
+            d_test = _fmt(_get_first(row, "deltaTest", "test_delta"))
+            did = _fmt(_get_first(row, "did", "diff_in_diff"))
+            lift = _fmt(_get_first(row, "liftPct", "diff_in_diff_pct"))
             table_lines.append(
                 f"{metric:<35} {agg:<15} {ctrl_pre:<12} {ctrl_post:<12} {d_ctrl:<10} "
                 f"{test_pre:<12} {test_post:<12} {d_test:<10} {did:<10} {lift:<8}"
@@ -1056,6 +1056,15 @@ class NarrativeExplainerAgent:
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+def _get_first(row: dict, *keys: str) -> Any:
+    """Return the first non-None value from the given keys, preserving legitimate zeroes."""
+    for k in keys:
+        v = row.get(k)
+        if v is not None:
+            return v
+    return None
+
 
 def _fmt(v: Any) -> str:
     if v is None:

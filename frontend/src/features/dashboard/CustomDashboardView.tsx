@@ -207,7 +207,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
         } finally {
             setLoading(false);
         }
-    }, [sqlQuery, username, paramValues]);
+    }, [sqlQuery, username, paramValues, parameters]);
 
     const handleSave = useCallback(async () => {
         if (!dashboard || !isOwner) return;
@@ -379,7 +379,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                         {/* Parameter value inputs */}
                         <div className="grid grid-cols-3 gap-3">
                             {parameters.map((param, index) => (
-                                <div key={param.name} className="space-y-1">
+                                <div key={index} className="space-y-1">
                                     <div className="flex items-center gap-1">
                                         <label className="block text-xs font-medium text-slate-600">
                                             {param.label}

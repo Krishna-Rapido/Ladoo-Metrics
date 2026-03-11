@@ -74,7 +74,7 @@ export function AIMetricGenerator({ onUse, sessionContext = "", functionCatalog 
       setResult(res)
       setFeedback("")
     } catch (e) {
-      console.error(e)
+      setResult({ success: false, error: `Refinement failed: ${e}`, code: result.code, explanation: result.explanation, alternatives: [], parameters: [], output_columns: [], preview: [], confidence: "low" })
     } finally {
       setRefining(false)
     }
@@ -82,7 +82,9 @@ export function AIMetricGenerator({ onUse, sessionContext = "", functionCatalog 
 
   function handleCopyCode() {
     if (!result?.code) return
-    navigator.clipboard.writeText(result.code)
+    navigator.clipboard.writeText(result.code).catch(() => {
+      // Clipboard API may fail in insecure contexts or if denied
+    })
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
@@ -90,12 +92,14 @@ export function AIMetricGenerator({ onUse, sessionContext = "", functionCatalog 
   function handleUse() {
     if (!result?.code) return
     // Derive a metric name from the description (first 5 words, snake_case)
-    const name = description
+    const derived = description
       .toLowerCase()
       .replace(/[^a-z0-9\s]/g, "")
       .split(/\s+/)
+      .filter(Boolean)
       .slice(0, 5)
       .join("_")
+    const name = derived || "ai_generated_metric"
     onUse({
       code: result.code,
       name,
@@ -183,22 +187,22 @@ export function AIMetricGenerator({ onUse, sessionContext = "", functionCatalog 
           {/* Code toggle */}
           {result.code && (
             <div className="border rounded-lg overflow-hidden">
-              <button
-                onClick={() => setShowCode(v => !v)}
-                className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 hover:bg-gray-100 text-xs font-medium text-gray-600 transition-colors"
-              >
-                <span>View generated code</span>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={e => { e.stopPropagation(); handleCopyCode() }}
-                    className="flex items-center gap-1 hover:text-gray-900"
-                  >
-                    {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                    {copied ? "Copied" : "Copy"}
-                  </button>
+              <div className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 text-xs font-medium text-gray-600">
+                <button
+                  onClick={() => setShowCode(v => !v)}
+                  className="flex items-center gap-1 hover:text-gray-900 transition-colors"
+                >
+                  <span>View generated code</span>
                   {showCode ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                </div>
-              </button>
+                </button>
+                <button
+                  onClick={handleCopyCode}
+                  className="flex items-center gap-1 hover:text-gray-900 transition-colors"
+                >
+                  {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
               {showCode && (
                 <pre className="text-xs p-3 bg-[#1e1e1e] text-gray-200 overflow-x-auto max-h-64 overflow-y-auto leading-relaxed">
                   {result.code}

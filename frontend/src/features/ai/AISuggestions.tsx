@@ -51,11 +51,14 @@ export function AISuggestions({
   const [error, setError] = useState("")
 
   // Auto-fetch when panel is opened for the first time
+  const [hasFetched, setHasFetched] = useState(false)
   useEffect(() => {
-    if (open && suggestions.length === 0 && !loading) {
+    if (open && !hasFetched && !loading) {
+      setHasFetched(true)
       fetchSuggestions()
     }
-  }, [open])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, hasFetched, loading])
 
   async function fetchSuggestions() {
     setLoading(true)
@@ -126,10 +129,10 @@ export function AISuggestions({
             <p className="text-xs text-muted-foreground text-center py-2">No suggestions yet.</p>
           )}
 
-          {suggestions.map((s, i) => {
+          {suggestions.map((s) => {
             const isAdded = added.has(s.label)
             return (
-              <div key={i} className={`border rounded-lg p-2.5 space-y-1.5 transition-colors ${isAdded ? "opacity-50 bg-gray-50" : "hover:border-violet-300"}`}>
+              <div key={`${s.label}-${s.source}`} className={`border rounded-lg p-2.5 space-y-1.5 transition-colors ${isAdded ? "opacity-50 bg-gray-50" : "hover:border-violet-300"}`}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex flex-wrap gap-1 items-center min-w-0">
                     <span className="text-xs font-medium text-gray-800 truncate">{s.label}</span>

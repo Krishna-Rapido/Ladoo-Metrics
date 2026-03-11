@@ -59,9 +59,9 @@ Browser → FastAPI backend → (Presto for dashboard queries)
                          → (In-memory session store for uploaded CSVs)
 ```
 
-1. **Upload**: User uploads a captain × date CSV. Backend stores it as an in-memory pandas DataFrame (small files, <50MB) or a Parquet file on disk queried via DuckDB (large files, up to 5GB). Returns a `session_id`.
+1. **Upload**: User uploads a captain × date CSV. Backend stores it as an in-memory pandas DataFrame (small files, <50MB) or a Parquet file on disk queried via DuckDB (large files). Returns a `session_id`. **Note:** Enforce an upload size limit (e.g., via Nginx `client_max_body_size`) and implement a cleanup policy for parquet files to prevent disk exhaustion.
 2. **Insights**: Frontend sends `session_id` in the `X-Session-Id` header with all subsequent requests. Backend looks up the session and computes metrics.
-3. **Presto queries**: Captain dashboard endpoints (`/dapr-bucket`, `/fe2net`, etc.) query Presto directly using `pyhive`. The Presto username is passed via the `X-Username` header from the frontend.
+3. **Presto queries**: Captain dashboard endpoints (`/dapr-bucket`, `/fe2net`, etc.) query Presto directly using `pyhive`. The Presto username is passed via the `X-Username` header from the frontend. **Security note:** The `X-Username` header is client-supplied and should be validated against the authenticated Supabase session to prevent impersonation.
 
 ### Backend (`backend/`)
 
@@ -137,7 +137,7 @@ Four agents accessible to all users via `/ai/*` backend routes. Documented in `A
 - `frontend/src/pages/DiscoveryPage.tsx` — Problem Discovery page (route: `/discovery`)
 - `supabase_ai_migration.sql` — new tables: `ai_discoveries`, `ai_generated_metrics`
 
-**Required env var:** `ANTHROPIC_API_KEY` must be set on the backend.
+**Required env var:** `OPENAI_API_KEY` must be set on the backend.
 
 **How MetricGen works:** LLM receives `PRESTO_SCHEMA_CONTEXT` (all table/column definitions) + the saved functions catalog as context, generates a `compute_metrics(params) -> DataFrame` function, which is immediately validated through the existing `function_executor.py` security sandbox before returning to the user.
 
@@ -155,16 +155,16 @@ Production runs on a private VM behind Nginx. All deployment scripts are in `dep
 
 | Component | Details |
 |---|---|
-| VM | `172.18.39.236`, SSH as `krishna.poddar` |
+| VM | See deployment credentials in your team's secrets manager |
 | App root | `/opt/ladoo-metrics/` on the VM |
-| Live URL | `http://laddoo.labs.plectrum.dev/` (HTTP only, no SSL) |
+| Live URL | `https://laddoo.labs.plectrum.dev/` (ensure SSL is configured via Nginx/Let's Encrypt) |
 | Backend port | `8001` (Nginx proxies `/api` → `localhost:8001`) |
 | Backend service | systemd unit `ladoo-metrics` |
 
 ### Deploy to VM
 
 ```bash
-ssh krishna.poddar@172.18.39.236
+ssh <YOUR_USERNAME>@<VM_IP>
 sudo su
 cd /opt/ladoo-metrics
 

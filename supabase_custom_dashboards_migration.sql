@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS public.custom_dashboards (
     slug TEXT NOT NULL,
     folder TEXT NOT NULL,
     description TEXT,
+    -- SECURITY NOTE: sql_query is executed server-side via Presto. The backend
+    -- MUST validate that queries are read-only (SELECT only) and substitute values
+    -- from the parameters array using parameterised query patterns — never by
+    -- string-interpolating raw user input into the SQL.
     sql_query TEXT NOT NULL DEFAULT '',
     parameters JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

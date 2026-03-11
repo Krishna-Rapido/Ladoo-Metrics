@@ -66,8 +66,12 @@ function FindingCard({ finding }: { finding: DiscoveryFindingItem }) {
   return (
     <div className={`border rounded-xl overflow-hidden ${cfg.bg}`}>
       <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
         className="flex items-start gap-3 p-4 cursor-pointer"
         onClick={() => setExpanded(v => !v)}
+        onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpanded(v => !v); } }}
       >
         <Icon className={`w-4 h-4 shrink-0 mt-0.5 ${cfg.iconColor}`} />
         <div className="flex-1 min-w-0 space-y-1">
@@ -275,7 +279,7 @@ export function DiscoveryPage() {
           {/* Summary bar */}
           <div className="flex items-center gap-3 text-sm flex-wrap">
             <span className="text-muted-foreground">
-              Scanned {result.checks_run} checks · {new Date(result.scan_timestamp).toLocaleDateString()}
+              Scanned {result.checks_run} checks · {(() => { const d = new Date(result.scan_timestamp); return isNaN(d.getTime()) ? result.scan_timestamp : d.toLocaleDateString(); })()}
             </span>
             {critical.length > 0 && (
               <span className="bg-red-100 text-red-700 rounded px-2 py-0.5 text-xs font-medium">

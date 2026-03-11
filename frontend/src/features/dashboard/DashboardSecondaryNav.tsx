@@ -192,14 +192,20 @@ export function DashboardSecondaryNav({ onNavigate }: DashboardSecondaryNavProps
     };
 
     const handleAddItem = async () => {
-        if (!addingToFolder || !newItemLabel.trim()) return;
+        if (!addingToFolder || !newItemLabel.trim() || addingItem) return;
 
-        setAddingItem(true);
         const slug = newItemLabel
             .trim()
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, '-')
             .replace(/^-|-$/g, '');
+
+        if (!slug) {
+            alert('Dashboard name must contain at least one alphanumeric character.');
+            return;
+        }
+
+        setAddingItem(true);
 
         try {
             // Save to Supabase
@@ -241,22 +247,24 @@ export function DashboardSecondaryNav({ onNavigate }: DashboardSecondaryNavProps
     };
 
     const removeItem = async (folder: string, itemId: string) => {
-        // Remove from tree immediately
-        const newTree = {
-            ...tree,
-            [folder]: tree[folder].filter((item) => item.id !== itemId),
-        };
-        saveTree(newTree);
-
-        // Delete from Supabase if it's a custom item
+        // Delete from Supabase first if it's a custom item
         if (itemId.startsWith('custom-')) {
             const supabaseId = itemId.replace('custom-', '');
             try {
                 await deleteCustomDashboard(supabaseId);
             } catch (error) {
                 console.error('Failed to delete from Supabase:', error);
+                alert('Failed to delete dashboard. Please try again.');
+                return;
             }
         }
+
+        // Remove from tree only after successful deletion
+        const newTree = {
+            ...tree,
+            [folder]: tree[folder].filter((item) => item.id !== itemId),
+        };
+        saveTree(newTree);
     };
 
     const handleAddFolder = () => {
@@ -267,6 +275,11 @@ export function DashboardSecondaryNav({ onNavigate }: DashboardSecondaryNavProps
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, '-')
             .replace(/^-|-$/g, '');
+
+        if (!folderKey) {
+            alert('Folder name must contain at least one alphanumeric character.');
+            return;
+        }
 
         if (tree[folderKey]) {
             alert('A folder with this name already exists.');
@@ -433,7 +446,7 @@ export function DashboardSecondaryNav({ onNavigate }: DashboardSecondaryNavProps
                                 onChange={(e) => setNewItemLabel(e.target.value)}
                                 placeholder="My Custom Dashboard"
                                 onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && newItemLabel.trim()) {
+                                    if (e.key === 'Enter' && newItemLabel.trim() && !addingItem) {
                                         handleAddItem();
                                     }
                                 }}
@@ -473,6 +486,7 @@ export function DashboardSecondaryNav({ onNavigate }: DashboardSecondaryNavProps
                                 placeholder="Geo Analysis"
                                 onKeyDown={(e) => {
                                     if (e.key === 'Enter' && newFolderName.trim()) {
+                                        e.preventDefault();
                                         handleAddFolder();
                                     }
                                 }}
