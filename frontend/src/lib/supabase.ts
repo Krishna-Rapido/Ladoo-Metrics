@@ -418,3 +418,110 @@ export async function moveCalculatedColumnToFolder(columnId: string, folderId: s
 
   if (error) throw error
 }
+
+// =============================================================================
+// CUSTOM DASHBOARDS TYPES & OPERATIONS
+// =============================================================================
+
+export type DashboardParameter = {
+  name: string
+  type: 'string' | 'date' | 'number' | 'select'
+  default: string | null
+  label: string
+  options?: string[]
+}
+
+export type CustomDashboard = {
+  id: string
+  user_id: string
+  name: string
+  slug: string
+  folder: string
+  description: string | null
+  sql_query: string
+  parameters: DashboardParameter[]
+  created_at: string
+  updated_at: string
+}
+
+export async function listAllCustomDashboards(): Promise<CustomDashboard[]> {
+  const { data, error } = await supabase
+    .from('custom_dashboards')
+    .select('*')
+    .order('name', { ascending: true })
+
+  if (error) {
+    if (error.code === 'PGRST205' || error.message?.includes('Could not find the table')) {
+      console.warn('custom_dashboards table not found. Run supabase_custom_dashboards_migration.sql.')
+      return []
+    }
+    throw error
+  }
+  return data || []
+}
+
+export async function getCustomDashboardBySlug(folder: string, slug: string): Promise<CustomDashboard | null> {
+  const { data, error } = await supabase
+    .from('custom_dashboards')
+    .select('*')
+    .eq('folder', folder)
+    .eq('slug', slug)
+    .single()
+
+  if (error) {
+    if (error.code === 'PGRST116') return null
+    if (error.code === 'PGRST205' || error.message?.includes('Could not find the table')) return null
+    throw error
+  }
+  return data
+}
+
+export async function createCustomDashboard(
+  name: string,
+  slug: string,
+  folder: string,
+  sqlQuery: string = '',
+  parameters: DashboardParameter[] = [],
+  description: string | null = null
+): Promise<CustomDashboard> {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error('You must be logged in to create dashboards')
+
+  const { data, error } = await supabase
+    .from('custom_dashboards')
+    .insert({
+      user_id: user.id,
+      name,
+      slug,
+      folder,
+      description,
+      sql_query: sqlQuery,
+      parameters,
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+  return data
+}
+
+export async function updateCustomDashboard(
+  dashboardId: string,
+  updates: Partial<Pick<CustomDashboard, 'name' | 'description' | 'sql_query' | 'parameters'>>
+): Promise<void> {
+  const { error } = await supabase
+    .from('custom_dashboards')
+    .update(updates)
+    .eq('id', dashboardId)
+
+  if (error) throw error
+}
+
+export async function deleteCustomDashboard(dashboardId: string): Promise<void> {
+  const { error } = await supabase
+    .from('custom_dashboards')
+    .delete()
+    .eq('id', dashboardId)
+
+  if (error) throw error
+}

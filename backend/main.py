@@ -172,7 +172,7 @@ if allowed_origins_env:
     allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
 else:
     # Development: allow localhost only (credentials=True is incompatible with wildcard "*")
-    allowed_origins = ["http://localhost:5173"]
+    allowed_origins = ["http://localhost:5173", "http://localhost:5174"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -2340,6 +2340,67 @@ async def get_a2phh_summary(payload: A2PhhSummaryRequest) -> A2PhhSummaryRespons
     data = result_df.to_dict('records')
     
     return A2PhhSummaryResponse(
+        num_rows=len(result_df),
+        columns=list(result_df.columns),
+        data=data
+    )
+
+
+@app.post("/captain-dashboards/custom-query", response_model=schemas.CustomDashboardQueryResponse, responses={400: {"model": ErrorResponse}})
+async def execute_custom_dashboard_query(payload: schemas.CustomDashboardQueryRequest) -> schemas.CustomDashboardQueryResponse:
+    """
+    Execute a user-provided SQL query on Presto for custom dashboards.
+    Template variables like {{start_date}} are substituted from the parameters dict.
+    """
+    import re
+    from funnel import get_presto_connection
+
+    query = payload.sql_query
+
+    # Substitute template variables — handles {{ key }}, {{key}}, {{ key}}, etc.
+    # Uses explicit parameter_types to decide output format:
+    #   date   → TIMESTAMP 'YYYY-MM-DD'   (for Presto date_format / date functions)
+    #   number → bare value
+    #   string/select → 'quoted value'
+    param_types = payload.parameter_types or {}
+    for key, value in payload.parameters.items():
+        str_value = str(value) if value is not None else ''
+        safe_value = str_value.replace("'", "''")
+        ptype = param_types.get(key, 'string')  # default to string (quoted)
+        bare_pattern = r"\{\{\s*" + re.escape(key) + r"\s*\}\}"
+        # Also match when user already wrapped placeholder in quotes: '{{ key }}'
+        quoted_pattern = r"'\s*\{\{\s*" + re.escape(key) + r"\s*\}\}\s*'"
+
+        # Build the replacement value based on type
+        if ptype == 'date':
+            # Ensure YYYY-MM-DD format; frontend sends this from <input type="date">
+            replacement = f"TIMESTAMP '{safe_value}'"
+        elif ptype == 'number':
+            replacement = safe_value
+        else:
+            replacement = f"'{safe_value}'"
+
+        if re.search(quoted_pattern, query):
+            # User already wrote quotes — replace the whole '{{ key }}' (with quotes)
+            query = re.sub(quoted_pattern, replacement, query)
+        elif re.search(bare_pattern, query):
+            query = re.sub(bare_pattern, replacement, query)
+
+    # Check for remaining unsubstituted placeholders (with optional spaces)
+    remaining = re.findall(r'\{\{\s*(\w+)\s*\}\}', query)
+    if remaining:
+        unique_remaining = list(dict.fromkeys(remaining))  # deduplicate, preserve order
+        raise HTTPException(status_code=400, detail=f"Missing parameter values for: {', '.join(unique_remaining)}")
+
+    try:
+        conn = get_presto_connection(payload.username)
+        result_df = pd.read_sql(query, conn)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Query execution failed: {exc}")
+
+    data = result_df.replace({float('nan'): None, float('inf'): None, float('-inf'): None}).to_dict('records')
+
+    return schemas.CustomDashboardQueryResponse(
         num_rows=len(result_df),
         columns=list(result_df.columns),
         data=data

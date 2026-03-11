@@ -9,6 +9,7 @@ import { RtuPerformanceAnalysis } from '@/components/RtuPerformanceAnalysis';
 import { R2AAnalysis } from '@/components/R2AAnalysis';
 import { R2APercentageAnalysis } from '@/components/R2APercentageAnalysis';
 import { A2PhhSummaryAnalysis } from '@/components/A2PhhSummaryAnalysis';
+import { CustomDashboardView } from './CustomDashboardView';
 
 // Component mapping based on folder/item slug
 const componentMap: Record<string, Record<string, React.ComponentType>> = {
@@ -87,24 +88,11 @@ export function DashboardPage() {
     const folderComponents = componentMap[folder];
     const Component = folderComponents?.[item];
 
-    // If component not found, show error
+    // If no built-in component, try custom dashboard from Supabase
     if (!Component) {
         return (
             <div className="space-y-6">
-                <Card>
-                    <CardHeader>
-                        <CardTitle>Dashboard Not Found</CardTitle>
-                        <CardDescription>
-                            The dashboard "{folder}/{item}" does not exist or has not been implemented yet.
-                        </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                        <p className="text-sm text-muted-foreground">
-                            This may be a custom dashboard that was added but doesn't have an associated component.
-                            You can create custom analysis components and map them in the DashboardPage.tsx file.
-                        </p>
-                    </CardContent>
-                </Card>
+                <CustomDashboardView folder={folder} slug={item} />
             </div>
         );
     }

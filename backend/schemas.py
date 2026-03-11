@@ -382,6 +382,19 @@ class A2PhhSummaryResponse(BaseModel):
     data: List[Dict[str, Any]]  # Full result set
 
 
+class CustomDashboardQueryRequest(BaseModel):
+    username: str
+    sql_query: str
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    parameter_types: Dict[str, str] = Field(default_factory=dict)  # name -> "string"|"number"|"date"|"select"
+
+
+class CustomDashboardQueryResponse(BaseModel):
+    num_rows: int
+    columns: List[str]
+    data: List[Dict[str, Any]]
+
+
 class ReportItem(BaseModel):
     id: str
     type: str  # 'chart', 'table', 'text'

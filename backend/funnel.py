@@ -794,9 +794,12 @@ def r2a_registration_by_activation(username: str, start_date: str, end_date: str
         case when pancard_uploaded is not null 
         or aadhar_uploaded is not null then 1 else 0 end as "Pan | Aadhar Uplpoaded", 
        CASE
+        when lower(services_interested) like '%auto%' then 'auto'
             WHEN mode_id = '642ae204b4b6b8ec5665ce87' THEN 'cab'
+        when lower(services_interested) like '%cab%' then 'cab'
             WHEN mode_id = '5fbe8a8a9788ac0008c4eb98' THEN 'auto'
-            WHEN mode_id = '5fbe8a6fb1c45500077393da' THEN 'link' end as final_service 
+        else 'link' end) as final_service
+            WHEN mode_id = '5fbe8a6fb1c45500077393da' THEN 'link' end as final_service
       from 
         datasets.captain_supply_journey_summary 
       where 
@@ -850,15 +853,13 @@ from
       case when rc_uploaded is not null then 1 else 0 end as rc_uploaded, 
       case when pancard_uploaded is not null 
       or aadhar_uploaded is not null then 1 else 0 end as "Pan | Aadhar Uplpoaded", 
-      coalesce(case 
-      when lower(servicename) like '%auto%' then 'auto'
-        when lower(servicename) like '%rick%' then 'auto'
-        when lower(servicename) like '%cab%' then 'cab'
-        when lower(servicename) like '%link%' then 'link' end,
-         case 
+      CASE
         when lower(services_interested) like '%auto%' then 'auto'
+            WHEN mode_id = '642ae204b4b6b8ec5665ce87' THEN 'cab'
         when lower(services_interested) like '%cab%' then 'cab'
-        else 'link' end) as final_service 
+            WHEN mode_id = '5fbe8a8a9788ac0008c4eb98' THEN 'auto'
+        else 'link' end) as final_service
+            WHEN mode_id = '5fbe8a6fb1c45500077393da' THEN 'link' end as final_service
     from 
       datasets.captain_supply_journey_summary
     where 
@@ -894,15 +895,13 @@ base_fr as (
         case when rc_uploaded is not null then 1 else 0 end as rc_uploaded, 
         case when pancard_uploaded is not null 
         or aadhar_uploaded is not null then 1 else 0 end as "Pan | Aadhar Uplpoaded", 
-       coalesce(case 
-        when lower(servicename) like '%auto%' then 'auto'
-        when lower(servicename) like '%rick%' then 'auto'
-        when lower(servicename) like '%cab%' then 'cab'
-        when lower(servicename) like '%link%' then 'link' end,
-         case 
+      CASE
         when lower(services_interested) like '%auto%' then 'auto'
+            WHEN mode_id = '642ae204b4b6b8ec5665ce87' THEN 'cab'
         when lower(services_interested) like '%cab%' then 'cab'
+            WHEN mode_id = '5fbe8a8a9788ac0008c4eb98' THEN 'auto'
         else 'link' end) as final_service
+            WHEN mode_id = '5fbe8a6fb1c45500077393da' THEN 'link' end as final_service
       from 
         datasets.captain_supply_journey_summary ing 
       where 
@@ -1057,15 +1056,10 @@ from
       case when rc_uploaded is not null then 1 else 0 end as rc_uploaded, 
       case when pancard_uploaded is not null 
       or aadhar_uploaded is not null then 1 else 0 end as "Pan | Aadhar Uplpoaded", 
-      coalesce(case 
-        when lower(servicename) like '%auto%' then 'auto'
-        when lower(servicename) like '%rick%' then 'auto'
-        when lower(servicename) like '%cab%' then 'cab'
-        when lower(servicename) like '%link%' then 'link' end,
-         case 
-        when lower(services_interested) like '%auto%' then 'auto'
-        when lower(services_interested) like '%cab%' then 'cab'
-        else 'link' end) as final_service 
+      CASE
+            WHEN mode_id = '642ae204b4b6b8ec5665ce87' THEN 'cab'
+            WHEN mode_id = '5fbe8a8a9788ac0008c4eb98' THEN 'auto'
+            WHEN mode_id = '5fbe8a6fb1c45500077393da' THEN 'link' end as final_service 
     from 
       datasets.captain_supply_journey_summary
     where 
@@ -1101,15 +1095,10 @@ base_fr as (
         case when rc_uploaded is not null then 1 else 0 end as rc_uploaded, 
         case when pancard_uploaded is not null 
         or aadhar_uploaded is not null then 1 else 0 end as "Pan | Aadhar Uplpoaded", 
-        coalesce(case 
-        when lower(servicename) like '%auto%' then 'auto'
-        when lower(servicename) like '%rick%' then 'auto'
-        when lower(servicename) like '%cab%' then 'cab'
-        when lower(servicename) like '%link%' then 'link' end,
-         case 
-        when lower(services_interested) like '%auto%' then 'auto'
-        when lower(services_interested) like '%cab%' then 'cab'
-        else 'link' end) as final_service
+         CASE
+            WHEN mode_id = '642ae204b4b6b8ec5665ce87' THEN 'cab'
+            WHEN mode_id = '5fbe8a8a9788ac0008c4eb98' THEN 'auto'
+            WHEN mode_id = '5fbe8a6fb1c45500077393da' THEN 'link' end as final_service 
       from 
         datasets.captain_supply_journey_summary ing 
       where 

@@ -870,6 +870,40 @@ export async function getA2PhhSummary(req: A2PhhSummaryRequest): Promise<A2PhhSu
 }
 
 // ============================================================================
+// CUSTOM DASHBOARD QUERY API
+// ============================================================================
+
+export type CustomDashboardQueryRequest = {
+    username: string;
+    sql_query: string;
+    parameters: Record<string, string>;
+    parameter_types?: Record<string, string>;
+};
+
+export type CustomDashboardQueryResponse = {
+    num_rows: number;
+    columns: string[];
+    data: Record<string, any>[];
+};
+
+export async function executeCustomDashboardQuery(
+    req: CustomDashboardQueryRequest
+): Promise<CustomDashboardQueryResponse> {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${BASE_URL}/captain-dashboards/custom-query`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to execute custom dashboard query');
+    }
+    return await res.json();
+}
+
+// ============================================================================
 // REPORT BUILDER API
 // ============================================================================
 
