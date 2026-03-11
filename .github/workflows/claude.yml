@@ -6,11 +6,12 @@ on:
   pull_request_review_comment:
     types: [created]
   issues:
-    types: [opened, assigned]
+    types: [opened, assigned, labeled]
   pull_request_review:
     types: [submitted]
 
 jobs:
+  # Triggered by @claude mentions in issues/PRs
   claude:
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
@@ -19,11 +20,11 @@ jobs:
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: read
-      issues: read
+      contents: write
+      pull-requests: write
+      issues: write
       id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+      actions: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -34,17 +35,51 @@ jobs:
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
-          # This is an optional setting that allows Claude to read CI results on PRs
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           additional_permissions: |
             actions: read
 
-          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
-          # prompt: 'Update the pull request description to include a summary of changes.'
+  # Triggered by slack-request label (from Slack bot pipeline)
+  claude-slack:
+    if: |
+      github.event_name == 'issues' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'slack-request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-          # Optional: Add claude_args to customize behavior and configuration
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr:*)'
+      - name: Run Claude Code for Slack Request
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          additional_permissions: |
+            actions: read
+          prompt: |
+            You are implementing a change requested via Slack for the Ladoo Metrics platform.
+            The issue was created automatically from a Slack message in #ladoo-requests.
 
+            ## Instructions
+            1. Create a new branch named `slack/${{ github.event.issue.number }}-fix` from main
+            2. Read the issue description carefully and implement the requested change
+            3. Run the backend tests: `cd backend && python -m pytest tests/ -v --tb=short`
+            4. Run the frontend build: `cd frontend && npm ci && npm run build`
+            5. If tests/build fail, fix the issues before proceeding
+            6. Create a PR with title matching the issue title
+            7. Include `Closes #${{ github.event.issue.number }}` in the PR body so it auto-closes the issue on merge
+            8. NEVER commit directly to main — always use a feature branch and PR
+
+            ## Context
+            - Backend: FastAPI app in `backend/` — run tests with `python -m pytest tests/ -v`
+            - Frontend: React+Vite app in `frontend/` — verify with `npm run build`
+            - Read CLAUDE.md for full architecture details
