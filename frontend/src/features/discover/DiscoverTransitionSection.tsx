@@ -1,8 +1,9 @@
 import { useState, Component, type ReactNode, useCallback } from 'react';
 import { Download, Loader2, AlertCircle, ChevronRight, Users, Copy, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { DatePicker } from '@/components/ui/date-picker';
+import { formatDateToYYYYMMDD } from '@/lib/dateUtils';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
     Dialog,
@@ -39,6 +40,16 @@ const PERIOD_OPTIONS = [
     { value: 'W' as const, label: 'Weekly' },
     { value: 'M' as const, label: 'Monthly' },
 ];
+
+const DATE_PRESETS = [
+    { label: '1W', days: 7 },
+    { label: '15D', days: 15 },
+    { label: '1M', days: 30 },
+    { label: '3M', days: 90 },
+    { label: '6M', days: 180 },
+    { label: 'YTD', days: null },
+    { label: '1Y', days: 365 },
+] as const;
 
 class SankeyErrorBoundary extends Component<
     { children: ReactNode },
@@ -255,14 +266,40 @@ export function DiscoverTransitionSection() {
                     <CardDescription>Query captain consistency segment flows and change aggregation period for the diagram.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                    <div className="space-y-2">
+                        <Label>Quick Select</Label>
+                        <div className="flex flex-wrap gap-2">
+                            {DATE_PRESETS.map((preset) => (
+                                <Button
+                                    key={preset.label}
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => {
+                                        const today = new Date();
+                                        let start: Date;
+                                        if (preset.label === 'YTD') {
+                                            start = new Date(today.getFullYear(), 0, 1);
+                                        } else {
+                                            start = new Date(today);
+                                            start.setDate(today.getDate() - preset.days);
+                                        }
+                                        setTransStartDate(formatDateToYYYYMMDD(start));
+                                        setTransEndDate(formatDateToYYYYMMDD(today));
+                                    }}
+                                >
+                                    {preset.label}
+                                </Button>
+                            ))}
+                        </div>
+                    </div>
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
                             <Label>Start Date</Label>
-                            <Input placeholder="YYYYMMDD" value={transStartDate} onChange={(e) => setTransStartDate(e.target.value)} />
+                            <DatePicker value={transStartDate} onChange={setTransStartDate} placeholder="Start date" />
                         </div>
                         <div className="space-y-2">
                             <Label>End Date</Label>
-                            <Input placeholder="YYYYMMDD" value={transEndDate} onChange={(e) => setTransEndDate(e.target.value)} />
+                            <DatePicker value={transEndDate} onChange={setTransEndDate} placeholder="End date" />
                         </div>
                     </div>
                     <div className="space-y-2">
