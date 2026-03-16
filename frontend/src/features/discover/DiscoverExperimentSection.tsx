@@ -11,6 +11,8 @@ import {
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
+import { DatePicker } from '@/components/ui/date-picker';
+import { formatDateToYYYYMMDD } from '@/lib/dateUtils';
 import { useAuth } from '@/contexts/AuthContext';
 import {
     getExperimentPerformance,
@@ -20,13 +22,30 @@ import {
 
 const CITIES = ['delhi', 'bangalore', 'mumbai', 'hyderabad', 'chennai', 'kolkata', 'pune', 'ahmedabad', 'jaipur', 'lucknow'];
 
+type DatePreset = '1W' | '1M' | '3M' | '6M' | null;
+
+function getPresetDates(preset: DatePreset): { start: string; end: string } {
+    const today = new Date();
+    const end = formatDateToYYYYMMDD(today);
+    const start = new Date(today);
+    if (preset === '1W') start.setDate(today.getDate() - 7);
+    else if (preset === '1M') start.setMonth(today.getMonth() - 1);
+    else if (preset === '3M') start.setMonth(today.getMonth() - 3);
+    else if (preset === '6M') start.setMonth(today.getMonth() - 6);
+    return { start: formatDateToYYYYMMDD(start), end };
+}
+
+const DEFAULT_PRESET: DatePreset = '1M';
+const defaultDates = getPresetDates(DEFAULT_PRESET);
+
 export function DiscoverExperimentSection() {
     const { user } = useAuth();
     const username = user?.email ?? 'anonymous';
 
     const [expExperimentId, setExpExperimentId] = useState('');
-    const [expStartDate, setExpStartDate] = useState('20260101');
-    const [expEndDate, setExpEndDate] = useState('20260115');
+    const [expStartDate, setExpStartDate] = useState(defaultDates.start);
+    const [expEndDate, setExpEndDate] = useState(defaultDates.end);
+    const [activePreset, setActivePreset] = useState<DatePreset>(DEFAULT_PRESET);
     const [expTimeLevel, setExpTimeLevel] = useState<'daily' | 'weekly' | 'monthly'>('daily');
     const [expTodLevel, setExpTodLevel] = useState<'daily' | 'afternoon' | 'evening' | 'morning' | 'night' | 'all'>('daily');
     const [expCity, setExpCity] = useState('delhi');
@@ -35,6 +54,23 @@ export function DiscoverExperimentSection() {
     const [expError, setExpError] = useState<string | null>(null);
     const [expResult, setExpResult] = useState<ExperimentPerformanceResponse | null>(null);
     const [expDownloading, setExpDownloading] = useState(false);
+
+    const handlePresetClick = (preset: DatePreset) => {
+        setActivePreset(preset);
+        const { start, end } = getPresetDates(preset);
+        setExpStartDate(start);
+        setExpEndDate(end);
+    };
+
+    const handleStartDateChange = (value: string) => {
+        setExpStartDate(value);
+        setActivePreset(null);
+    };
+
+    const handleEndDateChange = (value: string) => {
+        setExpEndDate(value);
+        setActivePreset(null);
+    };
 
     const handleFetchExperimentPerformance = async () => {
         if (!expExperimentId.trim()) {
@@ -103,14 +139,39 @@ export function DiscoverExperimentSection() {
                             onChange={(e) => setExpExperimentId(e.target.value)}
                         />
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                            <Label>Start Date</Label>
-                            <Input placeholder="YYYYMMDD" value={expStartDate} onChange={(e) => setExpStartDate(e.target.value)} />
+                    <div className="space-y-2">
+                        <Label>Date Range</Label>
+                        <div className="flex gap-2">
+                            {(['1W', '1M', '3M', '6M'] as DatePreset[]).map((preset) => (
+                                <Button
+                                    key={preset}
+                                    type="button"
+                                    size="sm"
+                                    variant={activePreset === preset ? 'default' : 'outline'}
+                                    className={activePreset === preset ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : ''}
+                                    onClick={() => handlePresetClick(preset)}
+                                >
+                                    {preset}
+                                </Button>
+                            ))}
                         </div>
-                        <div className="space-y-2">
-                            <Label>End Date</Label>
-                            <Input placeholder="YYYYMMDD" value={expEndDate} onChange={(e) => setExpEndDate(e.target.value)} />
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-1">
+                                <Label className="text-xs text-muted-foreground">Start Date</Label>
+                                <DatePicker
+                                    value={expStartDate}
+                                    onChange={handleStartDateChange}
+                                    placeholder="Start date"
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <Label className="text-xs text-muted-foreground">End Date</Label>
+                                <DatePicker
+                                    value={expEndDate}
+                                    onChange={handleEndDateChange}
+                                    placeholder="End date"
+                                />
+                            </div>
                         </div>
                     </div>
                     <div className="grid grid-cols-2 gap-4">
