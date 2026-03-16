@@ -1,7 +1,6 @@
 import { useState, Component, type ReactNode, useCallback } from 'react';
 import { Download, Loader2, AlertCircle, ChevronRight, Users, Copy, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
@@ -38,6 +37,31 @@ const PERIOD_OPTIONS = [
     { value: 'D' as const, label: 'Daily' },
     { value: 'W' as const, label: 'Weekly' },
     { value: 'M' as const, label: 'Monthly' },
+];
+
+// YYYYMMDD (API format) ↔ YYYY-MM-DD (native date input format)
+function toInputDate(yyyymmdd: string): string {
+    if (yyyymmdd.length !== 8) return '';
+    return `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;
+}
+function fromInputDate(isoDate: string): string {
+    return isoDate.replace(/-/g, '');
+}
+function formatDate(d: Date): string {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${y}${m}${dd}`;
+}
+
+const QUICK_PRESETS = [
+    { label: '1W',  days: 7 },
+    { label: '15D', days: 15 },
+    { label: '1M',  days: 30 },
+    { label: '3M',  days: 90 },
+    { label: '6M',  days: 180 },
+    { label: 'YTD', days: null as null },
+    { label: '1Y',  days: 365 },
 ];
 
 class SankeyErrorBoundary extends Component<
@@ -255,14 +279,53 @@ export function DiscoverTransitionSection() {
                     <CardDescription>Query captain consistency segment flows and change aggregation period for the diagram.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                    <div className="space-y-2">
+                        <Label>Quick Select</Label>
+                        <div className="flex flex-wrap gap-2">
+                            {QUICK_PRESETS.map(({ label, days }) => (
+                                <button
+                                    key={label}
+                                    type="button"
+                                    onClick={() => {
+                                        const today = new Date();
+                                        let start: Date;
+                                        if (days === null) {
+                                            // YTD: Jan 1 of current year
+                                            start = new Date(today.getFullYear(), 0, 1);
+                                        } else {
+                                            start = new Date(today);
+                                            start.setDate(today.getDate() - days);
+                                        }
+                                        setTransStartDate(formatDate(start));
+                                        setTransEndDate(formatDate(today));
+                                    }}
+                                    className="px-3 py-1 text-xs font-medium rounded-md border border-input bg-background hover:bg-accent hover:text-accent-foreground transition-colors"
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                            <Label>Start Date</Label>
-                            <Input placeholder="YYYYMMDD" value={transStartDate} onChange={(e) => setTransStartDate(e.target.value)} />
+                            <Label htmlFor="trans-start-date">Start Date</Label>
+                            <input
+                                id="trans-start-date"
+                                type="date"
+                                value={toInputDate(transStartDate)}
+                                onChange={(e) => setTransStartDate(fromInputDate(e.target.value))}
+                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            />
                         </div>
                         <div className="space-y-2">
-                            <Label>End Date</Label>
-                            <Input placeholder="YYYYMMDD" value={transEndDate} onChange={(e) => setTransEndDate(e.target.value)} />
+                            <Label htmlFor="trans-end-date">End Date</Label>
+                            <input
+                                id="trans-end-date"
+                                type="date"
+                                value={toInputDate(transEndDate)}
+                                onChange={(e) => setTransEndDate(fromInputDate(e.target.value))}
+                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            />
                         </div>
                     </div>
                     <div className="space-y-2">
