@@ -1,8 +1,8 @@
 import { useState, Component, type ReactNode, useCallback } from 'react';
 import { Download, Loader2, AlertCircle, ChevronRight, Users, Copy, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { DatePicker } from '@/components/ui/date-picker';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
     Dialog,
@@ -255,14 +255,53 @@ export function DiscoverTransitionSection() {
                     <CardDescription>Query captain consistency segment flows and change aggregation period for the diagram.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                    <div className="space-y-2">
+                        <Label>Quick Select</Label>
+                        <div className="flex flex-wrap gap-2">
+                            {[
+                                { label: '1W', days: 7 },
+                                { label: '15D', days: 15 },
+                                { label: '1M', days: 30 },
+                                { label: '3M', days: 90 },
+                                { label: '6M', days: 180 },
+                                { label: 'YTD', days: -1 },
+                                { label: '1Y', days: 365 },
+                            ].map(({ label, days }) => (
+                                <Button
+                                    key={label}
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => {
+                                        const today = new Date();
+                                        const pad = (n: number) => String(n).padStart(2, '0');
+                                        const fmt = (d: Date) =>
+                                            `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
+                                        const end = fmt(today);
+                                        let start: string;
+                                        if (days === -1) {
+                                            start = `${today.getFullYear()}0101`;
+                                        } else {
+                                            const s = new Date(today);
+                                            s.setDate(s.getDate() - days);
+                                            start = fmt(s);
+                                        }
+                                        setTransStartDate(start);
+                                        setTransEndDate(end);
+                                    }}
+                                >
+                                    {label}
+                                </Button>
+                            ))}
+                        </div>
+                    </div>
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
                             <Label>Start Date</Label>
-                            <Input placeholder="YYYYMMDD" value={transStartDate} onChange={(e) => setTransStartDate(e.target.value)} />
+                            <DatePicker value={transStartDate} onChange={setTransStartDate} placeholder="Select start date" />
                         </div>
                         <div className="space-y-2">
                             <Label>End Date</Label>
-                            <Input placeholder="YYYYMMDD" value={transEndDate} onChange={(e) => setTransEndDate(e.target.value)} />
+                            <DatePicker value={transEndDate} onChange={setTransEndDate} placeholder="Select end date" />
                         </div>
                     </div>
                     <div className="space-y-2">
