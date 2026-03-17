@@ -172,7 +172,7 @@ if allowed_origins_env:
     allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
 else:
     # Development: allow localhost only (credentials=True is incompatible with wildcard "*")
-    allowed_origins = ["http://localhost:5173", "http://localhost:5174"]
+    allowed_origins = ["http://localhost:5173", "http://localhost:5174", "http://laddoo-webserver-1.svc.data.production.internal"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -2364,27 +2364,46 @@ async def execute_custom_dashboard_query(payload: schemas.CustomDashboardQueryRe
     #   string/select → 'quoted value'
     param_types = payload.parameter_types or {}
     for key, value in payload.parameters.items():
-        str_value = str(value) if value is not None else ''
-        safe_value = str_value.replace("'", "''")
         ptype = param_types.get(key, 'string')  # default to string (quoted)
         bare_pattern = r"\{\{\s*" + re.escape(key) + r"\s*\}\}"
         # Also match when user already wrapped placeholder in quotes: '{{ key }}'
         quoted_pattern = r"'\s*\{\{\s*" + re.escape(key) + r"\s*\}\}\s*'"
 
         # Build the replacement value based on type
-        if ptype == 'date':
-            # Ensure YYYY-MM-DD format; frontend sends this from <input type="date">
-            replacement = f"TIMESTAMP '{safe_value}'"
-        elif ptype == 'number':
-            replacement = safe_value
+        if ptype == 'multiselect':
+            # value should be a list of strings; handle both list and comma-separated string
+            if isinstance(value, list):
+                items = value
+            elif isinstance(value, str):
+                items = [v.strip() for v in value.split(',') if v.strip()]
+            else:
+                items = [str(value)] if value else []
+            if not items:
+                raise HTTPException(status_code=400, detail=f"Parameter '{key}' requires at least one selected value.")
+            # SQL-escape each item and produce 'val1', 'val2', 'val3'
+            safe_items = [item.replace("'", "''") for item in items]
+            replacement = ", ".join(f"'{item}'" for item in safe_items)
+            # For multiselect, strip outer quotes if user wrote '{{key}}'
+            if re.search(quoted_pattern, query):
+                query = re.sub(quoted_pattern, replacement, query)
+            elif re.search(bare_pattern, query):
+                query = re.sub(bare_pattern, replacement, query)
         else:
-            replacement = f"'{safe_value}'"
+            str_value = str(value) if value is not None else ''
+            safe_value = str_value.replace("'", "''")
+            if ptype == 'date':
+                # Ensure YYYY-MM-DD format; frontend sends this from <input type="date">
+                replacement = f"TIMESTAMP '{safe_value}'"
+            elif ptype == 'number':
+                replacement = safe_value
+            else:
+                replacement = f"'{safe_value}'"
 
-        if re.search(quoted_pattern, query):
-            # User already wrote quotes — replace the whole '{{ key }}' (with quotes)
-            query = re.sub(quoted_pattern, replacement, query)
-        elif re.search(bare_pattern, query):
-            query = re.sub(bare_pattern, replacement, query)
+            if re.search(quoted_pattern, query):
+                # User already wrote quotes — replace the whole '{{ key }}' (with quotes)
+                query = re.sub(quoted_pattern, replacement, query)
+            elif re.search(bare_pattern, query):
+                query = re.sub(bare_pattern, replacement, query)
 
     # Check for remaining unsubstituted placeholders (with optional spaces)
     remaining = re.findall(r'\{\{\s*(\w+)\s*\}\}', query)

@@ -1,0 +1,74 @@
+name: Bug Report
+description: Report a bug in Ladoo Metrics
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: affected-page
+    attributes:
+      label: Affected Page
+      description: Which page/route has the bug?
+      options:
+        - Insights (/insights)
+        - Dashboard — DAPR (/dashboard/dapr)
+        - Dashboard — FE2Net (/dashboard/fe2net)
+        - Dashboard — RTU (/dashboard/rtu)
+        - Dashboard — R2A (/dashboard/r2a)
+        - Dashboard — A2PHH (/dashboard/a2phh)
+        - Discover (/discover)
+        - Discovery (/discovery)
+        - Reports (/reports)
+        - Functions (/functions)
+        - Login / Auth
+        - Navigation / Layout
+        - Other (specify below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: bug-description
+    attributes:
+      label: Bug Description
+      description: What is wrong? Be specific about which element is affected.
+      placeholder: "e.g., The 'Save Report' dialog on the Insights page has white text on a white background, making it unreadable."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: What should happen instead?
+      placeholder: "e.g., The dialog text should be dark (near-black) on the white dialog background, matching other dialogs in the app."
+    validations:
+      required: true
+
+  - type: input
+    id: specific-component
+    attributes:
+      label: Specific Component (optional)
+      description: If you know which UI component is affected, name it here.
+      placeholder: "e.g., InsightsReportTab.tsx — SaveDialog"
+    validations:
+      required: false
+
+  - type: textarea
+    id: reproduction-steps
+    attributes:
+      label: Steps to Reproduce (optional)
+      description: How can we reproduce the bug?
+      placeholder: |
+        1. Go to /insights
+        2. Upload a CSV
+        3. Click "Save to Cloud"
+        4. Observe the dialog text is invisible
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots (optional)
+      description: Attach screenshots if the bug is visual.
+    validations:
+      required: false

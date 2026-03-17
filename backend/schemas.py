@@ -386,7 +386,7 @@ class CustomDashboardQueryRequest(BaseModel):
     username: str
     sql_query: str
     parameters: Dict[str, Any] = Field(default_factory=dict)
-    parameter_types: Dict[str, str] = Field(default_factory=dict)  # name -> "string"|"number"|"date"|"select"
+    parameter_types: Dict[str, str] = Field(default_factory=dict)  # name -> "string"|"number"|"date"|"select"|"multiselect"
 
 
 class CustomDashboardQueryResponse(BaseModel):
