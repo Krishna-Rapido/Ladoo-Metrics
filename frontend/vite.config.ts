@@ -21,7 +21,7 @@ export default defineConfig({
     ],
     // You may also need to set the 'host' option to true or '0.0.0.0' 
     // to listen on all network interfaces if accessing from a different machine or a cloud environment
-    // host: true, 
+    host: true,
   },
   build: {
     outDir: 'dist',

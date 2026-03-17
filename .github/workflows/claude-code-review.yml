@@ -39,6 +39,15 @@ jobs:
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+
+          # Design system guardrails for code review.
+          # These args inject additional review instructions so the reviewer
+          # flags risky changes to protected design system files.
+          claude_args: |
+            --append-system-prompt "DESIGN SYSTEM REVIEW RULES — apply these when reviewing PRs:
+            1. Flag as HIGH RISK any modifications to: frontend/src/styles/globals.css, frontend/tailwind.config.js, frontend/src/components/ui/*, frontend/src/lib/utils.ts. These are protected design system files — changes affect every page.
+            2. Flag as VIOLATION any new inline style={{ color/backgroundColor/borderColor }} using hardcoded hex values for theme colors. The correct approach is Tailwind classes mapped to CSS variables (bg-background, text-foreground, border-border, etc.).
+            3. Flag as WARNING any new hardcoded hex colors (#xxxxxx) in component files outside of chart COLORS arrays in ChartBuilder.tsx, DiscoverVisualization.tsx, CaptainLevelCharts.tsx, or computeExecutiveSummary.ts.
+            4. Flag as CONCERN any visual/styling changes that are NOT scoped to the specific component or page mentioned in the PR description.
+            5. Consult DESIGN_SYSTEM.md at the repo root for the complete color token reference."
 

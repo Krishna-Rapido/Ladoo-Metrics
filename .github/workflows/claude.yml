@@ -40,7 +40,10 @@ jobs:
           additional_permissions: |
             actions: read
 
-          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
+          # ⚠️  DO NOT uncomment `prompt` — setting it switches this action from interactive
+          # (@claude mention trigger) to autonomous "agent mode", which disables mention-based
+          # triggers entirely. All behavioral guardrails are in CLAUDE.md and DESIGN_SYSTEM.md
+          # instead, which the agent reads automatically on every invocation.
           # prompt: 'Update the pull request description to include a summary of changes.'
 
           # Optional: Add claude_args to customize behavior and configuration

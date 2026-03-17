@@ -1,18 +1,24 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Save, Play, Plus, X, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import { Save, Play, Plus, X, ChevronDown, ChevronUp, Loader2, ChevronsUpDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Badge } from '@/components/ui/badge';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { FunnelDataGrid } from '@/components/FunnelDataGrid';
 import { ChartBuilder } from '@/components/ChartBuilder';
 import { useAuth } from '@/contexts/AuthContext';
 import {
     getCustomDashboardBySlug,
     updateCustomDashboard,
+    getGlobalParameterOptions,
     type CustomDashboard,
     type DashboardParameter,
+    type GlobalParameterOption,
 } from '@/lib/supabase';
 import {
     executeCustomDashboardQuery,
@@ -51,9 +57,13 @@ function extractQueryParams(sql: string): string[] {
     return Array.from(seen);
 }
 
+/** Well-known params that should default to multiselect. */
+const MULTISELECT_PARAM_NAMES = new Set(['city', 'service_category', 'mode_name']);
+
 /** Guess a sensible type from a parameter name. */
 function guessParamType(name: string): DashboardParameter['type'] {
     const lower = name.toLowerCase();
+    if (MULTISELECT_PARAM_NAMES.has(lower)) return 'multiselect';
     if (lower.includes('date') || lower === 'yyyymmdd') return 'date';
     if (lower.includes('count') || lower.includes('num') || lower.includes('limit') || lower.includes('top_n')) return 'number';
     return 'string';
@@ -67,6 +77,105 @@ function labelFromName(name: string): string {
         .join(' ');
 }
 
+/** Multi-select parameter popover with checkboxes. */
+function MultiSelectParam({
+    options,
+    selected,
+    onChange,
+    label,
+}: {
+    options: string[];
+    selected: string[];
+    onChange: (values: string[]) => void;
+    label: string;
+}) {
+    const allSelected = options.length > 0 && selected.length === options.length;
+    const noneSelected = selected.length === 0;
+
+    const toggle = (item: string) => {
+        if (selected.includes(item)) {
+            onChange(selected.filter((s) => s !== item));
+        } else {
+            onChange([...selected, item]);
+        }
+    };
+
+    const toggleAll = () => {
+        if (allSelected) {
+            onChange([]);
+        } else {
+            onChange([...options]);
+        }
+    };
+
+    return (
+        <Popover>
+            <PopoverTrigger asChild>
+                <button
+                    type="button"
+                    className="flex items-center justify-between w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background hover:bg-muted/50 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                >
+                    <span className="truncate text-left">
+                        {noneSelected
+                            ? <span className="text-muted-foreground">Select {label}...</span>
+                            : allSelected
+                                ? <span>All selected ({options.length})</span>
+                                : <span>{selected.length} selected</span>
+                        }
+                    </span>
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[240px] p-0 border-border/80 shadow-xl bg-card" align="start">
+                <div className="flex flex-col max-h-[320px] overflow-hidden rounded-xl">
+                    <div className="border-b border-border/60 px-3 py-2 shrink-0">
+                        <button
+                            type="button"
+                            onClick={toggleAll}
+                            className="text-xs font-medium text-primary hover:underline"
+                        >
+                            {allSelected ? 'Clear All' : 'Select All'}
+                        </button>
+                    </div>
+                    <ScrollArea className="flex-1 overflow-hidden">
+                        <div className="p-2 space-y-0.5">
+                            {options.map((item) => {
+                                const isChecked = selected.includes(item);
+                                return (
+                                    <label
+                                        key={item}
+                                        className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm cursor-pointer hover:bg-muted/50"
+                                    >
+                                        <Checkbox
+                                            checked={isChecked}
+                                            onCheckedChange={() => toggle(item)}
+                                        />
+                                        <span className="truncate">{item}</span>
+                                    </label>
+                                );
+                            })}
+                        </div>
+                    </ScrollArea>
+                    {selected.length > 0 && (
+                        <div className="border-t border-border/60 px-3 py-2 flex flex-wrap gap-1 shrink-0">
+                            {selected.slice(0, 3).map((item) => (
+                                <Badge key={item} variant="secondary" className="text-xs truncate max-w-[80px]">
+                                    {item}
+                                </Badge>
+                            ))}
+                            {selected.length > 3 && (
+                                <Badge variant="outline" className="text-xs">
+                                    +{selected.length - 3}
+                                </Badge>
+                            )}
+                        </div>
+                    )}
+                </div>
+            </PopoverContent>
+        </Popover>
+    );
+}
+
 export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) {
     const { user } = useAuth();
 
@@ -78,8 +187,11 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
     // Editor state
     const [sqlQuery, setSqlQuery] = useState('');
     const [parameters, setParameters] = useState<DashboardParameter[]>(DEFAULT_PARAMS);
-    const [paramValues, setParamValues] = useState<Record<string, string>>({});
+    const [paramValues, setParamValues] = useState<Record<string, string | string[]>>({});
     const [username, setUsername] = useState('');
+
+    // Global parameter options for multiselect
+    const [globalOptions, setGlobalOptions] = useState<Record<string, string[]>>({});
 
     // Query execution state
     const [loading, setLoading] = useState(false);
@@ -105,6 +217,19 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
         }
     }, [user]);
 
+    // Fetch global parameter options for multiselect defaults
+    useEffect(() => {
+        getGlobalParameterOptions()
+            .then((opts) => {
+                const map: Record<string, string[]> = {};
+                for (const o of opts) {
+                    map[o.param_key] = o.options;
+                }
+                setGlobalOptions(map);
+            })
+            .catch((err) => console.warn('Failed to load global parameter options:', err));
+    }, []);
+
     // Load dashboard config from Supabase
     useEffect(() => {
         setLoadingConfig(true);
@@ -118,10 +243,15 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                         setParameters(db.parameters);
                     }
                     // Initialize param values from defaults
-                    const defaults: Record<string, string> = {};
+                    const defaults: Record<string, string | string[]> = {};
                     const params = db.parameters.length > 0 ? db.parameters : DEFAULT_PARAMS;
                     for (const p of params) {
-                        defaults[p.name] = p.default || '';
+                        if (p.type === 'multiselect') {
+                            // Default to all options selected
+                            defaults[p.name] = p.options || [];
+                        } else {
+                            defaults[p.name] = p.default || '';
+                        }
                     }
                     setParamValues(defaults);
                     // Show editor expanded if no query yet
@@ -143,12 +273,16 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
             const updated = { ...prev };
             for (const p of parameters) {
                 if (!(p.name in updated)) {
-                    updated[p.name] = p.default || '';
+                    if (p.type === 'multiselect') {
+                        updated[p.name] = p.options || globalOptions[p.name] || [];
+                    } else {
+                        updated[p.name] = p.default || '';
+                    }
                 }
             }
             return updated;
         });
-    }, [parameters]);
+    }, [parameters, globalOptions]);
 
     // Auto-detect {{ param }} in the SQL query and sync with parameters list
     useEffect(() => {
@@ -162,12 +296,18 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
             // Add newly-detected params that don't already exist
             const toAdd: DashboardParameter[] = detected
                 .filter((name) => !existingNames.has(name))
-                .map((name) => ({
-                    name,
-                    type: guessParamType(name),
-                    default: '',
-                    label: labelFromName(name),
-                }));
+                .map((name) => {
+                    const ptype = guessParamType(name);
+                    return {
+                        name,
+                        type: ptype,
+                        default: '',
+                        label: labelFromName(name),
+                        ...(ptype === 'multiselect' && globalOptions[name]
+                            ? { options: globalOptions[name] }
+                            : {}),
+                    };
+                });
 
             // Remove params that are no longer referenced in the query
             const filtered = prev.filter((p) => detectedSet.has(p.name));
@@ -175,7 +315,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
             if (toAdd.length === 0 && filtered.length === prev.length) return prev;
             return [...filtered, ...toAdd];
         });
-    }, [sqlQuery]);
+    }, [sqlQuery, globalOptions]);
 
     const handleRunQuery = useCallback(async () => {
         if (!sqlQuery.trim() || !username) return;
@@ -431,12 +571,25 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                                                 <option value="number">Number (bare)</option>
                                                 <option value="date">Date (timestamp)</option>
                                                 <option value="select">Select</option>
+                                                <option value="multiselect">Multi-Select</option>
                                             </select>
                                         </div>
+                                    ) : param.type === 'multiselect' ? (
+                                        <MultiSelectParam
+                                            options={param.options || globalOptions[param.name] || []}
+                                            selected={Array.isArray(paramValues[param.name]) ? paramValues[param.name] as string[] : []}
+                                            onChange={(values) =>
+                                                setParamValues((prev) => ({
+                                                    ...prev,
+                                                    [param.name]: values,
+                                                }))
+                                            }
+                                            label={param.label}
+                                        />
                                     ) : param.type === 'date' ? (
                                         <Input
                                             type="date"
-                                            value={paramValues[param.name] || ''}
+                                            value={(paramValues[param.name] as string) || ''}
                                             onChange={(e) =>
                                                 setParamValues((prev) => ({
                                                     ...prev,
@@ -448,7 +601,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                                     ) : param.type === 'number' ? (
                                         <Input
                                             type="number"
-                                            value={paramValues[param.name] || ''}
+                                            value={(paramValues[param.name] as string) || ''}
                                             onChange={(e) =>
                                                 setParamValues((prev) => ({
                                                     ...prev,
@@ -460,7 +613,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                                         />
                                     ) : (
                                         <Input
-                                            value={paramValues[param.name] || ''}
+                                            value={(paramValues[param.name] as string) || ''}
                                             onChange={(e) =>
                                                 setParamValues((prev) => ({
                                                     ...prev,

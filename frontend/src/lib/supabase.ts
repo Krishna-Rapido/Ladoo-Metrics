@@ -425,10 +425,31 @@ export async function moveCalculatedColumnToFolder(columnId: string, folderId: s
 
 export type DashboardParameter = {
   name: string
-  type: 'string' | 'date' | 'number' | 'select'
+  type: 'string' | 'date' | 'number' | 'select' | 'multiselect'
   default: string | null
   label: string
   options?: string[]
+}
+
+export type GlobalParameterOption = {
+  param_key: string
+  display_label: string
+  options: string[]
+}
+
+export async function getGlobalParameterOptions(): Promise<GlobalParameterOption[]> {
+  const { data, error } = await supabase
+    .from('global_parameter_options')
+    .select('param_key, display_label, options')
+
+  if (error) {
+    if (error.code === 'PGRST205' || error.message?.includes('Could not find the table')) {
+      console.warn('global_parameter_options table not found. Run supabase_multiselect_migration.sql.')
+      return []
+    }
+    throw error
+  }
+  return data || []
 }
 
 export type CustomDashboard = {

@@ -210,3 +210,96 @@ Key vars: `PRESTO_HOST`, `PRESTO_PORT` (default `80`), `ALLOWED_ORIGINS`.
 ### First-time VM setup
 
 See `deployment/DEPLOYMENT_INSTRUCTIONS.md` for full setup (Nginx config, systemd service, firewall). The `deployment/vm-setup.sh` script handles initial provisioning.
+
+---
+
+## Knowledge Base — Project Memory
+
+A living knowledge base lives in `docs/knowledge-base/` with these files:
+
+| File | Purpose |
+|---|---|
+| `decisions.md` | Decision log — what was decided, why, alternatives rejected |
+| `timeline.md` | Reverse-chronological feature/change timeline |
+| `architecture.md` | Living architecture doc (supplements this file with deeper detail) |
+| `patterns.md` | Settled conventions and "how we do things" |
+| `lessons-learned.md` | Bugs, gotchas, root-cause insights |
+| `roadmap-progress.md` | Maps to VISION.md phases — tracks shipped vs planned |
+| `MAINTENANCE_GUIDE.md` | Full guide for maintaining the knowledge base |
+
+**After implementing a significant feature, fixing a non-trivial bug, or making an architectural decision**, proactively update the knowledge base:
+1. Add a decision entry to `decisions.md` (context, decision, alternatives, why, impact)
+2. Add a timeline entry to `timeline.md`
+3. Update `architecture.md` if the system structure changed
+4. Update `patterns.md` if a new convention was established
+5. Update `lessons-learned.md` if the fix revealed a systemic insight
+6. Update `roadmap-progress.md` and check boxes in `VISION.md` if a roadmap item shipped
+7. Update this file (CLAUDE.md) if routes, file tables, or key patterns changed
+
+At session end, if 3+ files were modified, offer: "Want me to update the project knowledge base?"
+
+---
+
+## Frontend & UI Guardrails
+
+> **CRITICAL:** Read `DESIGN_SYSTEM.md` before making ANY styling or visual changes. That document contains the complete color token reference, component inventory, chart palettes, and known technical debt.
+
+### Protected Files — NEVER modify without explicit approval
+
+These files define the global design system. Changing them affects **every page and component** in the app.
+
+| File | What It Controls |
+|---|---|
+| `frontend/src/styles/globals.css` | CSS custom properties (`:root` color tokens, radius, chart colors) |
+| `frontend/tailwind.config.js` | Tailwind theme extensions (color mappings, border radius scale) |
+| `frontend/src/components/ui/*` | Shared UI component primitives (22 shadcn/Radix components) |
+| `frontend/src/lib/utils.ts` | `cn()` class merging utility |
+
+If a bug fix or feature seems to require modifying these files, **stop and reconsider** — the fix almost certainly belongs in the specific page/component file instead.
+
+### Color Rules
+
+1. **Use Tailwind classes mapped to CSS variables** — `bg-background`, `text-foreground`, `border-border`, etc. Never use raw hex values like `#ffffff` or `#1a1a1a` in component files for theme colors.
+2. **New chart colors:** Add to the existing `COLORS` array in the relevant chart component (`ChartBuilder.tsx`, `DiscoverVisualization.tsx`), not as one-off hex values.
+3. **Semantic states:** Use `text-destructive` / `bg-destructive/5` for errors, `text-emerald-700` / `bg-emerald-500/5` for success, `text-amber-700` / `bg-amber-500/5` for warnings.
+4. **Page-specific color overrides:** Apply via Tailwind utility classes on the specific component — NEVER by changing CSS variables in `globals.css`.
+
+### Scoping Rules for Bug Fixes
+
+Always scope visual fixes to the specific component/page that has the problem.
+
+**WRONG approach — fixing a page-specific issue by changing globals:**
+- "Dialog on FunctionsPage is hard to read" → Changes `--foreground` in `globals.css`
+- "Card borders too faint on DiscoverPage" → Changes `--border` globally
+- "Button needs different color on ReportsPage" → Modifies `button.tsx` variant
+
+**RIGHT approach — scoping the fix to the affected component:**
+- "Dialog on FunctionsPage is hard to read" → Adds `text-foreground` or specific contrast class in `FunctionsPage.tsx`'s dialog usage
+- "Card borders too faint on DiscoverPage" → Adds `border-slate-300` to the specific card in `DiscoverPage.tsx`
+- "Button needs different color on ReportsPage" → Wraps the button with additional Tailwind classes in `ReportsPage.tsx`
+
+### Component Rules
+
+- **Import from `@/components/ui/*`** — never create parallel component implementations (e.g., a custom `MyDialog.tsx` that duplicates `dialog.tsx`)
+- **Use `cn()` for conditional classes** — never use string concatenation or template literals for class names
+- **Extend via composition** — wrap a base component in a new component with additional props/classes; do not modify the base component in `ui/`
+- **No new inline `style={{ }}`** for theme colors (background, text, border). Inline styles are acceptable only for dynamic values computed at runtime (e.g., chart dimensions, grid column widths)
+
+### Backend Safety
+
+- All SQL touching Presto must use allowlists from `funnel.py` (`ALLOWED_CITIES`, `ALLOWED_SERVICE_CATEGORIES`, etc.)
+- User-supplied code passes through `function_executor.py` sandbox — never bypass `FORBIDDEN_PATTERNS` validation
+- Session-based API: always validate `X-Session-Id` header via `get_session_df()` / `get_session_metadata()`
+- Never store secrets in code — use environment variables (`OPENAI_API_KEY`, `PRESTO_HOST`, `ALLOWED_ORIGINS`)
+
+### Pre-Submission Checklist
+
+Before opening a PR, verify all of the following:
+
+- [ ] `npm run build` passes with zero TypeScript errors
+- [ ] No modifications to protected files (`globals.css`, `tailwind.config.js`, `components/ui/*`, `lib/utils.ts`) unless the issue explicitly requires it
+- [ ] No new inline `style={{ }}` for theme colors — use Tailwind classes instead
+- [ ] All visual changes are scoped to specific component/page files, not global config
+- [ ] `DESIGN_SYSTEM.md` was consulted for correct color tokens and component patterns
+- [ ] New chart colors (if any) are added to the existing `COLORS` array, not as one-off hex values
+- [ ] UI components are imported from `@/components/ui/*` — no parallel implementations created
