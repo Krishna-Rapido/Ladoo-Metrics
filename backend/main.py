@@ -2365,6 +2365,24 @@ async def execute_custom_dashboard_query(payload: schemas.CustomDashboardQueryRe
     param_types = payload.parameter_types or {}
     for key, value in payload.parameters.items():
         ptype = param_types.get(key, 'string')  # default to string (quoted)
+
+        # Auto-detect list values as multiselect, even if ptype wasn't declared
+        if isinstance(value, list) and ptype != 'multiselect':
+            ptype = 'multiselect'
+
+        # Also detect stringified Python lists like "['auto', 'cab']"
+        if isinstance(value, str) and ptype != 'multiselect':
+            stripped = value.strip()
+            if stripped.startswith('[') and stripped.endswith(']'):
+                try:
+                    import ast
+                    parsed = ast.literal_eval(stripped)
+                    if isinstance(parsed, list):
+                        value = [str(v) for v in parsed]
+                        ptype = 'multiselect'
+                except (ValueError, SyntaxError):
+                    pass  # Not a valid list literal — treat as string
+
         bare_pattern = r"\{\{\s*" + re.escape(key) + r"\s*\}\}"
         # Also match when user already wrapped placeholder in quotes: '{{ key }}'
         quoted_pattern = r"'\s*\{\{\s*" + re.escape(key) + r"\s*\}\}\s*'"
@@ -2373,7 +2391,7 @@ async def execute_custom_dashboard_query(payload: schemas.CustomDashboardQueryRe
         if ptype == 'multiselect':
             # value should be a list of strings; handle both list and comma-separated string
             if isinstance(value, list):
-                items = value
+                items = [str(v) for v in value]
             elif isinstance(value, str):
                 items = [v.strip() for v in value.split(',') if v.strip()]
             else:
