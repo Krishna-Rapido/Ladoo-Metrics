@@ -429,6 +429,7 @@ export type DashboardParameter = {
   default: string | null
   label: string
   options?: string[]
+  optional?: boolean
 }
 
 export type GlobalParameterOption = {

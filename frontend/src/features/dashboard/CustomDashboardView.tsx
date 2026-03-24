@@ -176,6 +176,79 @@ function MultiSelectParam({
     );
 }
 
+/** Inline options editor for select/multiselect parameters in Manage mode. */
+function OptionsEditor({
+    options,
+    onChange,
+}: {
+    options: string[];
+    onChange: (options: string[]) => void;
+}) {
+    const [inputValue, setInputValue] = useState('');
+
+    const addOptions = () => {
+        const newItems = inputValue
+            .split(',')
+            .map((s) => s.trim())
+            .filter((s) => s && !options.includes(s));
+        if (newItems.length > 0) {
+            onChange([...options, ...newItems]);
+        }
+        setInputValue('');
+    };
+
+    return (
+        <div className="space-y-1.5">
+            <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                Options
+            </label>
+            <div className="flex gap-1">
+                <Input
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                            e.preventDefault();
+                            addOptions();
+                        }
+                    }}
+                    placeholder="Add option (comma-separated)"
+                    className="text-xs h-7 flex-1"
+                />
+                <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={addOptions}
+                    disabled={!inputValue.trim()}
+                    className="h-7 text-xs px-2"
+                >
+                    Add
+                </Button>
+            </div>
+            {options.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                    {options.map((opt) => (
+                        <Badge
+                            key={opt}
+                            variant="secondary"
+                            className="text-xs gap-1 pr-1"
+                        >
+                            {opt}
+                            <button
+                                type="button"
+                                onClick={() => onChange(options.filter((o) => o !== opt))}
+                                className="hover:bg-destructive/20 rounded-full p-0.5"
+                            >
+                                <X className="h-2.5 w-2.5" />
+                            </button>
+                        </Badge>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
 export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) {
     const { user } = useAuth();
 
@@ -187,7 +260,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
     // Editor state
     const [sqlQuery, setSqlQuery] = useState('');
     const [parameters, setParameters] = useState<DashboardParameter[]>(DEFAULT_PARAMS);
-    const [paramValues, setParamValues] = useState<Record<string, string | string[]>>({});
+    const [paramValues, setParamValues] = useState<Record<string, string | string[] | null>>({});
     const [username, setUsername] = useState('');
 
     // Global parameter options for multiselect
@@ -243,11 +316,12 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                         setParameters(db.parameters);
                     }
                     // Initialize param values from defaults
-                    const defaults: Record<string, string | string[]> = {};
+                    const defaults: Record<string, string | string[] | null> = {};
                     const params = db.parameters.length > 0 ? db.parameters : DEFAULT_PARAMS;
                     for (const p of params) {
-                        if (p.type === 'multiselect') {
-                            // Default to all options selected
+                        if (p.optional && !p.default) {
+                            defaults[p.name] = null;
+                        } else if (p.type === 'multiselect') {
                             defaults[p.name] = p.options || [];
                         } else {
                             defaults[p.name] = p.default || '';
@@ -273,7 +347,9 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
             const updated = { ...prev };
             for (const p of parameters) {
                 if (!(p.name in updated)) {
-                    if (p.type === 'multiselect') {
+                    if (p.optional && !p.default) {
+                        updated[p.name] = null;
+                    } else if (p.type === 'multiselect') {
                         updated[p.name] = p.options || globalOptions[p.name] || [];
                     } else {
                         updated[p.name] = p.default || '';
@@ -303,6 +379,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                         type: ptype,
                         default: '',
                         label: labelFromName(name),
+                        optional: false,
                         ...(ptype === 'multiselect' && globalOptions[name]
                             ? { options: globalOptions[name] }
                             : {}),
@@ -375,6 +452,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
             type: 'string',
             default: '',
             label: `Parameter ${parameters.length + 1}`,
+            optional: false,
         };
         setParameters([...parameters, newParam]);
         setDirty(true);
@@ -573,56 +651,139 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                                                 <option value="select">Select</option>
                                                 <option value="multiselect">Multi-Select</option>
                                             </select>
+                                            {/* Default value */}
+                                            <Input
+                                                value={param.default || ''}
+                                                onChange={(e) =>
+                                                    updateParameter(index, {
+                                                        default: e.target.value || null,
+                                                    })
+                                                }
+                                                placeholder="Default value"
+                                                className="text-xs h-7"
+                                                type={param.type === 'date' ? 'date' : param.type === 'number' ? 'number' : 'text'}
+                                                disabled={param.optional === true}
+                                            />
+                                            {/* Optional (NULL) checkbox */}
+                                            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+                                                <Checkbox
+                                                    checked={param.optional === true}
+                                                    onCheckedChange={(checked) => {
+                                                        updateParameter(index, {
+                                                            optional: checked === true,
+                                                            default: checked ? null : '',
+                                                        });
+                                                        if (checked) {
+                                                            setParamValues((prev) => ({
+                                                                ...prev,
+                                                                [param.name]: null,
+                                                            }));
+                                                        }
+                                                    }}
+                                                />
+                                                Optional (NULL when empty)
+                                            </label>
+                                            {/* Options editor for select/multiselect */}
+                                            {(param.type === 'select' || param.type === 'multiselect') && (
+                                                <OptionsEditor
+                                                    options={param.options || []}
+                                                    onChange={(opts) =>
+                                                        updateParameter(index, { options: opts })
+                                                    }
+                                                />
+                                            )}
                                         </div>
-                                    ) : param.type === 'multiselect' ? (
-                                        <MultiSelectParam
-                                            options={param.options || globalOptions[param.name] || []}
-                                            selected={Array.isArray(paramValues[param.name]) ? paramValues[param.name] as string[] : []}
-                                            onChange={(values) =>
-                                                setParamValues((prev) => ({
-                                                    ...prev,
-                                                    [param.name]: values,
-                                                }))
-                                            }
-                                            label={param.label}
-                                        />
-                                    ) : param.type === 'date' ? (
-                                        <Input
-                                            type="date"
-                                            value={(paramValues[param.name] as string) || ''}
-                                            onChange={(e) =>
-                                                setParamValues((prev) => ({
-                                                    ...prev,
-                                                    [param.name]: e.target.value,
-                                                }))
-                                            }
-                                            className="text-sm"
-                                        />
-                                    ) : param.type === 'number' ? (
-                                        <Input
-                                            type="number"
-                                            value={(paramValues[param.name] as string) || ''}
-                                            onChange={(e) =>
-                                                setParamValues((prev) => ({
-                                                    ...prev,
-                                                    [param.name]: e.target.value,
-                                                }))
-                                            }
-                                            placeholder={param.default || param.name}
-                                            className="text-sm"
-                                        />
                                     ) : (
-                                        <Input
-                                            value={(paramValues[param.name] as string) || ''}
-                                            onChange={(e) =>
-                                                setParamValues((prev) => ({
-                                                    ...prev,
-                                                    [param.name]: e.target.value,
-                                                }))
-                                            }
-                                            placeholder={param.default || param.name}
-                                            className="text-sm"
-                                        />
+                                        <div className="space-y-1">
+                                            {/* NULL toggle for optional params */}
+                                            {param.optional && (
+                                                <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer">
+                                                    <Checkbox
+                                                        checked={paramValues[param.name] === null}
+                                                        onCheckedChange={(checked) => {
+                                                            setParamValues((prev) => ({
+                                                                ...prev,
+                                                                [param.name]: checked ? null : (param.default || ''),
+                                                            }));
+                                                        }}
+                                                    />
+                                                    NULL
+                                                </label>
+                                            )}
+                                            {/* Actual input — disabled when NULL */}
+                                            {paramValues[param.name] === null && param.optional ? (
+                                                <Input
+                                                    value="NULL"
+                                                    disabled
+                                                    className="text-sm text-muted-foreground italic"
+                                                />
+                                            ) : param.type === 'multiselect' ? (
+                                                <MultiSelectParam
+                                                    options={param.options || globalOptions[param.name] || []}
+                                                    selected={Array.isArray(paramValues[param.name]) ? paramValues[param.name] as string[] : []}
+                                                    onChange={(values) =>
+                                                        setParamValues((prev) => ({
+                                                            ...prev,
+                                                            [param.name]: values,
+                                                        }))
+                                                    }
+                                                    label={param.label}
+                                                />
+                                            ) : param.type === 'select' && (param.options || globalOptions[param.name])?.length ? (
+                                                <select
+                                                    value={(paramValues[param.name] as string) || ''}
+                                                    onChange={(e) =>
+                                                        setParamValues((prev) => ({
+                                                            ...prev,
+                                                            [param.name]: e.target.value,
+                                                        }))
+                                                    }
+                                                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                                                >
+                                                    <option value="">Select {param.label}...</option>
+                                                    {(param.options || globalOptions[param.name] || []).map((opt) => (
+                                                        <option key={opt} value={opt}>{opt}</option>
+                                                    ))}
+                                                </select>
+                                            ) : param.type === 'date' ? (
+                                                <Input
+                                                    type="date"
+                                                    value={(paramValues[param.name] as string) || ''}
+                                                    onChange={(e) =>
+                                                        setParamValues((prev) => ({
+                                                            ...prev,
+                                                            [param.name]: e.target.value,
+                                                        }))
+                                                    }
+                                                    className="text-sm"
+                                                />
+                                            ) : param.type === 'number' ? (
+                                                <Input
+                                                    type="number"
+                                                    value={(paramValues[param.name] as string) || ''}
+                                                    onChange={(e) =>
+                                                        setParamValues((prev) => ({
+                                                            ...prev,
+                                                            [param.name]: e.target.value,
+                                                        }))
+                                                    }
+                                                    placeholder={param.default || param.name}
+                                                    className="text-sm"
+                                                />
+                                            ) : (
+                                                <Input
+                                                    value={(paramValues[param.name] as string) || ''}
+                                                    onChange={(e) =>
+                                                        setParamValues((prev) => ({
+                                                            ...prev,
+                                                            [param.name]: e.target.value,
+                                                        }))
+                                                    }
+                                                    placeholder={param.default || param.name}
+                                                    className="text-sm"
+                                                />
+                                            )}
+                                        </div>
                                     )}
                                 </div>
                             ))}

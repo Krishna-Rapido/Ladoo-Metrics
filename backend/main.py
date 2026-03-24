@@ -2364,6 +2364,17 @@ async def execute_custom_dashboard_query(payload: schemas.CustomDashboardQueryRe
     #   string/select → 'quoted value'
     param_types = payload.parameter_types or {}
     for key, value in payload.parameters.items():
+        # Handle NULL values — substitute as literal NULL (makes optional filters no-ops)
+        if value is None:
+            bare_pattern = r"\{\{\s*" + re.escape(key) + r"\s*\}\}"
+            quoted_pattern = r"'\s*\{\{\s*" + re.escape(key) + r"\s*\}\}\s*'"
+            replacement = "NULL"
+            if re.search(quoted_pattern, query):
+                query = re.sub(quoted_pattern, replacement, query)
+            elif re.search(bare_pattern, query):
+                query = re.sub(bare_pattern, replacement, query)
+            continue
+
         ptype = param_types.get(key, 'string')  # default to string (quoted)
 
         # Auto-detect list values as multiselect, even if ptype wasn't declared
@@ -2437,7 +2448,6 @@ async def execute_custom_dashboard_query(payload: schemas.CustomDashboardQueryRe
     if _FORBIDDEN_SQL.search(query):
         raise HTTPException(status_code=400, detail="Only read-only SELECT queries are allowed.")
 
-    MAX_ROWS = 50_000
     conn = None
     try:
         conn = get_presto_connection(payload.username)
@@ -2452,9 +2462,6 @@ async def execute_custom_dashboard_query(payload: schemas.CustomDashboardQueryRe
                 conn.close()
             except Exception:
                 pass
-
-    if len(result_df) > MAX_ROWS:
-        result_df = result_df.head(MAX_ROWS)
 
     data = result_df.replace({float('nan'): None, float('inf'): None, float('-inf'): None}).to_dict('records')
 

@@ -876,7 +876,7 @@ export async function getA2PhhSummary(req: A2PhhSummaryRequest): Promise<A2PhhSu
 export type CustomDashboardQueryRequest = {
     username: string;
     sql_query: string;
-    parameters: Record<string, string | string[]>;
+    parameters: Record<string, string | string[] | null>;
     parameter_types?: Record<string, string>;
 };
 
