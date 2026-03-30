@@ -22,9 +22,9 @@ import {
 } from '@/lib/supabase';
 import {
     executeCustomDashboardQuery,
+    getSessionRows,
     type CustomDashboardQueryResponse,
 } from '@/lib/api';
-
 interface CustomDashboardViewProps {
     folder: string;
     slug: string;
@@ -277,6 +277,10 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
     const [saveSuccess, setSaveSuccess] = useState(false);
     const [dirty, setDirty] = useState(false);
 
+    // Calculated columns state
+    const [sessionId, setSessionId] = useState<string | null>(null);
+    const [appliedCalcColumns, setAppliedCalcColumns] = useState<string[]>([]);
+
     // UI state
     const [showQueryEditor, setShowQueryEditor] = useState(true);
     const [showParamManager, setShowParamManager] = useState(false);
@@ -412,6 +416,8 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                 parameter_types: typeMap,
             });
             setData(res);
+            setSessionId(res.session_id || null);
+            setAppliedCalcColumns([]);
         } catch (e: any) {
             const msg = e.message || 'Query execution failed';
             // Try to parse JSON error detail from backend
@@ -445,6 +451,26 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
             setSaving(false);
         }
     }, [dashboard, isOwner, sqlQuery, parameters]);
+
+    const handleColumnApplied = useCallback(async (columnName: string) => {
+        if (!sessionId) return;
+        try {
+            const fresh = await getSessionRows(sessionId);
+            setData({
+                num_rows: fresh.num_rows,
+                columns: fresh.columns,
+                data: fresh.data,
+                session_id: sessionId,
+            });
+            setAppliedCalcColumns((prev) => [...prev, columnName]);
+        } catch (err) {
+            console.error('Failed to refresh after apply:', err);
+        }
+    }, [sessionId]);
+
+    const handleColumnRemoved = useCallback((columnName: string) => {
+        setAppliedCalcColumns((prev) => prev.filter((c) => c !== columnName));
+    }, []);
 
     const addParameter = () => {
         const newParam: DashboardParameter = {
@@ -940,6 +966,10 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                             <ChartBuilder
                                 data={data.data}
                                 title={dashboard?.name || 'Custom Dashboard'}
+                                calculatedColumns={appliedCalcColumns}
+                                sessionId={sessionId}
+                                onColumnApplied={handleColumnApplied}
+                                onColumnRemoved={handleColumnRemoved}
                             />
                         </motion.div>
                     )}
@@ -973,6 +1003,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                     </div>
                 </div>
             )}
+
         </div>
     );
 }

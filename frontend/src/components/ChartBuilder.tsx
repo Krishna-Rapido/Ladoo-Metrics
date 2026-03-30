@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
     LineChart,
     Line,
@@ -18,6 +18,7 @@ import {
 } from 'recharts';
 import { useReport } from '../contexts/ReportContext';
 import { toPng } from 'html-to-image';
+import { CalculatedColumnPanel } from './CalculatedColumnPanel';
 
 type ChartType = 'line' | 'bar' | 'area' | 'scatter';
 type AggregationType = 'sum' | 'mean' | 'count' | 'unique_count' | 'median' | 'p25' | 'p75' | 'p90';
@@ -67,6 +68,10 @@ function percentile(values: number[], p: number): number {
 interface ChartBuilderProps {
     data: Record<string, any>[];
     title?: string;
+    calculatedColumns?: string[];
+    sessionId?: string | null;
+    onColumnApplied?: (columnName: string) => void;
+    onColumnRemoved?: (columnName: string) => void;
 }
 
 const COLORS = [
@@ -74,7 +79,14 @@ const COLORS = [
     '#ec4899', '#6366f1', '#14b8a6', '#f97316', '#84cc16',
 ];
 
-export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProps) {
+export function ChartBuilder({
+    data,
+    title = 'Visualization',
+    calculatedColumns = [],
+    sessionId,
+    onColumnApplied,
+    onColumnRemoved,
+}: ChartBuilderProps) {
     const [chartType, setChartType] = useState<ChartType>('line');
     const [xAxis, setXAxis] = useState<string>('');
     const [yAxes, setYAxes] = useState<string[]>([]);
@@ -83,6 +95,7 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
     const { addItem } = useReport();
     const [showSuccess, setShowSuccess] = useState(false);
     const chartRef = useRef<HTMLDivElement>(null);
+    const [showCalcBuilder, setShowCalcBuilder] = useState(false);
 
     // Add chart to report
     const handleAddToReport = async () => {
@@ -429,12 +442,12 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
             </div>
 
             <div className="mt-6 space-y-6">
-                {/* Chart Type Selection */}
+                {/* Chart Type Selection + Calculated Column Card */}
                 <div>
                     <label className="block text-sm font-medium text-slate-700 mb-3">
                         Choose a visualization
                     </label>
-                    <div className="grid grid-cols-4 gap-3">
+                    <div className={`grid gap-3 ${sessionId ? 'grid-cols-5' : 'grid-cols-4'}`}>
                         {[
                             { type: 'line', icon: '📈', label: 'Line' },
                             { type: 'bar', icon: '📊', label: 'Bar' },
@@ -455,8 +468,49 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
                                 <div className="text-sm font-medium text-slate-700">{label}</div>
                             </motion.button>
                         ))}
+
+                        {/* Calculated Column Card — only shown when sessionId exists */}
+                        {sessionId && (
+                            <motion.button
+                                onClick={() => setShowCalcBuilder(!showCalcBuilder)}
+                                whileHover={{ scale: 1.05 }}
+                                whileTap={{ scale: 0.95 }}
+                                className={`p-4 rounded-lg border-2 transition-all relative ${
+                                    showCalcBuilder
+                                        ? 'border-purple-500 bg-purple-50 shadow-md'
+                                        : 'border-dashed border-purple-300 bg-purple-50/30 hover:border-purple-400 hover:bg-purple-50/60'
+                                }`}
+                            >
+                                <div className="text-3xl mb-2">
+                                    <span className="inline-flex items-center justify-center w-9 h-9 rounded-lg bg-purple-100 text-purple-700 text-base font-bold">
+                                        fx
+                                    </span>
+                                </div>
+                                <div className="text-sm font-medium text-purple-700">
+                                    {showCalcBuilder ? 'Hide Builder' : '+ Column'}
+                                </div>
+                                {calculatedColumns.length > 0 && (
+                                    <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-purple-600 text-white text-[10px] font-bold flex items-center justify-center">
+                                        {calculatedColumns.length}
+                                    </span>
+                                )}
+                            </motion.button>
+                        )}
                     </div>
                 </div>
+
+                {/* Inline Calculated Column Builder */}
+                <AnimatePresence>
+                    {showCalcBuilder && sessionId && onColumnApplied && onColumnRemoved && (
+                        <CalculatedColumnPanel
+                            sessionId={sessionId}
+                            availableColumns={columns}
+                            appliedColumns={calculatedColumns}
+                            onColumnApplied={onColumnApplied}
+                            onColumnRemoved={onColumnRemoved}
+                        />
+                    )}
+                </AnimatePresence>
 
                 {/* Axis Configuration */}
                 <div className="grid grid-cols-3 gap-4">
@@ -497,6 +551,7 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
                             <div className="flex flex-wrap gap-3">
                                 {numericColumns.map((col) => {
                                     const isSelected = yAxes.includes(col);
+                                    const isCalc = calculatedColumns.includes(col);
                                     return (
                                         <motion.button
                                             key={col}
@@ -515,12 +570,19 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
                                                 rounded-full border
                                                 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white
                                                 ${isSelected
-                                                    ? 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
-                                                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 hover:border-purple-300'
+                                                    ? isCalc
+                                                        ? 'bg-purple-50 text-purple-800 border-purple-300 hover:bg-purple-100'
+                                                        : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
+                                                    : isCalc
+                                                        ? 'bg-white text-purple-700 border-purple-200 hover:bg-purple-50 hover:border-purple-300'
+                                                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 hover:border-purple-300'
                                                 }
                                             `}
                                         >
                                             {isSelected && <span>✓</span>}
+                                            {isCalc && (
+                                                <span className="text-[10px] font-bold bg-purple-100 text-purple-700 px-1 rounded">fx</span>
+                                            )}
                                             <span>{col.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</span>
                                         </motion.button>
                                     );
@@ -529,7 +591,7 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
                         </div>
                         {yAxes.length === 0 && (
                             <p className="mt-1 text-xs text-amber-600">
-                                💡 Click metrics to add them to the chart
+                                Click metrics to add them to the chart
                             </p>
                         )}
                     </div>
@@ -608,4 +670,3 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
         </div>
     );
 }
-

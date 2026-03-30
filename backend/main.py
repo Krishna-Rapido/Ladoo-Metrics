@@ -2463,12 +2463,18 @@ async def execute_custom_dashboard_query(payload: schemas.CustomDashboardQueryRe
             except Exception:
                 pass
 
+    # Store result in session for calculated columns support
+    import uuid as _uuid
+    session_id = str(_uuid.uuid4())
+    SESSION_STORE[session_id] = result_df.copy()
+
     data = result_df.replace({float('nan'): None, float('inf'): None, float('-inf'): None}).to_dict('records')
 
     return schemas.CustomDashboardQueryResponse(
         num_rows=len(result_df),
         columns=list(result_df.columns),
-        data=data
+        data=data,
+        session_id=session_id,
     )
 
 
@@ -4428,6 +4434,31 @@ def pivot(
         raise HTTPException(status_code=400, detail="Pivot is only supported for large (DuckDB) sessions. Use the Pivot tab with an uploaded large file.")
     parquet_path = session["parquet_path"]
     return compute_pivot_duckdb(parquet_path, payload)
+
+
+@app.get("/data/session/rows")
+async def get_session_rows(
+    x_session_id: Optional[str] = Header(default=None)
+):
+    """
+    Get all rows from a session as JSON. Used after applying calculated columns
+    to refresh the full dataset in the frontend.
+    """
+    if not x_session_id or x_session_id not in SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing session_id.")
+
+    session = SESSION_STORE[x_session_id]
+
+    if isinstance(session, dict) and "parquet_path" in session:
+        raise HTTPException(status_code=400, detail="Full row export not supported for large-file sessions.")
+
+    df = session
+    data = df.replace({float('nan'): None, float('inf'): None, float('-inf'): None}).to_dict('records')
+    return {
+        "columns": list(df.columns),
+        "data": data,
+        "num_rows": len(df),
+    }
 
 
 @app.get("/data/session")

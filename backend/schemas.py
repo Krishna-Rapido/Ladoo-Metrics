@@ -393,6 +393,7 @@ class CustomDashboardQueryResponse(BaseModel):
     num_rows: int
     columns: List[str]
     data: List[Dict[str, Any]]
+    session_id: Optional[str] = None
 
 
 class ReportItem(BaseModel):

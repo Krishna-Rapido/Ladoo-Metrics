@@ -884,6 +884,7 @@ export type CustomDashboardQueryResponse = {
     num_rows: number;
     columns: string[];
     data: Record<string, any>[];
+    session_id?: string;
 };
 
 export async function executeCustomDashboardQuery(
@@ -899,6 +900,27 @@ export async function executeCustomDashboardQuery(
     if (!res.ok) {
         const error = await res.text();
         throw new Error(error || 'Failed to execute custom dashboard query');
+    }
+    return await res.json();
+}
+
+export type SessionRowsResponse = {
+    columns: string[];
+    data: Record<string, any>[];
+    num_rows: number;
+};
+
+export async function getSessionRows(sessionId: string): Promise<SessionRowsResponse> {
+    const headers = new Headers();
+    headers.set('x-session-id', sessionId);
+
+    const res = await fetch(`${BASE_URL}/data/session/rows`, {
+        method: 'GET',
+        headers,
+    });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to get session rows');
     }
     return await res.json();
 }
