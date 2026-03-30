@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Save, Play, Plus, X, ChevronDown, ChevronUp, Loader2, ChevronsUpDown } from 'lucide-react';
+import { Save, Play, Plus, X, ChevronDown, ChevronUp, Loader2, ChevronsUpDown, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -127,7 +127,7 @@ function MultiSelectParam({
                 </button>
             </PopoverTrigger>
             <PopoverContent className="w-[240px] p-0 border-border/80 shadow-xl bg-card" align="start">
-                <div className="flex flex-col max-h-[320px] overflow-hidden rounded-xl">
+                <div className="flex flex-col max-h-[480px] overflow-hidden rounded-xl">
                     <div className="border-b border-border/60 px-3 py-2 shrink-0">
                         <button
                             type="button"
@@ -571,129 +571,159 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                             <Label className="text-sm font-medium text-slate-700">
                                 Parameters
                             </Label>
-                            <div className="flex gap-2">
-                                <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => setShowParamManager(!showParamManager)}
-                                    className="text-xs"
-                                >
-                                    {showParamManager ? 'Done' : 'Manage'}
-                                </Button>
-                                {showParamManager && (
-                                    <Button
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={addParameter}
-                                        className="text-xs"
-                                    >
-                                        <Plus className="h-3 w-3 mr-1" />
-                                        Add
-                                    </Button>
-                                )}
-                            </div>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setShowParamManager(!showParamManager)}
+                                className="text-xs"
+                            >
+                                {showParamManager ? 'Done' : 'Manage'}
+                            </Button>
                         </div>
 
-                        {/* Parameter value inputs */}
-                        <div className="grid grid-cols-3 gap-3">
-                            {parameters.map((param, index) => (
-                                <div key={index} className="space-y-1">
-                                    <div className="flex items-center gap-1">
-                                        <label className="block text-xs font-medium text-slate-600">
-                                            {param.label}
-                                        </label>
-                                        <span className="text-[10px] text-muted-foreground bg-muted px-1 rounded">
-                                            {param.type}
-                                        </span>
-                                        {showParamManager && (
-                                            <button
-                                                onClick={() => removeParameter(index)}
-                                                className="p-0.5 hover:bg-destructive/10 rounded"
-                                            >
-                                                <X className="h-3 w-3 text-destructive" />
-                                            </button>
-                                        )}
+                        {showParamManager ? (
+                            /* ── Manage mode: table layout ── */
+                            <div className="space-y-3">
+                                <div className="border rounded-lg overflow-hidden bg-background">
+                                    {/* Table header */}
+                                    <div className="grid grid-cols-[1fr_1fr_140px_1fr_80px_40px] gap-3 px-4 py-2.5 bg-muted/40 border-b text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+                                        <span>Display Name</span>
+                                        <span>Internal Key</span>
+                                        <span>Data Type</span>
+                                        <span>Default Value</span>
+                                        <span className="text-center">Required</span>
+                                        <span />
                                     </div>
-                                    {showParamManager ? (
-                                        <div className="space-y-1">
-                                            <Input
-                                                value={param.name}
-                                                onChange={(e) =>
-                                                    updateParameter(index, {
-                                                        name: e.target.value,
-                                                    })
-                                                }
-                                                placeholder="Variable name"
-                                                className="text-xs h-7"
-                                            />
-                                            <Input
-                                                value={param.label}
-                                                onChange={(e) =>
-                                                    updateParameter(index, {
-                                                        label: e.target.value,
-                                                    })
-                                                }
-                                                placeholder="Display label"
-                                                className="text-xs h-7"
-                                            />
-                                            <select
-                                                value={param.type}
-                                                onChange={(e) =>
-                                                    updateParameter(index, {
-                                                        type: e.target.value as DashboardParameter['type'],
-                                                    })
-                                                }
-                                                className="w-full text-xs h-7 rounded-md border border-input bg-background px-2"
-                                            >
-                                                <option value="string">String (quoted)</option>
-                                                <option value="number">Number (bare)</option>
-                                                <option value="date">Date (timestamp)</option>
-                                                <option value="select">Select</option>
-                                                <option value="multiselect">Multi-Select</option>
-                                            </select>
-                                            {/* Default value */}
-                                            <Input
-                                                value={param.default || ''}
-                                                onChange={(e) =>
-                                                    updateParameter(index, {
-                                                        default: e.target.value || null,
-                                                    })
-                                                }
-                                                placeholder="Default value"
-                                                className="text-xs h-7"
-                                                type={param.type === 'date' ? 'date' : param.type === 'number' ? 'number' : 'text'}
-                                                disabled={param.optional === true}
-                                            />
-                                            {/* Optional (NULL) checkbox */}
-                                            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-                                                <Checkbox
-                                                    checked={param.optional === true}
-                                                    onCheckedChange={(checked) => {
-                                                        updateParameter(index, {
-                                                            optional: checked === true,
-                                                            default: checked ? null : '',
-                                                        });
-                                                        if (checked) {
-                                                            setParamValues((prev) => ({
-                                                                ...prev,
-                                                                [param.name]: null,
-                                                            }));
-                                                        }
-                                                    }}
+
+                                    {/* Table rows */}
+                                    {parameters.map((param, index) => (
+                                        <div key={index}>
+                                            <div className="grid grid-cols-[1fr_1fr_140px_1fr_80px_40px] gap-3 px-4 py-3 items-center border-b last:border-b-0">
+                                                {/* Display Name */}
+                                                <Input
+                                                    value={param.label}
+                                                    onChange={(e) => updateParameter(index, { label: e.target.value })}
+                                                    placeholder="Display label"
+                                                    className="text-sm h-9 font-medium"
                                                 />
-                                                Optional (NULL when empty)
-                                            </label>
-                                            {/* Options editor for select/multiselect */}
+
+                                                {/* Internal Key */}
+                                                <div>
+                                                    <Input
+                                                        value={param.name}
+                                                        onChange={(e) => updateParameter(index, { name: e.target.value })}
+                                                        placeholder="variable_name"
+                                                        className="text-sm h-9 font-mono text-teal-700 bg-teal-50/50 border-teal-200"
+                                                    />
+                                                </div>
+
+                                                {/* Data Type */}
+                                                <select
+                                                    value={param.type}
+                                                    onChange={(e) => updateParameter(index, { type: e.target.value as DashboardParameter['type'] })}
+                                                    className="w-full text-sm h-9 rounded-md border border-input bg-background px-2 focus:outline-none focus:ring-2 focus:ring-ring"
+                                                >
+                                                    <option value="string">String</option>
+                                                    <option value="number">Number</option>
+                                                    <option value="date">Date</option>
+                                                    <option value="select">Select</option>
+                                                    <option value="multiselect">Multi-Select</option>
+                                                </select>
+
+                                                {/* Default Value */}
+                                                {(param.type === 'select' || param.type === 'multiselect') ? (
+                                                    <div className="flex items-center gap-1.5">
+                                                        <Badge variant="secondary" className="text-[10px] font-semibold shrink-0">
+                                                            {param.options?.length || 0} options
+                                                        </Badge>
+                                                    </div>
+                                                ) : (
+                                                    <Input
+                                                        value={param.default || ''}
+                                                        onChange={(e) => updateParameter(index, { default: e.target.value || null })}
+                                                        placeholder="Default value"
+                                                        className="text-sm h-9"
+                                                        type={param.type === 'date' ? 'date' : param.type === 'number' ? 'number' : 'text'}
+                                                        disabled={param.optional === true}
+                                                    />
+                                                )}
+
+                                                {/* Optional toggle */}
+                                                {/* Required toggle: ON (teal) = required, OFF (grey) = optional */}
+                                                <div className="flex justify-center">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            const isCurrentlyRequired = !(param.optional === true);
+                                                            const willBeOptional = isCurrentlyRequired;
+                                                            updateParameter(index, {
+                                                                optional: willBeOptional,
+                                                                default: willBeOptional ? null : '',
+                                                            });
+                                                            if (willBeOptional) {
+                                                                setParamValues((prev) => ({ ...prev, [param.name]: null }));
+                                                            }
+                                                        }}
+                                                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                                                            param.optional ? 'bg-slate-400' : 'bg-teal-600'
+                                                        }`}
+                                                    >
+                                                        <span className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm ring-0 transition-transform ${
+                                                            param.optional ? 'translate-x-0' : 'translate-x-4'
+                                                        }`} />
+                                                    </button>
+                                                </div>
+
+                                                {/* Delete */}
+                                                <button
+                                                    onClick={() => removeParameter(index)}
+                                                    className="flex justify-center p-1.5 hover:bg-destructive/10 rounded-md transition-colors"
+                                                >
+                                                    <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive" />
+                                                </button>
+                                            </div>
+
+                                            {/* Options editor row for select/multiselect */}
                                             {(param.type === 'select' || param.type === 'multiselect') && (
-                                                <OptionsEditor
-                                                    options={param.options || []}
-                                                    onChange={(opts) =>
-                                                        updateParameter(index, { options: opts })
-                                                    }
-                                                />
+                                                <div className="px-4 py-2 bg-muted/20 border-b last:border-b-0">
+                                                    <OptionsEditor
+                                                        options={param.options || []}
+                                                        onChange={(opts) => updateParameter(index, { options: opts })}
+                                                    />
+                                                </div>
                                             )}
                                         </div>
-                                    ) : (
+                                    ))}
+
+                                    {parameters.length === 0 && (
+                                        <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+                                            No parameters defined. Add one below or use {'{{param_name}}'} in your SQL query.
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Add Parameter */}
+                                <button
+                                    onClick={addParameter}
+                                    className="w-full py-3 border-2 border-dashed border-slate-300 rounded-lg text-sm font-medium text-teal-700 hover:border-teal-400 hover:bg-teal-50/30 transition-colors flex items-center justify-center gap-2"
+                                >
+                                    <Plus className="h-4 w-4" />
+                                    Add Parameter
+                                </button>
+                            </div>
+                        ) : (
+                            /* ── Runtime mode: parameter value inputs ── */
+                            <div className="grid grid-cols-3 gap-3">
+                                {parameters.map((param, index) => (
+                                    <div key={index} className="space-y-1">
+                                        <div className="flex items-center gap-1">
+                                            <label className="block text-xs font-medium text-slate-600">
+                                                {param.label}
+                                            </label>
+                                            <span className="text-[10px] text-muted-foreground bg-muted px-1 rounded">
+                                                {param.type}
+                                            </span>
+                                        </div>
                                         <div className="space-y-1">
                                             {/* NULL toggle for optional params */}
                                             {param.optional && (
@@ -784,23 +814,23 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                                                 />
                                             )}
                                         </div>
-                                    )}
-                                </div>
-                            ))}
+                                    </div>
+                                ))}
 
-                            {/* Username (always shown) */}
-                            <div className="space-y-1">
-                                <label className="block text-xs font-medium text-slate-600">
-                                    Presto Username
-                                </label>
-                                <Input
-                                    value={username}
-                                    onChange={(e) => setUsername(e.target.value)}
-                                    placeholder="your.name@rapido.bike"
-                                    className="text-sm"
-                                />
+                                {/* Username (always shown) */}
+                                <div className="space-y-1">
+                                    <label className="block text-xs font-medium text-slate-600">
+                                        Presto Username
+                                    </label>
+                                    <Input
+                                        value={username}
+                                        onChange={(e) => setUsername(e.target.value)}
+                                        placeholder="your.name@rapido.bike"
+                                        className="text-sm"
+                                    />
+                                </div>
                             </div>
-                        </div>
+                        )}
                     </div>
 
                     {/* Action Buttons */}

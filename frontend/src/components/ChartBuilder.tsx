@@ -20,6 +20,49 @@ import { useReport } from '../contexts/ReportContext';
 import { toPng } from 'html-to-image';
 
 type ChartType = 'line' | 'bar' | 'area' | 'scatter';
+type AggregationType = 'sum' | 'mean' | 'count' | 'unique_count' | 'median' | 'p25' | 'p75' | 'p90';
+
+const AGG_OPTIONS: { value: AggregationType; label: string }[] = [
+    { value: 'sum', label: 'Sum' },
+    { value: 'mean', label: 'Mean' },
+    { value: 'count', label: 'Count' },
+    { value: 'unique_count', label: 'Unique Count' },
+    { value: 'median', label: 'Median' },
+    { value: 'p25', label: '25th Percentile' },
+    { value: 'p75', label: '75th Percentile' },
+    { value: 'p90', label: '90th Percentile' },
+];
+
+function aggregate(values: number[], method: AggregationType): number {
+    if (values.length === 0) return 0;
+    switch (method) {
+        case 'sum':
+            return values.reduce((a, b) => a + b, 0);
+        case 'mean':
+            return values.reduce((a, b) => a + b, 0) / values.length;
+        case 'count':
+            return values.length;
+        case 'unique_count':
+            return new Set(values).size;
+        case 'median':
+            return percentile(values, 0.5);
+        case 'p25':
+            return percentile(values, 0.25);
+        case 'p75':
+            return percentile(values, 0.75);
+        case 'p90':
+            return percentile(values, 0.9);
+    }
+}
+
+function percentile(values: number[], p: number): number {
+    const sorted = [...values].sort((a, b) => a - b);
+    const idx = p * (sorted.length - 1);
+    const lower = Math.floor(idx);
+    const upper = Math.ceil(idx);
+    if (lower === upper) return sorted[lower];
+    return sorted[lower] + (sorted[upper] - sorted[lower]) * (idx - lower);
+}
 
 interface ChartBuilderProps {
     data: Record<string, any>[];
@@ -36,6 +79,7 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
     const [xAxis, setXAxis] = useState<string>('');
     const [yAxes, setYAxes] = useState<string[]>([]);
     const [series, setSeries] = useState<string>('');
+    const [aggregation, setAggregation] = useState<AggregationType>('sum');
     const { addItem } = useReport();
     const [showSuccess, setShowSuccess] = useState(false);
     const chartRef = useRef<HTMLDivElement>(null);
@@ -145,45 +189,55 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
         if (!xAxis || yAxes.length === 0 || !data) return [];
 
         if (!series) {
-            // No series grouping - aggregate by X-axis for multiple metrics
-            const grouped: Record<string, any> = {};
+            // No series grouping - collect values per X-axis group, then aggregate
+            const collected: Record<string, Record<string, number[]>> = {};
 
             data.forEach(row => {
                 const xValue = String(row[xAxis]);
-                if (!grouped[xValue]) {
-                    grouped[xValue] = { [xAxis]: xValue };
-                    yAxes.forEach(yAxis => {
-                        grouped[xValue][yAxis] = 0;
-                    });
+                if (!collected[xValue]) {
+                    collected[xValue] = {};
+                    yAxes.forEach(yAxis => { collected[xValue][yAxis] = []; });
                 }
                 yAxes.forEach(yAxis => {
-                    grouped[xValue][yAxis] += Number(row[yAxis]) || 0;
+                    collected[xValue][yAxis].push(Number(row[yAxis]) || 0);
                 });
             });
 
-            return Object.values(grouped);
+            return Object.entries(collected).map(([xValue, metrics]) => {
+                const point: Record<string, any> = { [xAxis]: xValue };
+                yAxes.forEach(yAxis => {
+                    point[yAxis] = aggregate(metrics[yAxis], aggregation);
+                });
+                return point;
+            });
         }
 
-        // Group by series - each metric × series combination becomes a line
-        const grouped: Record<string, Record<string, any>> = {};
+        // Group by series - collect values per X-axis × series combination
+        const collected: Record<string, Record<string, number[]>> = {};
 
         data.forEach(row => {
             const xValue = String(row[xAxis]);
             const seriesValue = String(row[series]);
 
-            if (!grouped[xValue]) {
-                grouped[xValue] = { [xAxis]: xValue };
+            if (!collected[xValue]) {
+                collected[xValue] = {};
             }
 
             yAxes.forEach(yAxis => {
-                const yValue = Number(row[yAxis]) || 0;
                 const key = `${yAxis}_${seriesValue}`;
-                grouped[xValue][key] = (grouped[xValue][key] || 0) + yValue;
+                if (!collected[xValue][key]) collected[xValue][key] = [];
+                collected[xValue][key].push(Number(row[yAxis]) || 0);
             });
         });
 
-        return Object.values(grouped);
-    }, [data, xAxis, yAxes, series]);
+        return Object.entries(collected).map(([xValue, metrics]) => {
+            const point: Record<string, any> = { [xAxis]: xValue };
+            Object.entries(metrics).forEach(([key, values]) => {
+                point[key] = aggregate(values, aggregation);
+            });
+            return point;
+        });
+    }, [data, xAxis, yAxes, series, aggregation]);
 
     // Get unique series values for legend
     const seriesValues = useMemo(() => {
@@ -503,6 +557,22 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
                             </p>
                         )}
                     </div>
+
+                    {/* Aggregation */}
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                            Aggregation
+                        </label>
+                        <select
+                            value={aggregation}
+                            onChange={(e) => setAggregation(e.target.value as AggregationType)}
+                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        >
+                            {AGG_OPTIONS.map(({ value, label }) => (
+                                <option key={value} value={value}>{label}</option>
+                            ))}
+                        </select>
+                    </div>
                 </div>
 
                 {/* Chart Display */}
@@ -519,6 +589,9 @@ export function ChartBuilder({ data, title = 'Visualization' }: ChartBuilderProp
                             </span>
                             <span>
                                 <strong>Y:</strong> {yAxes.map(y => y.replace(/_/g, ' ')).join(', ')}
+                            </span>
+                            <span>
+                                <strong>Agg:</strong> {AGG_OPTIONS.find(o => o.value === aggregation)?.label}
                             </span>
                             {series && (
                                 <span>
