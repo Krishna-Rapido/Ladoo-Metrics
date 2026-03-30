@@ -4812,6 +4812,536 @@ async def get_segment_transition_captains(payload: SegmentTransitionCaptainsRequ
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# =============================================================================
+# KNOWLEDGE GRAPH + NL QUERY ROUTES
+# =============================================================================
+
+from knowledge_schemas import (
+    SchemaTableCreate, SchemaTableUpdate, SchemaTableResponse,
+    SchemaColumnCreate, SchemaColumnUpdate, SchemaColumnResponse,
+    BulkColumnsCreate,
+    SchemaRelationshipCreate, SchemaRelationshipUpdate, SchemaRelationshipResponse,
+    InferRelationshipsRequest, InferRelationshipsResponse,
+    AutoDetectRequest, AutoDetectResponse,
+    NLQueryRequest, NLQueryResponse,
+    NLQueryHistoryItem, QueryFeedbackRequest,
+)
+from knowledge_agent import (
+    SchemaInferenceEngine, NLQueryAgent, build_schema_context,
+    auto_detect_columns, validate_generated_sql,
+)
+
+# Supabase client helpers for knowledge graph operations
+_SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://croniadpudboidlouhuu.supabase.co")
+_SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "sb_publishable_XVL1eAexg-C1MpKPPC-b2Q_hl2pFTpT")
+_SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+
+# Service-role client (bypasses RLS) — used only when SUPABASE_SERVICE_KEY is set
+_supabase_service_client = None
+
+
+def _get_supabase_for_request(request: Request):
+    """
+    Return a Supabase client authenticated as the calling user.
+
+    Strategy:
+    1. If SUPABASE_SERVICE_KEY is set, use a service-role client (bypasses RLS).
+    2. Otherwise, create a per-request client using the user's access token
+       (passed via Authorization header) so RLS sees them as 'authenticated'.
+    """
+    global _supabase_service_client
+
+    # Prefer service key — simplest, bypasses RLS
+    if _SUPABASE_SERVICE_KEY:
+        if _supabase_service_client is None:
+            from supabase import create_client
+            _supabase_service_client = create_client(_SUPABASE_URL, _SUPABASE_SERVICE_KEY)
+        return _supabase_service_client
+
+    # Otherwise use the user's access token from the frontend
+    from supabase import create_client, ClientOptions
+    access_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if access_token:
+        # Create client with the user's JWT as the auth header
+        # This makes Supabase treat requests as the authenticated user
+        opts = ClientOptions(headers={"Authorization": f"Bearer {access_token}"})
+        return create_client(_SUPABASE_URL, _SUPABASE_ANON_KEY, opts)
+
+    # Fallback: anon client (will fail RLS for authenticated-only tables)
+    return create_client(_SUPABASE_URL, _SUPABASE_ANON_KEY)
+
+
+def _get_user_id(request: Request) -> str:
+    """Extract user_id from X-User-Id header (set by frontend after Supabase auth)."""
+    user_id = request.headers.get("X-User-Id", "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="X-User-Id header required")
+    return user_id
+
+
+# --- Schema Tables ---
+
+@app.post("/knowledge/tables", response_model=SchemaTableResponse)
+def create_schema_table(payload: SchemaTableCreate, request: Request):
+    """Register a new table in the knowledge graph."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("schema_tables").insert({
+            "user_id": user_id,
+            "table_name": payload.table_name,
+            "friendly_name": payload.friendly_name,
+            "description": payload.description,
+            "grain": payload.grain,
+            "time_column": payload.time_column,
+            "time_format": payload.time_format,
+            "default_filters": payload.default_filters,
+            "tags": payload.tags,
+        }).execute()
+        row = result.data[0]
+        return SchemaTableResponse(**row, columns=[])
+    except Exception as e:
+        if "duplicate key" in str(e).lower() or "unique" in str(e).lower():
+            raise HTTPException(status_code=409, detail=f"Table '{payload.table_name}' already registered")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/knowledge/tables")
+def list_schema_tables(request: Request):
+    """List all registered tables with their columns."""
+    sb = _get_supabase_for_request(request)
+    try:
+        tables_result = sb.table("schema_tables").select("*").order("table_name").execute()
+        tables = tables_result.data or []
+
+        # Fetch all columns in one query
+        columns_result = sb.table("schema_columns").select("*").order("column_name").execute()
+        all_columns = columns_result.data or []
+
+        # Group columns by table_id
+        cols_by_table: Dict[str, list] = {}
+        for col in all_columns:
+            tid = col["table_id"]
+            cols_by_table.setdefault(tid, []).append(col)
+
+        result = []
+        for t in tables:
+            result.append({
+                **t,
+                "columns": cols_by_table.get(t["id"], []),
+            })
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/knowledge/tables/{table_id}")
+def get_schema_table(table_id: str, request: Request):
+    """Get a single table with its columns."""
+    sb = _get_supabase_for_request(request)
+    try:
+        t_result = sb.table("schema_tables").select("*").eq("id", table_id).execute()
+        if not t_result.data:
+            raise HTTPException(status_code=404, detail="Table not found")
+        table = t_result.data[0]
+
+        cols_result = sb.table("schema_columns").select("*").eq("table_id", table_id).order("column_name").execute()
+        table["columns"] = cols_result.data or []
+        return table
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/knowledge/tables/{table_id}")
+def update_schema_table(table_id: str, payload: SchemaTableUpdate, request: Request):
+    """Update table metadata."""
+    sb = _get_supabase_for_request(request)
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        result = sb.table("schema_tables").update(updates).eq("id", table_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Table not found")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/knowledge/tables/{table_id}")
+def delete_schema_table(table_id: str, request: Request):
+    """Delete a table and cascade-delete its columns."""
+    sb = _get_supabase_for_request(request)
+    try:
+        # Columns cascade-deleted by FK constraint
+        sb.table("schema_tables").delete().eq("id", table_id).execute()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Schema Columns ---
+
+@app.post("/knowledge/tables/{table_id}/columns")
+def bulk_add_columns(table_id: str, payload: BulkColumnsCreate, request: Request):
+    """Bulk add columns to a table."""
+    sb = _get_supabase_for_request(request)
+    try:
+        rows = [
+            {
+                "table_id": table_id,
+                "column_name": c.column_name,
+                "data_type": c.data_type,
+                "friendly_name": c.friendly_name,
+                "description": c.description,
+                "category": c.category,
+                "is_nullable": c.is_nullable,
+                "sample_values": c.sample_values,
+            }
+            for c in payload.columns
+        ]
+        result = sb.table("schema_columns").upsert(
+            rows, on_conflict="table_id,column_name"
+        ).execute()
+        return {"inserted": len(result.data or [])}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/knowledge/columns/{column_id}")
+def update_column(column_id: str, payload: SchemaColumnUpdate, request: Request):
+    """Update column metadata."""
+    sb = _get_supabase_for_request(request)
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        result = sb.table("schema_columns").update(updates).eq("id", column_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Column not found")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/knowledge/columns/{column_id}")
+def delete_column(column_id: str, request: Request):
+    """Delete a column."""
+    sb = _get_supabase_for_request(request)
+    try:
+        sb.table("schema_columns").delete().eq("id", column_id).execute()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Auto-detect ---
+
+@app.post("/knowledge/tables/auto-detect", response_model=AutoDetectResponse)
+def auto_detect_table(payload: AutoDetectRequest, request: Request):
+    """Auto-detect columns from a Presto table via SHOW COLUMNS."""
+    try:
+        columns = auto_detect_columns(payload.table_name, payload.username)
+        return AutoDetectResponse(
+            table_name=payload.table_name,
+            columns=[SchemaColumnCreate(**c) for c in columns],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        return AutoDetectResponse(
+            table_name=payload.table_name,
+            columns=[],
+            error=str(e),
+        )
+
+
+# --- Relationships ---
+
+@app.post("/knowledge/relationships/infer", response_model=InferRelationshipsResponse)
+def infer_relationships(payload: InferRelationshipsRequest, request: Request):
+    """Run the inference engine to discover join relationships."""
+    sb = _get_supabase_for_request(request)
+    try:
+        # Load tables with columns
+        tables_result = sb.table("schema_tables").select("*").execute()
+        all_tables = tables_result.data or []
+
+        if payload.table_ids:
+            all_tables = [t for t in all_tables if t["id"] in payload.table_ids]
+
+        cols_result = sb.table("schema_columns").select("*").execute()
+        all_cols = cols_result.data or []
+
+        # Attach columns to tables
+        cols_by_table: Dict[str, list] = {}
+        for c in all_cols:
+            cols_by_table.setdefault(c["table_id"], []).append(c)
+        for t in all_tables:
+            t["columns"] = cols_by_table.get(t["id"], [])
+
+        # Load existing relationships
+        rels_result = sb.table("schema_relationships").select("*").execute()
+        existing_rels = rels_result.data or []
+
+        # Run inference
+        engine = SchemaInferenceEngine()
+        inferred = engine.infer(all_tables, existing_rels)
+
+        # Save inferred relationships
+        saved = []
+        for rel in inferred:
+            try:
+                insert_result = sb.table("schema_relationships").insert({
+                    "from_table_id": rel.from_table_id,
+                    "from_column": rel.from_column,
+                    "to_table_id": rel.to_table_id,
+                    "to_column": rel.to_column,
+                    "join_type": "inner",
+                    "confidence": rel.confidence,
+                    "is_approved": False,
+                    "inference_reason": rel.reason,
+                }).execute()
+                if insert_result.data:
+                    saved.append(SchemaRelationshipResponse(**insert_result.data[0]))
+            except Exception:
+                # Skip duplicates
+                pass
+
+        return InferRelationshipsResponse(inferred=saved, count=len(saved))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/knowledge/relationships")
+def create_relationship(payload: SchemaRelationshipCreate, request: Request):
+    """Create or approve a relationship."""
+    sb = _get_supabase_for_request(request)
+    user_id = _get_user_id(request)
+    try:
+        row = payload.model_dump()
+        if payload.is_approved:
+            row["approved_by"] = user_id
+        result = sb.table("schema_relationships").insert(row).execute()
+        return result.data[0] if result.data else {}
+    except Exception as e:
+        if "duplicate key" in str(e).lower() or "unique" in str(e).lower():
+            raise HTTPException(status_code=409, detail="Relationship already exists")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/knowledge/relationships/{rel_id}")
+def update_relationship(rel_id: str, payload: SchemaRelationshipUpdate, request: Request):
+    """Update a relationship (approve, change join type)."""
+    sb = _get_supabase_for_request(request)
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    # If approving, record who approved
+    if updates.get("is_approved"):
+        user_id = _get_user_id(request)
+        updates["approved_by"] = user_id
+
+    try:
+        result = sb.table("schema_relationships").update(updates).eq("id", rel_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Relationship not found")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/knowledge/relationships/{rel_id}")
+def delete_relationship(rel_id: str, request: Request):
+    """Delete a relationship."""
+    sb = _get_supabase_for_request(request)
+    try:
+        sb.table("schema_relationships").delete().eq("id", rel_id).execute()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/knowledge/relationships")
+def list_relationships(request: Request):
+    """List all relationships with table names."""
+    sb = _get_supabase_for_request(request)
+    try:
+        rels_result = sb.table("schema_relationships").select("*").execute()
+        rels = rels_result.data or []
+
+        # Fetch table names for display
+        tables_result = sb.table("schema_tables").select("id, table_name, friendly_name").execute()
+        table_map = {t["id"]: t for t in (tables_result.data or [])}
+
+        for rel in rels:
+            from_t = table_map.get(rel.get("from_table_id"), {})
+            to_t = table_map.get(rel.get("to_table_id"), {})
+            rel["from_table_name"] = from_t.get("table_name", "")
+            rel["to_table_name"] = to_t.get("table_name", "")
+
+        return rels
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- NL Query ---
+
+@app.post("/knowledge/query", response_model=NLQueryResponse)
+def nl_query(payload: NLQueryRequest, request: Request):
+    """Natural language → SQL query (+ optional execution)."""
+    sb = _get_supabase_for_request(request)
+    user_id = _get_user_id(request)
+
+    # If user provided edited SQL, use that directly
+    if payload.sql_override:
+        is_valid, err = validate_generated_sql(payload.sql_override)
+        if not is_valid:
+            return NLQueryResponse(success=False, error=f"SQL validation failed: {err}")
+
+        sql = payload.sql_override
+        intent = "User-edited SQL"
+        explanation = ""
+    else:
+        # Build schema context from knowledge graph
+        tables_result = sb.table("schema_tables").select("*").execute()
+        tables = tables_result.data or []
+
+        cols_result = sb.table("schema_columns").select("*").execute()
+        all_cols = cols_result.data or []
+        cols_by_table: Dict[str, list] = {}
+        for c in all_cols:
+            cols_by_table.setdefault(c["table_id"], []).append(c)
+        for t in tables:
+            t["columns"] = cols_by_table.get(t["id"], [])
+
+        rels_result = sb.table("schema_relationships").select("*").execute()
+        rels = rels_result.data or []
+
+        # Add table names to relationships
+        table_map = {t["id"]: t["table_name"] for t in tables}
+        for r in rels:
+            r["from_table_name"] = table_map.get(r.get("from_table_id"), "")
+            r["to_table_name"] = table_map.get(r.get("to_table_id"), "")
+
+        schema_context = build_schema_context(tables, rels)
+
+        # Generate SQL
+        agent = NLQueryAgent()
+        result = agent.generate(payload.question, schema_context)
+
+        if result["error"]:
+            return NLQueryResponse(success=False, error=result["error"],
+                                   intent=result["intent"], sql=result["sql"])
+
+        intent = result["intent"]
+        sql = result["sql"]
+        explanation = result["explanation"]
+
+    # Save query to history
+    query_row = {
+        "user_id": user_id,
+        "question": payload.question,
+        "interpreted_intent": intent,
+        "generated_sql": sql,
+        "final_sql": sql,
+        "was_executed": False,
+    }
+
+    # Execute if requested
+    rows = []
+    columns = []
+    row_count = 0
+    execution_time_ms = 0
+
+    if payload.execute:
+        username = payload.username or request.headers.get("X-Username", "ladoo")
+        agent = NLQueryAgent()
+        exec_result = agent.execute_sql(sql, username)
+
+        if exec_result["error"]:
+            query_row["error"] = exec_result["error"]
+            query_row["was_executed"] = True
+            try:
+                save_result = sb.table("nl_queries").insert(query_row).execute()
+                query_id = save_result.data[0]["id"] if save_result.data else ""
+            except Exception:
+                query_id = ""
+            return NLQueryResponse(
+                success=False, error=exec_result["error"],
+                intent=intent, sql=sql, explanation=explanation,
+                query_id=query_id,
+            )
+
+        rows = exec_result["rows"]
+        columns = exec_result["columns"]
+        row_count = exec_result["row_count"]
+        execution_time_ms = exec_result["execution_time_ms"]
+
+        query_row["was_executed"] = True
+        query_row["execution_time_ms"] = execution_time_ms
+        query_row["row_count"] = row_count
+        query_row["result_preview"] = rows[:10] if rows else None
+
+    try:
+        save_result = sb.table("nl_queries").insert(query_row).execute()
+        query_id = save_result.data[0]["id"] if save_result.data else ""
+    except Exception:
+        query_id = ""
+
+    return NLQueryResponse(
+        success=True,
+        intent=intent,
+        sql=sql,
+        explanation=explanation,
+        rows=rows,
+        columns=columns,
+        row_count=row_count,
+        execution_time_ms=execution_time_ms,
+        query_id=query_id,
+    )
+
+
+@app.get("/knowledge/queries")
+def list_nl_queries(request: Request):
+    """Get query history for the current user."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("nl_queries").select(
+            "id, question, interpreted_intent, generated_sql, was_executed, row_count, feedback, created_at"
+        ).eq("user_id", user_id).order("created_at", desc=True).limit(50).execute()
+        return result.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/knowledge/query/{query_id}/feedback")
+def query_feedback(query_id: str, payload: QueryFeedbackRequest, request: Request):
+    """Save feedback (thumbs up/down) on a query."""
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("nl_queries").update(
+            {"feedback": payload.feedback}
+        ).eq("id", query_id).execute()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# HEALTH CHECK
+# =============================================================================
+
 @app.get("/health")
 def health():
     """Health check endpoint with system status."""

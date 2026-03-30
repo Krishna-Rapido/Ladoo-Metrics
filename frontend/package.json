@@ -27,6 +27,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@supabase/supabase-js": "^2.93.1",
     "@tanstack/react-table": "^8.21.3",
+    "@xyflow/react": "^12.10.2",
     "ag-grid-community": "^34.2.0",
     "ag-grid-react": "^34.2.0",
     "axios": "^1.12.2",

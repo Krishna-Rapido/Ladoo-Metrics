@@ -6,6 +6,7 @@ import { InsightsPage } from './pages/InsightsPage';
 import { LoginPage } from './pages/LoginPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { FunctionsPage } from './pages/FunctionsPage';
+import { KnowledgePage } from './pages/KnowledgePage';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import type { ReactNode } from 'react';
 
@@ -102,6 +103,16 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <FunctionsPage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Knowledge page - knowledge graph and NL query */}
+      <Route
+        path="/knowledge"
+        element={
+          <ProtectedRoute>
+            <KnowledgePage />
           </ProtectedRoute>
         }
       />
