@@ -1,4 +1,4 @@
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, ArrowRight } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
@@ -29,6 +29,7 @@ const componentMap: Record<string, Record<string, React.ComponentType>> = {
 
 export function DashboardPage() {
     const { folder, item } = useParams<{ folder?: string; item?: string }>();
+    const navigate = useNavigate();
 
     // If no folder/item selected, show welcome screen
     if (!folder || !item) {
@@ -44,7 +45,7 @@ export function DashboardPage() {
                 </p>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-3xl w-full">
-                    <Card className="hover:shadow-md transition-shadow cursor-pointer group">
+                    <Card className="hover:shadow-md transition-shadow cursor-pointer group" onClick={() => navigate('/dashboard/acquisition/r2a')}>
                         <CardHeader className="pb-2">
                             <CardTitle className="text-base flex items-center gap-2">
                                 Acquisition
@@ -56,7 +57,7 @@ export function DashboardPage() {
                         </CardContent>
                     </Card>
 
-                    <Card className="hover:shadow-md transition-shadow cursor-pointer group">
+                    <Card className="hover:shadow-md transition-shadow cursor-pointer group" onClick={() => navigate('/dashboard/retention/fe2net')}>
                         <CardHeader className="pb-2">
                             <CardTitle className="text-base flex items-center gap-2">
                                 Retention
@@ -68,7 +69,7 @@ export function DashboardPage() {
                         </CardContent>
                     </Card>
 
-                    <Card className="hover:shadow-md transition-shadow cursor-pointer group">
+                    <Card className="hover:shadow-md transition-shadow cursor-pointer group" onClick={() => navigate('/dashboard/quality/dapr')}>
                         <CardHeader className="pb-2">
                             <CardTitle className="text-base flex items-center gap-2">
                                 Quality
