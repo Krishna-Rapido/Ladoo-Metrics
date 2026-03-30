@@ -188,7 +188,7 @@ export async function listSchemaTables(): Promise<SchemaTable[]> {
     headers: await authHeaders(),
     timeout: TIMEOUT_MS,
   })
-  return data
+  return Array.isArray(data) ? data : []
 }
 
 export async function getSchemaTable(tableId: string): Promise<SchemaTable> {
@@ -281,7 +281,7 @@ export async function listRelationships(): Promise<SchemaRelationship[]> {
     headers: await authHeaders(),
     timeout: TIMEOUT_MS,
   })
-  return data
+  return Array.isArray(data) ? data : []
 }
 
 export async function createRelationship(
@@ -349,7 +349,7 @@ export async function listQueryHistory(
     headers: await authHeaders(userId),
     timeout: TIMEOUT_MS,
   })
-  return data
+  return Array.isArray(data) ? data : []
 }
 
 export async function submitQueryFeedback(
