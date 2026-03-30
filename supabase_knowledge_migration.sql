@@ -5,7 +5,10 @@
 -- https://supabase.com/dashboard/project/croniadpudboidlouhuu/sql/new
 -- =============================================================================
 -- Fully idempotent — safe to re-run.
--- RLS: all operations restricted to authenticated users only.
+-- RLS rules:
+--   schema_tables + schema_columns: read/write for ALL (anon + authenticated)
+--   schema_relationships: read for ALL, write only for admin (krishna.poddar@rapido.bike)
+--   nl_queries: read/write for ALL
 -- =============================================================================
 
 -- Ensure the updated_at trigger function exists (idempotent)
@@ -41,25 +44,22 @@ CREATE INDEX IF NOT EXISTS idx_schema_tables_table_name ON public.schema_tables(
 
 ALTER TABLE public.schema_tables ENABLE ROW LEVEL SECURITY;
 
+-- Drop old policies
 DROP POLICY IF EXISTS "All users can view schema tables" ON public.schema_tables;
 DROP POLICY IF EXISTS "Authenticated users can create schema tables" ON public.schema_tables;
 DROP POLICY IF EXISTS "Creators can update own schema tables" ON public.schema_tables;
 DROP POLICY IF EXISTS "Creators can delete own schema tables" ON public.schema_tables;
+-- Drop new policies (for idempotent re-run)
+DROP POLICY IF EXISTS "schema_tables_select" ON public.schema_tables;
+DROP POLICY IF EXISTS "schema_tables_insert" ON public.schema_tables;
+DROP POLICY IF EXISTS "schema_tables_update" ON public.schema_tables;
+DROP POLICY IF EXISTS "schema_tables_delete" ON public.schema_tables;
 
-CREATE POLICY "All users can view schema tables"
-    ON public.schema_tables FOR SELECT TO authenticated USING (true);
-
-CREATE POLICY "Authenticated users can create schema tables"
-    ON public.schema_tables FOR INSERT TO authenticated
-    WITH CHECK (true);
-
-CREATE POLICY "Creators can update own schema tables"
-    ON public.schema_tables FOR UPDATE TO authenticated
-    USING (true);
-
-CREATE POLICY "Creators can delete own schema tables"
-    ON public.schema_tables FOR DELETE TO authenticated
-    USING (true);
+-- Open read/write to all roles (anon + authenticated) so backend works with any key
+CREATE POLICY "schema_tables_select" ON public.schema_tables FOR SELECT USING (true);
+CREATE POLICY "schema_tables_insert" ON public.schema_tables FOR INSERT WITH CHECK (true);
+CREATE POLICY "schema_tables_update" ON public.schema_tables FOR UPDATE USING (true);
+CREATE POLICY "schema_tables_delete" ON public.schema_tables FOR DELETE USING (true);
 
 DROP TRIGGER IF EXISTS set_schema_tables_updated_at ON public.schema_tables;
 CREATE TRIGGER set_schema_tables_updated_at
@@ -89,22 +89,22 @@ CREATE INDEX IF NOT EXISTS idx_schema_columns_table_id ON public.schema_columns(
 
 ALTER TABLE public.schema_columns ENABLE ROW LEVEL SECURITY;
 
+-- Drop old policies
 DROP POLICY IF EXISTS "All users can view schema columns" ON public.schema_columns;
 DROP POLICY IF EXISTS "All users can create schema columns" ON public.schema_columns;
 DROP POLICY IF EXISTS "All users can update schema columns" ON public.schema_columns;
 DROP POLICY IF EXISTS "All users can delete schema columns" ON public.schema_columns;
+-- Drop new policies (for idempotent re-run)
+DROP POLICY IF EXISTS "schema_columns_select" ON public.schema_columns;
+DROP POLICY IF EXISTS "schema_columns_insert" ON public.schema_columns;
+DROP POLICY IF EXISTS "schema_columns_update" ON public.schema_columns;
+DROP POLICY IF EXISTS "schema_columns_delete" ON public.schema_columns;
 
-CREATE POLICY "All users can view schema columns"
-    ON public.schema_columns FOR SELECT TO authenticated USING (true);
-
-CREATE POLICY "All users can create schema columns"
-    ON public.schema_columns FOR INSERT TO authenticated WITH CHECK (true);
-
-CREATE POLICY "All users can update schema columns"
-    ON public.schema_columns FOR UPDATE TO authenticated USING (true);
-
-CREATE POLICY "All users can delete schema columns"
-    ON public.schema_columns FOR DELETE TO authenticated USING (true);
+-- Open read/write to all roles
+CREATE POLICY "schema_columns_select" ON public.schema_columns FOR SELECT USING (true);
+CREATE POLICY "schema_columns_insert" ON public.schema_columns FOR INSERT WITH CHECK (true);
+CREATE POLICY "schema_columns_update" ON public.schema_columns FOR UPDATE USING (true);
+CREATE POLICY "schema_columns_delete" ON public.schema_columns FOR DELETE USING (true);
 
 DROP TRIGGER IF EXISTS set_schema_columns_updated_at ON public.schema_columns;
 CREATE TRIGGER set_schema_columns_updated_at
@@ -113,6 +113,10 @@ CREATE TRIGGER set_schema_columns_updated_at
 
 -- =============================================================================
 -- SCHEMA RELATIONSHIPS — Join relationships between tables
+-- =============================================================================
+-- Read + Insert: everyone (any user can request a connection).
+-- Update + Delete: only admin (krishna.poddar@rapido.bike) can approve/reject/remove.
+-- The backend service-role key bypasses RLS, so server-side inference still works.
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS public.schema_relationships (
@@ -136,22 +140,32 @@ CREATE INDEX IF NOT EXISTS idx_schema_relationships_to ON public.schema_relation
 
 ALTER TABLE public.schema_relationships ENABLE ROW LEVEL SECURITY;
 
+-- Drop old policies
 DROP POLICY IF EXISTS "All users can view schema relationships" ON public.schema_relationships;
 DROP POLICY IF EXISTS "All users can create schema relationships" ON public.schema_relationships;
 DROP POLICY IF EXISTS "All users can update schema relationships" ON public.schema_relationships;
 DROP POLICY IF EXISTS "All users can delete schema relationships" ON public.schema_relationships;
+-- Drop new policies (for idempotent re-run)
+DROP POLICY IF EXISTS "schema_relationships_select" ON public.schema_relationships;
+DROP POLICY IF EXISTS "schema_relationships_insert" ON public.schema_relationships;
+DROP POLICY IF EXISTS "schema_relationships_update" ON public.schema_relationships;
+DROP POLICY IF EXISTS "schema_relationships_delete" ON public.schema_relationships;
 
-CREATE POLICY "All users can view schema relationships"
-    ON public.schema_relationships FOR SELECT TO authenticated USING (true);
+-- Everyone can read and create relationships (connection requests)
+CREATE POLICY "schema_relationships_select"
+    ON public.schema_relationships FOR SELECT USING (true);
 
-CREATE POLICY "All users can create schema relationships"
-    ON public.schema_relationships FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY "schema_relationships_insert"
+    ON public.schema_relationships FOR INSERT WITH CHECK (true);
 
-CREATE POLICY "All users can update schema relationships"
-    ON public.schema_relationships FOR UPDATE TO authenticated USING (true);
+-- Only admin can approve/reject/remove relationships
+CREATE POLICY "schema_relationships_update"
+    ON public.schema_relationships FOR UPDATE TO authenticated
+    USING (auth.jwt() ->> 'email' = 'krishna.poddar@rapido.bike');
 
-CREATE POLICY "All users can delete schema relationships"
-    ON public.schema_relationships FOR DELETE TO authenticated USING (true);
+CREATE POLICY "schema_relationships_delete"
+    ON public.schema_relationships FOR DELETE TO authenticated
+    USING (auth.jwt() ->> 'email' = 'krishna.poddar@rapido.bike');
 
 DROP TRIGGER IF EXISTS set_schema_relationships_updated_at ON public.schema_relationships;
 CREATE TRIGGER set_schema_relationships_updated_at
@@ -183,18 +197,16 @@ CREATE INDEX IF NOT EXISTS idx_nl_queries_created_at ON public.nl_queries(create
 
 ALTER TABLE public.nl_queries ENABLE ROW LEVEL SECURITY;
 
+-- Drop old policies
 DROP POLICY IF EXISTS "Users can view own queries" ON public.nl_queries;
 DROP POLICY IF EXISTS "Users can create own queries" ON public.nl_queries;
 DROP POLICY IF EXISTS "Users can update own queries" ON public.nl_queries;
+-- Drop new policies (for idempotent re-run)
+DROP POLICY IF EXISTS "nl_queries_select" ON public.nl_queries;
+DROP POLICY IF EXISTS "nl_queries_insert" ON public.nl_queries;
+DROP POLICY IF EXISTS "nl_queries_update" ON public.nl_queries;
 
-CREATE POLICY "Users can view own queries"
-    ON public.nl_queries FOR SELECT TO authenticated
-    USING (true);
-
-CREATE POLICY "Users can create own queries"
-    ON public.nl_queries FOR INSERT TO authenticated
-    WITH CHECK (true);
-
-CREATE POLICY "Users can update own queries"
-    ON public.nl_queries FOR UPDATE TO authenticated
-    USING (true);
+-- Open read/write to all roles (backend handles user_id filtering)
+CREATE POLICY "nl_queries_select" ON public.nl_queries FOR SELECT USING (true);
+CREATE POLICY "nl_queries_insert" ON public.nl_queries FOR INSERT WITH CHECK (true);
+CREATE POLICY "nl_queries_update" ON public.nl_queries FOR UPDATE USING (true);

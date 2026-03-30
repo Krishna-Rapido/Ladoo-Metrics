@@ -1,16 +1,21 @@
 import { useState } from "react"
 import { Brain, MessageSquare, Network } from "lucide-react"
 import { PrimarySidebar } from "@/components/nav/PrimarySidebar"
+import { useAuth } from "@/contexts/AuthContext"
 import { cn } from "@/lib/utils"
 import { ChatMode } from "./ChatMode"
 import { SchemaMode } from "./SchemaMode"
 import { useKnowledgeData } from "./useKnowledgeData"
 
+const ADMIN_EMAIL = "krishna.poddar@rapido.bike"
+
 type Mode = "chat" | "schema"
 
 export function KnowledgeShell() {
   const [mode, setMode] = useState<Mode>("chat")
+  const { user } = useAuth()
   const knowledgeData = useKnowledgeData()
+  const isAdmin = user?.email === ADMIN_EMAIL
 
   return (
     <div className="flex h-screen bg-background">
@@ -61,7 +66,7 @@ export function KnowledgeShell() {
           {mode === "chat" ? (
             <ChatMode tables={knowledgeData.tables} />
           ) : (
-            <SchemaMode {...knowledgeData} />
+            <SchemaMode {...knowledgeData} isAdmin={isAdmin} />
           )}
         </main>
       </div>
