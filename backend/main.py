@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv()  # Load .env before any os.environ access
+
 import ast
 import io
 import logging
@@ -5199,6 +5202,16 @@ def list_relationships(request: Request):
 @app.post("/knowledge/query", response_model=NLQueryResponse)
 def nl_query(payload: NLQueryRequest, request: Request):
     """Natural language → SQL query (+ optional execution)."""
+    try:
+        return _nl_query_inner(payload, request)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("nl_query failed")
+        return NLQueryResponse(success=False, error=str(e))
+
+
+def _nl_query_inner(payload: NLQueryRequest, request: Request):
     sb = _get_supabase_for_request(request)
     user_id = _get_user_id(request)
 

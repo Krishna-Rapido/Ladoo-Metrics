@@ -246,7 +246,7 @@ export function ChatMode({ tables }: ChatModeProps) {
               <div className="flex items-center justify-between mt-2">
                 <div className="flex items-center gap-2">
                   <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
-                    GPT-4o
+                    Claude
                   </span>
                   {tables.length > 0 && (
                     <span className="text-[10px] text-muted-foreground">

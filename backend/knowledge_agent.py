@@ -3,7 +3,7 @@ Ladoo Metrics — Knowledge Graph Agent Layer
 
 Two components:
   SchemaInferenceEngine — deterministic join relationship inference (no LLM)
-  NLQueryAgent          — natural language → validated SQL via GPT-4o
+  NLQueryAgent          — natural language → validated SQL via Claude
 
 The knowledge graph stores table schemas, column metadata, and join relationships
 in Supabase. The NLQueryAgent reads that graph at query time to build dynamic
@@ -25,21 +25,21 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# OpenAI client (reuse lazy pattern from ai_agent.py)
+# Anthropic client (Claude API)
 # ---------------------------------------------------------------------------
 
-_openai_client = None
+_anthropic_client = None
 
 
-def get_openai_client():
-    global _openai_client
-    if _openai_client is None:
-        from openai import OpenAI
-        api_key = os.environ.get("OPENAI_API_KEY")
+def get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        from anthropic import Anthropic
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY environment variable is not set")
-        _openai_client = OpenAI(api_key=api_key)
-    return _openai_client
+            raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set")
+        _anthropic_client = Anthropic(api_key=api_key)
+    return _anthropic_client
 
 
 # ---------------------------------------------------------------------------
@@ -464,20 +464,19 @@ class NLQueryAgent:
         Generate SQL from a natural language question.
         Returns dict with keys: intent, sql, explanation, error
         """
-        client = get_openai_client()
-
         try:
-            response = client.chat.completions.create(
-                model="gpt-4o",
+            client = get_anthropic_client()
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=2000,
+                temperature=0.1,
+                system=_NL_QUERY_SYSTEM_PROMPT + "\n\n" + schema_context,
                 messages=[
-                    {"role": "system", "content": _NL_QUERY_SYSTEM_PROMPT + "\n\n" + schema_context},
                     {"role": "user", "content": question},
                 ],
-                temperature=0.1,
-                max_tokens=2000,
             )
 
-            content = response.choices[0].message.content or ""
+            content = response.content[0].text if response.content else ""
 
             # Parse structured response
             intent = self._extract_tag(content, "intent") or ""
