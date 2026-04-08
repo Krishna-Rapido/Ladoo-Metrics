@@ -4828,9 +4828,10 @@ from knowledge_schemas import (
     AutoDetectRequest, AutoDetectResponse,
     NLQueryRequest, NLQueryResponse,
     NLQueryHistoryItem, QueryFeedbackRequest,
+    GenerateDashboardQueryRequest, GenerateDashboardQueryResponse,
 )
 from knowledge_agent import (
-    SchemaInferenceEngine, NLQueryAgent, build_schema_context,
+    SchemaInferenceEngine, NLQueryAgent, DashboardQueryAgent, build_schema_context,
     auto_detect_columns, validate_generated_sql,
 )
 
@@ -5351,6 +5352,88 @@ def query_feedback(query_id: str, payload: QueryFeedbackRequest, request: Reques
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- Dashboard Query Generation ---
+
+@app.post("/knowledge/generate-dashboard-query", response_model=GenerateDashboardQueryResponse)
+def generate_dashboard_query(payload: GenerateDashboardQueryRequest, request: Request):
+    """Generate a template-based SQL query for custom dashboards using AI."""
+    try:
+        sb = _get_supabase_for_request(request)
+
+        # Build schema context from knowledge graph (same as NL query)
+        tables_result = sb.table("schema_tables").select("*").execute()
+        tables = tables_result.data or []
+
+        cols_result = sb.table("schema_columns").select("*").execute()
+        all_cols = cols_result.data or []
+        cols_by_table: Dict[str, list] = {}
+        for c in all_cols:
+            cols_by_table.setdefault(c["table_id"], []).append(c)
+        for t in tables:
+            t["columns"] = cols_by_table.get(t["id"], [])
+
+        rels_result = sb.table("schema_relationships").select("*").execute()
+        rels = rels_result.data or []
+        table_map = {t["id"]: t["table_name"] for t in tables}
+        for r in rels:
+            r["from_table_name"] = table_map.get(r.get("from_table_id"), "")
+            r["to_table_name"] = table_map.get(r.get("to_table_id"), "")
+
+        schema_context = build_schema_context(tables, rels)
+
+        # Load existing dashboard queries as few-shot examples (cap at 15)
+        example_queries = ""
+        try:
+            dash_result = sb.table("custom_dashboards").select("name, sql_query").not_.is_("sql_query", "null").limit(15).execute()
+            examples = []
+            for d in (dash_result.data or []):
+                sql = (d.get("sql_query") or "").strip()
+                if sql:
+                    examples.append(f"-- Dashboard: {d.get('name', 'Untitled')}\n{sql}")
+            if examples:
+                example_queries = "\n\n".join(examples)
+        except Exception:
+            pass  # Non-critical — proceed without examples
+
+        # Generate SQL
+        agent = DashboardQueryAgent()
+        result = agent.generate(payload.prompt, schema_context, example_queries)
+
+        if result["error"]:
+            return GenerateDashboardQueryResponse(
+                success=False, error=result["error"],
+                sql=result["sql"], explanation=result["explanation"],
+            )
+
+        sql = result["sql"]
+
+        # Validate: replace {{param}} with placeholder strings before validation
+        import re as _re
+        sql_for_validation = _re.sub(r"\{\{\s*\w+\s*\}\}", "'placeholder'", sql)
+        is_valid, err = validate_generated_sql(sql_for_validation)
+        if not is_valid:
+            return GenerateDashboardQueryResponse(
+                success=False, error=f"SQL validation failed: {err}",
+                sql=sql, explanation=result["explanation"],
+            )
+
+        # Detect template parameters
+        detected_params = list({m.group(1) for m in _re.finditer(r"\{\{\s*(\w+)\s*\}\}", sql)})
+
+        return GenerateDashboardQueryResponse(
+            success=True,
+            sql=sql,
+            explanation=result["explanation"],
+            detected_params=sorted(detected_params),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("generate_dashboard_query failed")
+        return GenerateDashboardQueryResponse(success=False, error=str(e))
+
+
 # =============================================================================
 # HEALTH CHECK
 # =============================================================================
@@ -5458,6 +5541,492 @@ async def shutdown_event():
                 shutil.rmtree(temp_dir, ignore_errors=True)
         except Exception:
             pass
+
+
+# =============================================================================
+# RESEARCHER — CAPTAIN SEGMENT DISCOVERY LAB
+# =============================================================================
+
+from researcher_schemas import (
+    ContrastAnalysisRequest, ContrastAnalysisResponse,
+    StimulusResponseRequest, StimulusResponseResponse,
+    ValidateSegmentRequest, ValidateSegmentResponse,
+    SegmentCreateRequest, SegmentResponse, SegmentListResponse,
+    InvestigationCreateRequest, InvestigationUpdateRequest,
+    InvestigationResponse, InvestigationListResponse,
+    ResponseProfileItem, FeatureComparison, GateResult,
+    ResearcherChatRequest,
+    PrestoTestRequest, PrestoTestResponse, TableTestResult,
+)
+from researcher import (
+    run_contrast_analysis,
+    compute_response_profiles,
+    validate_segment,
+)
+
+
+@app.post("/researcher/contrast", response_model=ContrastAnalysisResponse)
+def researcher_contrast(payload: ContrastAnalysisRequest):
+    """Run contrast analysis between two captain groups."""
+    try:
+        result = run_contrast_analysis(
+            username=payload.username,
+            city=payload.city,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            splitting_outcome=payload.splitting_outcome,
+            consistency_segment=payload.consistency_segment,
+            performance_segment=payload.performance_segment,
+            custom_column=payload.custom_column,
+            custom_threshold=payload.custom_threshold,
+            custom_direction=payload.custom_direction or "above",
+            min_group_size=payload.min_group_size,
+        )
+        queries = result.get("queries", [])
+        if not result.get("success"):
+            return ContrastAnalysisResponse(
+                success=False, group_a_label="", group_b_label="",
+                group_a_size=0, group_b_size=0, comparisons=[], top_features=[],
+                queries=queries,
+                error=result.get("error", "Unknown error"),
+            )
+        return ContrastAnalysisResponse(
+            success=True,
+            group_a_label=result["group_a_label"],
+            group_b_label=result["group_b_label"],
+            group_a_size=result["group_a_size"],
+            group_b_size=result["group_b_size"],
+            comparisons=[FeatureComparison(**c) for c in result["comparisons"]],
+            top_features=result["top_features"],
+            queries=queries,
+        )
+    except Exception as exc:
+        logger.exception("Researcher contrast error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/researcher/stimulus-response", response_model=StimulusResponseResponse)
+def researcher_stimulus_response(payload: StimulusResponseRequest):
+    """Compute per-captain stimulus-response profiles."""
+    try:
+        result = compute_response_profiles(
+            username=payload.username,
+            city=payload.city,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            axes=payload.axes,
+            consistency_segment=payload.consistency_segment,
+            performance_segment=payload.performance_segment,
+            min_active_days=payload.min_active_days,
+        )
+        queries = result.get("queries", [])
+        if not result.get("success"):
+            return StimulusResponseResponse(
+                success=False, captain_count=0, profiles=[], axis_stats={},
+                queries=queries,
+                error=result.get("error", "Unknown error"),
+            )
+        profiles = []
+        for p in result["profiles"]:
+            profiles.append(ResponseProfileItem(**{
+                k: v for k, v in p.items()
+                if k in ResponseProfileItem.model_fields
+            }))
+        return StimulusResponseResponse(
+            success=True,
+            captain_count=result["captain_count"],
+            profiles=profiles,
+            axis_stats=result["axis_stats"],
+            queries=queries,
+        )
+    except Exception as exc:
+        logger.exception("Researcher stimulus-response error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/researcher/validate", response_model=ValidateSegmentResponse)
+def researcher_validate(payload: ValidateSegmentRequest):
+    """Run 6-gate validation on a candidate segment."""
+    try:
+        result = validate_segment(
+            username=payload.username,
+            city=payload.city,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            segment_name=payload.segment_name,
+            segment_definition=payload.segment_definition,
+            consistency_segment=payload.consistency_segment,
+            performance_segment=payload.performance_segment,
+            actionability_note=payload.actionability_note,
+        )
+        if not result.get("success"):
+            return ValidateSegmentResponse(
+                success=False, segment_name=payload.segment_name,
+                segment_size=0, population_size=0, population_pct=0,
+                gates=[], gates_passed=0, total_gates=6, ready_to_publish=False,
+                error=result.get("error", "Unknown error"),
+            )
+        return ValidateSegmentResponse(
+            success=True,
+            segment_name=result["segment_name"],
+            segment_size=result["segment_size"],
+            population_size=result["population_size"],
+            population_pct=result["population_pct"],
+            gates=[GateResult(**g) for g in result["gates"]],
+            gates_passed=result["gates_passed"],
+            total_gates=result["total_gates"],
+            ready_to_publish=result["ready_to_publish"],
+        )
+    except Exception as exc:
+        logger.exception("Researcher validate error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# --- Segment Catalog (Supabase-backed CRUD) ---
+
+@app.get("/researcher/segments", response_model=SegmentListResponse)
+def list_segments(request: Request):
+    """List all published segments."""
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("discovered_segments").select("*").order("created_at", desc=True).execute()
+        segments = []
+        for row in result.data or []:
+            segments.append(SegmentResponse(
+                id=row["id"],
+                name=row["name"],
+                description=row["description"],
+                definition=row["definition"],
+                method=row["method"],
+                city=row.get("city"),
+                population_context=row.get("population_context"),
+                validation=row.get("validation", {}),
+                segment_size=row.get("segment_size"),
+                population_pct=row.get("population_pct"),
+                key_features=row.get("key_features", []),
+                status=row["status"],
+                actionability_note=row.get("actionability_note"),
+                created_by=row["created_by"],
+                created_at=str(row["created_at"]),
+                updated_at=str(row["updated_at"]),
+            ))
+        return SegmentListResponse(segments=segments)
+    except Exception as exc:
+        logger.exception("List segments error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/researcher/segments", response_model=SegmentResponse)
+def create_segment(payload: SegmentCreateRequest, request: Request):
+    """Publish a validated segment to the catalog."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("discovered_segments").insert({
+            "created_by": user_id,
+            "name": payload.name,
+            "description": payload.description,
+            "definition": payload.definition,
+            "method": payload.method,
+            "city": payload.city,
+            "population_context": payload.population_context,
+            "validation": payload.validation,
+            "segment_size": payload.segment_size,
+            "population_pct": payload.population_pct,
+            "key_features": payload.key_features,
+            "actionability_note": payload.actionability_note,
+            "investigation_id": payload.investigation_id,
+            "status": "published",
+        }).select().single().execute()
+        row = result.data
+        return SegmentResponse(
+            id=row["id"],
+            name=row["name"],
+            description=row["description"],
+            definition=row["definition"],
+            method=row["method"],
+            city=row.get("city"),
+            population_context=row.get("population_context"),
+            validation=row.get("validation", {}),
+            segment_size=row.get("segment_size"),
+            population_pct=row.get("population_pct"),
+            key_features=row.get("key_features", []),
+            status=row["status"],
+            actionability_note=row.get("actionability_note"),
+            created_by=row["created_by"],
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+    except Exception as exc:
+        logger.exception("Create segment error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# --- Investigations CRUD ---
+
+@app.get("/researcher/investigations", response_model=InvestigationListResponse)
+def list_investigations(request: Request):
+    """List all investigations for the current user."""
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("investigations").select("*").order("updated_at", desc=True).execute()
+        investigations = []
+        for row in result.data or []:
+            investigations.append(InvestigationResponse(
+                id=row["id"],
+                user_id=row["user_id"],
+                title=row["title"],
+                description=row.get("description"),
+                method=row["method"],
+                status=row["status"],
+                config=row.get("config", {}),
+                results=row.get("results"),
+                notebook=row.get("notebook", []),
+                created_at=str(row["created_at"]),
+                updated_at=str(row["updated_at"]),
+            ))
+        return InvestigationListResponse(investigations=investigations)
+    except Exception as exc:
+        logger.exception("List investigations error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/researcher/investigations", response_model=InvestigationResponse)
+def create_investigation(payload: InvestigationCreateRequest, request: Request):
+    """Create a new investigation."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("investigations").insert({
+            "user_id": user_id,
+            "title": payload.title,
+            "description": payload.description,
+            "method": payload.method,
+            "config": payload.config,
+            "status": "draft",
+        }).select().single().execute()
+        row = result.data
+        return InvestigationResponse(
+            id=row["id"],
+            user_id=row["user_id"],
+            title=row["title"],
+            description=row.get("description"),
+            method=row["method"],
+            status=row["status"],
+            config=row.get("config", {}),
+            results=row.get("results"),
+            notebook=row.get("notebook", []),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+    except Exception as exc:
+        logger.exception("Create investigation error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.patch("/researcher/investigations/{investigation_id}", response_model=InvestigationResponse)
+def update_investigation(investigation_id: str, payload: InvestigationUpdateRequest, request: Request):
+    """Update an investigation (status, results, notebook entry)."""
+    sb = _get_supabase_for_request(request)
+    try:
+        updates = {}
+        if payload.title is not None:
+            updates["title"] = payload.title
+        if payload.description is not None:
+            updates["description"] = payload.description
+        if payload.status is not None:
+            updates["status"] = payload.status
+        if payload.config is not None:
+            updates["config"] = payload.config
+        if payload.results is not None:
+            updates["results"] = payload.results
+
+        # Append notebook entry if provided
+        if payload.notebook_entry is not None:
+            # Fetch current notebook
+            current = sb.table("investigations").select("notebook").eq("id", investigation_id).single().execute()
+            notebook = current.data.get("notebook", []) if current.data else []
+            notebook.append(payload.notebook_entry)
+            updates["notebook"] = notebook
+
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        result = sb.table("investigations").update(updates).eq("id", investigation_id).select().single().execute()
+        row = result.data
+        return InvestigationResponse(
+            id=row["id"],
+            user_id=row["user_id"],
+            title=row["title"],
+            description=row.get("description"),
+            method=row["method"],
+            status=row["status"],
+            config=row.get("config", {}),
+            results=row.get("results"),
+            notebook=row.get("notebook", []),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Update investigation error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Researcher Chat (Conversational Agent — SSE)
+# ---------------------------------------------------------------------------
+
+from researcher_agent import ResearcherAgent
+
+@app.post("/researcher/chat")
+def researcher_chat(payload: ResearcherChatRequest):
+    """Stream a conversational researcher agent response via SSE."""
+    agent = ResearcherAgent(username=payload.username)
+    messages = [{"role": m.role, "content": m.content or ""} for m in payload.messages]
+    rules = [{"type": r.type, "content": r.content, "scope": r.scope} for r in payload.rules] if payload.rules else None
+    return StreamingResponse(
+        agent.stream(messages, rules=rules),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Presto Connection Test
+# ---------------------------------------------------------------------------
+
+_PRESTO_TEST_TABLES = [
+    {
+        "table": "metrics.captain_base_metrics_enriched",
+        "query": "SELECT captain_id, city, yyyymmdd FROM metrics.captain_base_metrics_enriched LIMIT 1",
+        "key_cols": ["captain_id", "city", "yyyymmdd"],
+    },
+    {
+        "table": "mne.ms_1842554619_2584218394",
+        "query": "SELECT captain_id, geo_city, time_value, time_level FROM mne.ms_1842554619_2584218394 LIMIT 1",
+        "key_cols": ["captain_id", "geo_city", "time_value", "time_level"],
+    },
+    {
+        "table": "reports_internal.marketplace_dapr_twenty_pings_combined_v7_v8",
+        "query": "SELECT captain_id, city_name, yyyymmdd, dapr FROM reports_internal.marketplace_dapr_twenty_pings_combined_v7_v8 LIMIT 1",
+        "key_cols": ["captain_id", "city_name", "yyyymmdd", "dapr"],
+    },
+    {
+        "table": "datasets.captain_svo_daily_kpi",
+        "query": "SELECT captainid, city, yyyymmdd FROM datasets.captain_svo_daily_kpi LIMIT 1",
+        "key_cols": ["captainid", "city", "yyyymmdd"],
+    },
+    {
+        "table": "datasets.captain_supply_journey_summary",
+        "query": "SELECT captain_id, mobile_number, registration_date FROM datasets.captain_supply_journey_summary LIMIT 1",
+        "key_cols": ["captain_id", "mobile_number", "registration_date"],
+    },
+    {
+        "table": "experiments.fe2net_dashboard_lite",
+        "query": "SELECT city, time_level, time_value FROM experiments.fe2net_dashboard_lite LIMIT 1",
+        "key_cols": ["city", "time_level", "time_value"],
+    },
+    {
+        "table": "iceberg.experiments_internal.iceberg_experiment_v6_root",
+        "query": "SELECT experiment_id, yyyymmdd, attributes FROM iceberg.experiments_internal.iceberg_experiment_v6_root LIMIT 1",
+        "key_cols": ["experiment_id", "yyyymmdd", "attributes"],
+    },
+]
+
+
+@app.post("/researcher/test-connection", response_model=PrestoTestResponse)
+def test_presto_connection(payload: PrestoTestRequest):
+    """Test Presto connectivity and table-level access for a given username."""
+    import time as _time
+    from pyhive import presto as _presto
+
+    presto_host = os.environ.get("PRESTO_HOST", "bi-trino-4.serving.data.production.internal")
+    presto_port = int(os.environ.get("PRESTO_PORT", "80"))
+    username = payload.username.strip()
+
+    # 1. Test basic connectivity
+    basic_ok = False
+    basic_error = None
+    try:
+        conn = _presto.connect(presto_host, presto_port, username='krishna.poddar@rapido.bike')
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        basic_ok = True
+        conn.close()
+    except Exception as exc:
+        basic_error = str(exc)
+
+    if not basic_ok:
+        return PrestoTestResponse(
+            connected=False,
+            username=username,
+            presto_host=presto_host,
+            presto_port=presto_port,
+            basic_query_ok=False,
+            basic_query_error=basic_error,
+            tables=[],
+            summary=f"Cannot connect to Presto as '{username}': {basic_error}",
+        )
+
+    # 2. Test each table
+    table_results: list[TableTestResult] = []
+    accessible_count = 0
+
+    for t in _PRESTO_TEST_TABLES:
+        conn = None
+        try:
+            start = _time.time()
+            conn = _presto.connect(presto_host, presto_port, username=username)
+            df = pd.read_sql(t["query"], conn)
+            elapsed = int((_time.time() - start) * 1000)
+            table_results.append(TableTestResult(
+                table=t["table"],
+                accessible=True,
+                row_count=len(df),
+                columns_found=list(df.columns),
+                query_ms=elapsed,
+            ))
+            accessible_count += 1
+        except Exception as exc:
+            elapsed = int((_time.time() - start) * 1000) if 'start' in dir() else 0
+            table_results.append(TableTestResult(
+                table=t["table"],
+                accessible=False,
+                error=str(exc)[:500],
+                query_ms=elapsed,
+            ))
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    total = len(_PRESTO_TEST_TABLES)
+    if accessible_count == total:
+        summary = f"All {total} tables accessible as '{username}'."
+    else:
+        failed = [r.table for r in table_results if not r.accessible]
+        summary = (
+            f"{accessible_count}/{total} tables accessible as '{username}'. "
+            f"FAILED: {', '.join(failed)}"
+        )
+
+    return PrestoTestResponse(
+        connected=True,
+        username=username,
+        presto_host=presto_host,
+        presto_port=presto_port,
+        basic_query_ok=True,
+        tables=table_results,
+        summary=summary,
+    )
 
 
 if __name__ == "__main__":

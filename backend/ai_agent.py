@@ -58,7 +58,7 @@ PURPOSE: Primary daily activity table. One row per captain per day per city.
 KEY COLUMNS:
   captain_id          VARCHAR   Unique captain identifier
   yyyymmdd            VARCHAR   Date in YYYYMMDD format (e.g. '20260119')
-  geo_city            VARCHAR   City name lowercase (e.g. 'bangalore', 'delhi')
+  city                VARCHAR   City name (use lower(city) for filtering, e.g. lower(city) = 'bangalore')
 
   -- Online presence (how long / how often they are online)
   count_captain_num_online_daily_city            BIGINT  Online events all day
@@ -129,17 +129,19 @@ PURPOSE: Captain onboarding and registration data.
 KEY COLUMNS:
   captain_id          VARCHAR
   mobile_number       VARCHAR
-  registration_date   DATE
-  city                VARCHAR
-  service_category    VARCHAR
+  registration_date   DATE      (DATE type — use substr(replace(registration_date,'-',''),1,8) for YYYYMMDD comparison)
+  mode_id             VARCHAR   Service mode identifier
+  activation_date     VARCHAR
+  first_ridedate      VARCHAR
+NOTE: This table does NOT have a city column. Filter by city via joins with other tables.
 
 TABLE: mne.ms_1842554619_2584218394
 PURPOSE: Rolling 28/83-day consistency and performance segmentation.
 KEY COLUMNS:
-  captain_id
-  geo_city
-  time_value                          Date
-  time_level                          'daily'/'weekly'/'monthly'
+  captain_id          VARCHAR   Captain identifier
+  geo_city            VARCHAR   City name (use lower(geo_city) for filtering)
+  time_value          DATE      Date (DATE type, NOT varchar! For YYYYMMDD comparison use: replace(substr(cast(time_value as varchar),1,10),'-',''))
+  time_level          VARCHAR   'daily'/'weekly'/'monthly'
   count_net_days_last_28_days         Net active days in last 28 days
   count_net_weeks_last_28_days        Net active weeks in last 28 days
   captain_net_days_last_83_days       Net active days in last 83 days

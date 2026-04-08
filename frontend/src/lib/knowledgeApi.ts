@@ -363,3 +363,26 @@ export async function submitQueryFeedback(
     { headers: await authHeaders(userId), timeout: TIMEOUT_MS }
   )
 }
+
+// ---------------------------------------------------------------------------
+// Dashboard Query Generation
+// ---------------------------------------------------------------------------
+
+export interface GenerateDashboardQueryResponse {
+  success: boolean
+  sql: string
+  explanation: string
+  detected_params: string[]
+  error: string
+}
+
+export async function generateDashboardQuery(
+  prompt: string
+): Promise<GenerateDashboardQueryResponse> {
+  const { data } = await axios.post(
+    `${BASE_URL}/knowledge/generate-dashboard-query`,
+    { prompt },
+    { headers: await authHeaders(), timeout: TIMEOUT_MS }
+  )
+  return data
+}

@@ -20,6 +20,7 @@ export function AppShell() {
         if (location.pathname.startsWith('/dashboard')) return 'Dashboard';
         if (location.pathname.startsWith('/discover')) return 'Discover';
         if (location.pathname.startsWith('/insights')) return 'Insights';
+        if (location.pathname.startsWith('/researcher')) return 'Researcher';
         return 'Ladoo Metrics';
     };
 

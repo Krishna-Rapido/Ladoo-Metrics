@@ -547,3 +547,194 @@ export async function deleteCustomDashboard(dashboardId: string): Promise<void> 
 
   if (error) throw error
 }
+
+// =============================================================================
+// RESEARCHER CHAT OPERATIONS
+// =============================================================================
+
+export type ResearcherChat = {
+  id: string
+  user_id: string
+  title: string
+  created_at: string
+  updated_at: string
+}
+
+export type ResearcherChatMessage = {
+  id: string
+  chat_id: string
+  role: 'user' | 'assistant'
+  blocks: unknown[]
+  sequence_num: number
+  created_at: string
+}
+
+export type ResearcherRuleRow = {
+  id: string
+  user_id: string
+  chat_id: string | null
+  type: 'table' | 'filter' | 'analysis' | 'custom'
+  content: string
+  created_at: string
+  updated_at: string
+}
+
+export async function listResearcherChats(): Promise<ResearcherChat[]> {
+  const { data, error } = await supabase
+    .from('researcher_chats')
+    .select('*')
+    .order('updated_at', { ascending: false })
+
+  if (error) {
+    if (error.code === 'PGRST205' || error.message?.includes('Could not find the table')) {
+      console.warn('researcher_chats table not found. Run supabase_researcher_chat_migration.sql.')
+      return []
+    }
+    throw error
+  }
+  return data || []
+}
+
+export async function createResearcherChat(title: string): Promise<ResearcherChat> {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error('You must be logged in')
+
+  const { data, error } = await supabase
+    .from('researcher_chats')
+    .insert({ user_id: user.id, title })
+    .select()
+    .single()
+
+  if (error) throw error
+  return data
+}
+
+export async function updateResearcherChatTitle(chatId: string, title: string): Promise<void> {
+  const { error } = await supabase
+    .from('researcher_chats')
+    .update({ title })
+    .eq('id', chatId)
+
+  if (error) throw error
+}
+
+export async function deleteResearcherChat(chatId: string): Promise<void> {
+  const { error } = await supabase
+    .from('researcher_chats')
+    .delete()
+    .eq('id', chatId)
+
+  if (error) throw error
+}
+
+export async function loadChatMessages(chatId: string): Promise<ResearcherChatMessage[]> {
+  const { data, error } = await supabase
+    .from('researcher_chat_messages')
+    .select('*')
+    .eq('chat_id', chatId)
+    .order('sequence_num', { ascending: true })
+
+  if (error) throw error
+  return data || []
+}
+
+export async function saveChatMessage(
+  chatId: string,
+  role: 'user' | 'assistant',
+  blocks: unknown[],
+  sequenceNum: number
+): Promise<ResearcherChatMessage> {
+  const { data, error } = await supabase
+    .from('researcher_chat_messages')
+    .insert({
+      chat_id: chatId,
+      role,
+      blocks,
+      sequence_num: sequenceNum,
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+
+  // Touch the chat's updated_at
+  await supabase
+    .from('researcher_chats')
+    .update({ updated_at: new Date().toISOString() })
+    .eq('id', chatId)
+
+  return data
+}
+
+// =============================================================================
+// RESEARCHER RULES OPERATIONS
+// =============================================================================
+
+export async function listResearcherRules(chatId?: string): Promise<ResearcherRuleRow[]> {
+  let query = supabase
+    .from('researcher_rules')
+    .select('*')
+    .order('created_at', { ascending: true })
+
+  if (chatId) {
+    // Global rules (chat_id is null) + chat-scoped rules
+    query = query.or(`chat_id.is.null,chat_id.eq.${chatId}`)
+  } else {
+    // Global rules only
+    query = query.is('chat_id', null)
+  }
+
+  const { data, error } = await query
+  if (error) {
+    if (error.code === 'PGRST205' || error.message?.includes('Could not find the table')) {
+      console.warn('researcher_rules table not found. Run supabase_researcher_chat_migration.sql.')
+      return []
+    }
+    throw error
+  }
+  return data || []
+}
+
+export async function createResearcherRule(
+  type: string,
+  content: string,
+  chatId: string | null = null
+): Promise<ResearcherRuleRow> {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error('You must be logged in')
+
+  const { data, error } = await supabase
+    .from('researcher_rules')
+    .insert({
+      user_id: user.id,
+      chat_id: chatId,
+      type,
+      content,
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+  return data
+}
+
+export async function updateResearcherRule(
+  ruleId: string,
+  updates: Partial<Pick<ResearcherRuleRow, 'content' | 'type'>>
+): Promise<void> {
+  const { error } = await supabase
+    .from('researcher_rules')
+    .update(updates)
+    .eq('id', ruleId)
+
+  if (error) throw error
+}
+
+export async function deleteResearcherRule(ruleId: string): Promise<void> {
+  const { error } = await supabase
+    .from('researcher_rules')
+    .delete()
+    .eq('id', ruleId)
+
+  if (error) throw error
+}

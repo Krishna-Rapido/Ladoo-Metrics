@@ -586,6 +586,108 @@ class NLQueryAgent:
 # Auto-detect: read Presto SHOW COLUMNS
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Dashboard Query Agent (template-based SQL generation)
+# ---------------------------------------------------------------------------
+
+_DASHBOARD_QUERY_SYSTEM_PROMPT = """\
+You are a SQL query generator for a ride-sharing analytics platform (Rapido).
+You generate Presto/Trino SQL queries that use {{param_name}} template variables for dynamic parameters.
+
+RULES:
+1. Only generate SELECT or WITH (CTE) statements. Never INSERT, UPDATE, DELETE, DROP, etc.
+2. Use the schema below to determine table names, column names, and join conditions.
+3. When the user mentions "captains", they mean drivers on the Rapido platform.
+4. Date columns may be in YYYYMMDD string format — use appropriate casting/comparison.
+5. Always use fully-qualified table names (schema.table).
+6. For aggregations, include reasonable GROUP BY and ORDER BY clauses.
+7. Use {{param_name}} syntax for template variables (e.g. {{start_date}}, {{end_date}}, {{city}}).
+8. ALWAYS include {{start_date}} and {{end_date}} parameters for date filtering unless the user explicitly says otherwise.
+9. Do NOT add a LIMIT clause unless the user specifically asks for one — dashboards show all data.
+10. Common template variables: {{start_date}}, {{end_date}}, {{city}}, {{service_category}}, {{mode_name}}.
+11. For multiselect params like city or service_category, use IN ({{city}}) syntax.
+
+RESPOND IN THIS EXACT FORMAT:
+<sql>The SQL query with {{param}} template variables</sql>
+<explanation>Brief explanation of the query logic and any assumptions made</explanation>
+"""
+
+
+@dataclass
+class DashboardQueryAgent:
+    """Generates template-based SQL queries for custom dashboards."""
+
+    def generate(
+        self,
+        prompt: str,
+        schema_context: str,
+        example_queries: str = "",
+    ) -> Dict[str, str]:
+        """
+        Generate a dashboard SQL query from a natural language prompt.
+        Returns dict with keys: sql, explanation, error
+        """
+        try:
+            client = get_anthropic_client()
+
+            user_message = prompt
+            if example_queries:
+                user_message = (
+                    "Here are some existing dashboard queries for reference:\n\n"
+                    + example_queries
+                    + "\n\nNow generate a query for: " + prompt
+                )
+
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=2000,
+                temperature=0.1,
+                system=_DASHBOARD_QUERY_SYSTEM_PROMPT + "\n\n" + schema_context,
+                messages=[
+                    {"role": "user", "content": user_message},
+                ],
+            )
+
+            content = response.content[0].text if response.content else ""
+
+            sql = self._extract_tag(content, "sql") or ""
+            explanation = self._extract_tag(content, "explanation") or ""
+
+            if not sql:
+                return {
+                    "sql": "",
+                    "explanation": "",
+                    "error": "LLM did not generate a SQL query.",
+                }
+
+            # Clean up
+            sql = sql.strip().rstrip(";")
+
+            return {
+                "sql": sql,
+                "explanation": explanation,
+                "error": "",
+            }
+
+        except Exception as e:
+            logger.exception("DashboardQueryAgent.generate failed")
+            return {
+                "sql": "",
+                "explanation": "",
+                "error": str(e),
+            }
+
+    @staticmethod
+    def _extract_tag(text: str, tag: str) -> Optional[str]:
+        pattern = rf"<{tag}>(.*?)</{tag}>"
+        match = re.search(pattern, text, re.DOTALL)
+        return match.group(1).strip() if match else None
+
+
+# ---------------------------------------------------------------------------
+# Auto-detect: read Presto SHOW COLUMNS
+# ---------------------------------------------------------------------------
+
 def auto_detect_columns(table_name: str, username: str) -> List[Dict[str, str]]:
     """
     Run SHOW COLUMNS FROM <table_name> on Presto and return column metadata.

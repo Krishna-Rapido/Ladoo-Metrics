@@ -7,6 +7,7 @@ import { LoginPage } from './pages/LoginPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { FunctionsPage } from './pages/FunctionsPage';
 import { KnowledgePage } from './pages/KnowledgePage';
+import { ResearcherPage } from './pages/ResearcherPage';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import type { ReactNode } from 'react';
 
@@ -113,6 +114,16 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <KnowledgePage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Researcher - Captain Segment Discovery Lab */}
+      <Route
+        path="/researcher"
+        element={
+          <ProtectedRoute>
+            <ResearcherPage />
           </ProtectedRoute>
         }
       />
