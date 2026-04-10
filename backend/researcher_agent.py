@@ -340,7 +340,7 @@ When a PM asks a question like "Why did weekly captains churn?", think through:
 # Agent class
 # ---------------------------------------------------------------------------
 
-MAX_TOOL_LOOPS = 8
+MAX_TOOL_LOOPS = 16
 
 
 class ResearcherAgent:
