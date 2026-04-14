@@ -96,6 +96,13 @@ from schemas import (
     CalculatedColumnApplyResponse,
     VisualizationRequest,
     VisualizationResponse,
+    ScheduledJobCreate,
+    ScheduledJobUpdate,
+    ScheduledJobResponse,
+    JobRunResponse,
+    JobAnalyticsResponse,
+    CachedResultResponse,
+    SnapshotAddRequest,
 )
 from function_executor import (
     test_function,
@@ -4876,10 +4883,28 @@ def _get_supabase_for_request(request: Request):
 
 
 def _get_user_id(request: Request) -> str:
-    """Extract user_id from X-User-Id header (set by frontend after Supabase auth)."""
+    """Extract and validate user_id from X-User-Id header against JWT sub claim."""
     user_id = request.headers.get("X-User-Id", "")
     if not user_id:
         raise HTTPException(status_code=401, detail="X-User-Id header required")
+
+    # Validate against JWT sub claim to prevent IDOR
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header.removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization header required")
+
+    try:
+        import jwt
+        # Decode without signature verification — Supabase RLS handles token validity.
+        # We only need to confirm X-User-Id matches the token's sub claim.
+        payload = jwt.decode(token, options={"verify_signature": False})
+        token_sub = payload.get("sub", "")
+        if token_sub != user_id:
+            raise HTTPException(status_code=403, detail="User ID mismatch")
+    except jwt.DecodeError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
     return user_id
 
 
@@ -5447,6 +5472,14 @@ def health():
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage('/')
     
+    # Check scheduler status
+    scheduler_info = {"running": False, "worker_id": None}
+    try:
+        from scheduler import _running as sched_running, WORKER_ID as sched_worker_id
+        scheduler_info = {"running": sched_running, "worker_id": sched_worker_id}
+    except Exception:
+        pass
+
     return {
         "status": "ok",
         "active_sessions": len(SESSION_STORE),
@@ -5454,6 +5487,7 @@ def health():
         "memory_percent": memory.percent,
         "disk_percent": disk.percent,
         "max_file_size_gb": MAX_FILE_SIZE / (1024**3),
+        "scheduler": scheduler_info,
     }
 
 
@@ -5502,11 +5536,27 @@ async def startup_event():
     # Start background task to clean up stale uploads
     asyncio.create_task(_cleanup_stale_uploads())
 
+    # Start the scheduled dashboard precomputation scheduler
+    # pg_cron manages timing (sets next_run_at), this loop handles execution
+    try:
+        from scheduler import start_scheduler
+        start_scheduler()
+        logger.info("Dashboard precomputation scheduler started")
+    except Exception as e:
+        logger.warning("Scheduler not started: %s", e)
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up temp files on shutdown."""
     logger.info("Shutting down, cleaning up temp files...")
+
+    # Stop the scheduler
+    try:
+        from scheduler import stop_scheduler
+        stop_scheduler()
+    except Exception:
+        pass
     
     # Clean up DuckDB session parquet files
     for session_id, session in list(SESSION_STORE.items()):
@@ -6027,6 +6077,512 @@ def test_presto_connection(payload: PrestoTestRequest):
         tables=table_results,
         summary=summary,
     )
+
+
+# =============================================================================
+# SCHEDULED DASHBOARD PRECOMPUTATION
+# =============================================================================
+
+from schemas import VALID_DASHBOARD_TYPES as _VALID_DASH_TYPES
+
+
+@app.post("/scheduled-jobs", response_model=ScheduledJobResponse)
+def create_scheduled_job(payload: ScheduledJobCreate, request: Request):
+    """Create a new scheduled dashboard precomputation job."""
+    from croniter import croniter
+    from scheduler import compute_next_run, compute_params_hash
+
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    # Validate dashboard_type
+    if payload.dashboard_type not in _VALID_DASH_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid dashboard_type. Must be one of: {', '.join(sorted(_VALID_DASH_TYPES))}")
+
+    # Validate custom_dashboard_id required for custom type
+    if payload.dashboard_type == "custom" and not payload.custom_dashboard_id:
+        raise HTTPException(status_code=400, detail="custom_dashboard_id is required for 'custom' dashboard_type")
+
+    # Validate cron expression
+    if not croniter.is_valid(payload.cron_expression):
+        raise HTTPException(status_code=400, detail=f"Invalid cron expression: '{payload.cron_expression}'")
+
+    # Validate timeout and TTL ranges
+    if not (30 <= payload.timeout_seconds <= 600):
+        raise HTTPException(status_code=400, detail="timeout_seconds must be between 30 and 600")
+    if not (3600 <= payload.result_ttl_seconds <= 604800):
+        raise HTTPException(status_code=400, detail="result_ttl_seconds must be between 3600 (1h) and 604800 (7d)")
+
+    # Enforce per-user job limit (20)
+    try:
+        count_result = sb.table("scheduled_jobs").select("id", count="exact").eq("user_id", user_id).execute()
+        if count_result.count and count_result.count >= 20:
+            raise HTTPException(status_code=400, detail="Maximum 20 scheduled jobs per user")
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # Skip count check on error
+
+    # Compute next run time
+    next_run = compute_next_run(payload.cron_expression, payload.timezone)
+
+    row = {
+        "user_id": user_id,
+        "dashboard_type": payload.dashboard_type,
+        "custom_dashboard_id": payload.custom_dashboard_id,
+        "params": payload.params,
+        "presto_username": payload.presto_username,
+        "cron_expression": payload.cron_expression,
+        "timezone": payload.timezone,
+        "enabled": payload.enabled,
+        "name": payload.name,
+        "description": payload.description,
+        "timeout_seconds": payload.timeout_seconds,
+        "result_ttl_seconds": payload.result_ttl_seconds,
+        "max_retries": payload.max_retries,
+        "next_run_at": next_run.isoformat(),
+        "query_version": 1,
+    }
+
+    try:
+        result = sb.table("scheduled_jobs").insert(row).execute()
+        return ScheduledJobResponse(**result.data[0])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create scheduled job: {e}")
+
+
+@app.get("/scheduled-jobs", response_model=list[ScheduledJobResponse])
+def list_scheduled_jobs(request: Request):
+    """List all scheduled jobs for the current user."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    try:
+        result = sb.table("scheduled_jobs").select("*").eq(
+            "user_id", user_id
+        ).order("created_at", desc=True).execute()
+        return [ScheduledJobResponse(**row) for row in (result.data or [])]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list scheduled jobs: {e}")
+
+
+@app.patch("/scheduled-jobs/{job_id}", response_model=ScheduledJobResponse)
+def update_scheduled_job(job_id: str, payload: ScheduledJobUpdate, request: Request):
+    """Update a scheduled job (schedule, params, enabled, etc.)."""
+    from croniter import croniter
+    from scheduler import compute_next_run
+
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    # Verify ownership
+    existing = sb.table("scheduled_jobs").select("*").eq("id", job_id).eq("user_id", user_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+    job = existing.data[0]
+    updates: dict = {}
+
+    if payload.cron_expression is not None:
+        if not croniter.is_valid(payload.cron_expression):
+            raise HTTPException(status_code=400, detail=f"Invalid cron expression: '{payload.cron_expression}'")
+        updates["cron_expression"] = payload.cron_expression
+
+    if payload.timezone is not None:
+        updates["timezone"] = payload.timezone
+
+    if payload.name is not None:
+        updates["name"] = payload.name
+
+    if payload.description is not None:
+        updates["description"] = payload.description
+
+    if payload.enabled is not None:
+        updates["enabled"] = payload.enabled
+
+    if payload.timeout_seconds is not None:
+        if not (30 <= payload.timeout_seconds <= 600):
+            raise HTTPException(status_code=400, detail="timeout_seconds must be between 30 and 600")
+        updates["timeout_seconds"] = payload.timeout_seconds
+
+    if payload.result_ttl_seconds is not None:
+        if not (3600 <= payload.result_ttl_seconds <= 604800):
+            raise HTTPException(status_code=400, detail="result_ttl_seconds must be between 3600 and 604800")
+        updates["result_ttl_seconds"] = payload.result_ttl_seconds
+
+    if payload.max_retries is not None:
+        updates["max_retries"] = payload.max_retries
+
+    # If params changed, bump query_version
+    if payload.params is not None:
+        updates["params"] = payload.params
+        updates["query_version"] = job["query_version"] + 1
+
+    # Recompute next_run_at if cron or timezone changed
+    cron_expr = updates.get("cron_expression", job["cron_expression"])
+    tz = updates.get("timezone", job["timezone"])
+    if "cron_expression" in updates or "timezone" in updates:
+        updates["next_run_at"] = compute_next_run(cron_expr, tz).isoformat()
+
+    if not updates:
+        return ScheduledJobResponse(**job)
+
+    try:
+        result = sb.table("scheduled_jobs").update(updates).eq("id", job_id).execute()
+        return ScheduledJobResponse(**result.data[0])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update scheduled job: {e}")
+
+
+@app.delete("/scheduled-jobs/{job_id}")
+def delete_scheduled_job(job_id: str, request: Request):
+    """Delete a scheduled job and cascade cleanup."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    existing = sb.table("scheduled_jobs").select("id").eq("id", job_id).eq("user_id", user_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+    try:
+        sb.table("scheduled_jobs").delete().eq("id", job_id).execute()
+        return {"ok": True, "message": "Scheduled job deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete scheduled job: {e}")
+
+
+@app.get("/scheduled-jobs/{job_id}/runs", response_model=list[JobRunResponse])
+def list_job_runs(job_id: str, request: Request, limit: int = 20):
+    """Get execution history for a scheduled job."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    # Verify ownership
+    existing = sb.table("scheduled_jobs").select("id").eq("id", job_id).eq("user_id", user_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+    try:
+        result = sb.table("job_runs").select("*").eq(
+            "job_id", job_id
+        ).order("created_at", desc=True).limit(min(limit, 100)).execute()
+        return [JobRunResponse(**row) for row in (result.data or [])]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list job runs: {e}")
+
+
+@app.get("/scheduled-jobs/{job_id}/analytics", response_model=JobAnalyticsResponse)
+def get_job_analytics(job_id: str, request: Request):
+    """Get execution analytics for a scheduled job."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    existing = sb.table("scheduled_jobs").select("id").eq("id", job_id).eq("user_id", user_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+    try:
+        result = sb.table("job_runs").select("status,duration_ms,result_rows,started_at,finished_at").eq(
+            "job_id", job_id
+        ).order("created_at", desc=True).limit(100).execute()
+
+        rows = result.data or []
+        if not rows:
+            return JobAnalyticsResponse()
+
+        total = len(rows)
+        success = [r for r in rows if r["status"] == "success"]
+        failed = [r for r in rows if r["status"] == "failed"]
+        timeout = [r for r in rows if r["status"] == "timeout"]
+        durations = sorted([r["duration_ms"] for r in rows if r.get("duration_ms") is not None])
+        result_rows_list = [r["result_rows"] for r in rows if r.get("result_rows") is not None]
+
+        return JobAnalyticsResponse(
+            total_runs=total,
+            success_count=len(success),
+            failed_count=len(failed),
+            timeout_count=len(timeout),
+            success_rate=round(len(success) / total * 100, 1) if total > 0 else 0,
+            avg_duration_ms=round(sum(durations) / len(durations), 0) if durations else None,
+            p50_duration_ms=durations[len(durations) // 2] if durations else None,
+            p95_duration_ms=durations[int(len(durations) * 0.95)] if durations else None,
+            avg_result_rows=round(sum(result_rows_list) / len(result_rows_list), 0) if result_rows_list else None,
+            last_success_at=success[0].get("finished_at") if success else None,
+            last_failure_at=failed[0].get("finished_at") if failed else None,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute analytics: {e}")
+
+
+@app.post("/scheduled-jobs/{job_id}/run-now")
+async def trigger_job_now(job_id: str, request: Request):
+    """Execute a scheduled job immediately (direct execution, not via scheduler).
+
+    Supports two auth modes:
+    1. User JWT (Authorization header) — for manual "Run Now" from UI
+    2. X-Cron-Secret header — for pg_cron automated triggers
+    """
+    cron_secret = request.headers.get("X-Cron-Secret", "")
+    service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+
+    if cron_secret and service_key and cron_secret == service_key:
+        # pg_cron path: use service client, look up job by ID only (X-User-Id from pg_net)
+        from scheduler import _get_supabase_service_client
+        sb = _get_supabase_service_client()
+        existing = sb.table("scheduled_jobs").select("*").eq("id", job_id).execute()
+    else:
+        # User path: standard auth
+        user_id = _get_user_id(request)
+        sb = _get_supabase_for_request(request)
+        existing = sb.table("scheduled_jobs").select("*").eq("id", job_id).eq("user_id", user_id).execute()
+
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+    job = existing.data[0]
+    if job.get("locked_by"):
+        raise HTTPException(status_code=409, detail="Job is currently executing. Please wait.")
+
+    from scheduler import execute_dashboard_sync, compute_params_hash, compute_next_run, resolve_dynamic_params
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+    now = _dt.now(_tz.utc)
+    params = job["params"] if isinstance(job["params"], dict) else _json.loads(job["params"])
+    dashboard_type = job["dashboard_type"]
+    query_version = job["query_version"]
+    result_ttl = job.get("result_ttl_seconds", 86400)
+
+    # Create a job_run record
+    run_id = None
+    try:
+        run_result = sb.table("job_runs").insert({
+            "job_id": job_id,
+            "status": "running",
+            "worker_id": "on-demand",
+            "started_at": now.isoformat(),
+            "retry_attempt": 0,
+            "params_snapshot": params,
+            "query_version": query_version,
+        }).execute()
+        run_id = run_result.data[0]["id"]
+    except Exception:
+        pass  # Non-critical
+
+    try:
+        # Execute directly in thread pool, passing the request's Supabase client
+        # so custom dashboards can fetch their SQL without needing SUPABASE_SERVICE_KEY
+        import functools as _functools
+        loop = asyncio.get_running_loop()
+        _exec_fn = _functools.partial(execute_dashboard_sync, job, sb_client=sb)
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, _exec_fn),
+            timeout=job.get("timeout_seconds", 300),
+        )
+
+        # Validate result size
+        result_json = _json.dumps(result, default=str)
+        result_bytes = len(result_json.encode("utf-8"))
+        if result_bytes > 10 * 1024 * 1024:
+            raise ValueError("Result exceeds 10MB limit. Narrow your parameters.")
+
+        # Store in materialized_results
+        resolved_params = resolve_dynamic_params(params)
+        params_hash = compute_params_hash(dashboard_type, query_version, resolved_params)
+        expires_at = now + _td(seconds=result_ttl)
+
+        sb.table("materialized_results").delete().eq(
+            "dashboard_type", dashboard_type
+        ).eq("params_hash", params_hash).eq("query_version", query_version).execute()
+
+        mr_result = sb.table("materialized_results").insert({
+            "job_id": job_id,
+            "dashboard_type": dashboard_type,
+            "params_hash": params_hash,
+            "query_version": query_version,
+            "result_data": result,
+            "result_rows": result.get("num_rows", 0),
+            "result_bytes": result_bytes,
+            "computed_at": now.isoformat(),
+            "expires_at": expires_at.isoformat(),
+        }).execute()
+
+        finished_at = _dt.now(_tz.utc)
+        duration_ms = int((finished_at - now).total_seconds() * 1000)
+
+        # Update job_run as success (store result_data for history)
+        if run_id:
+            sb.table("job_runs").update({
+                "status": "success",
+                "finished_at": finished_at.isoformat(),
+                "duration_ms": duration_ms,
+                "result_id": mr_result.data[0]["id"],
+                "result_rows": result.get("num_rows", 0),
+                "result_bytes": result_bytes,
+                "result_data": result,
+            }).eq("id", run_id).execute()
+
+            # Clean up old run data (keep last 10)
+            try:
+                sb.rpc("cleanup_old_run_data", {"p_job_id": job_id, "p_keep": 10}).execute()
+            except Exception:
+                pass  # Non-critical
+
+        # Update job's last_run_at and next_run_at
+        next_run = compute_next_run(job["cron_expression"], job.get("timezone", "Asia/Kolkata"))
+        sb.table("scheduled_jobs").update({
+            "last_run_at": now.isoformat(),
+            "next_run_at": next_run.isoformat(),
+            "retry_count": 0,
+        }).eq("id", job_id).execute()
+
+        return {
+            "ok": True,
+            "message": f"Executed successfully: {result.get('num_rows', 0)} rows in {duration_ms}ms",
+            "result_rows": result.get("num_rows", 0),
+            "duration_ms": duration_ms,
+        }
+
+    except asyncio.TimeoutError:
+        if run_id:
+            sb.table("job_runs").update({
+                "status": "timeout",
+                "finished_at": _dt.now(_tz.utc).isoformat(),
+                "error_message": f"Timed out after {job.get('timeout_seconds', 300)}s",
+            }).eq("id", run_id).execute()
+        raise HTTPException(status_code=504, detail=f"Query timed out after {job.get('timeout_seconds', 300)}s")
+
+    except Exception as e:
+        if run_id:
+            try:
+                sb.table("job_runs").update({
+                    "status": "failed",
+                    "finished_at": _dt.now(_tz.utc).isoformat(),
+                    "error_message": str(e)[:2000],
+                }).eq("id", run_id).execute()
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"Execution failed: {e}")
+
+
+@app.get("/scheduled-jobs/{job_id}/result", response_model=CachedResultResponse)
+def get_job_cached_result(job_id: str, request: Request, stale_ok: bool = True):
+    """Get the latest cached/materialized result for a scheduled job by job_id."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    # Verify ownership
+    existing = sb.table("scheduled_jobs").select("id").eq("id", job_id).eq("user_id", user_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+    try:
+        result = sb.table("materialized_results").select("*").eq(
+            "job_id", job_id
+        ).order("computed_at", desc=True).limit(1).execute()
+
+        if not result.data:
+            return CachedResultResponse(cached=False)
+
+        row = result.data[0]
+        from datetime import datetime, timezone as tz
+        expires_at = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+        now = datetime.now(tz.utc)
+        is_stale = expires_at < now
+
+        if is_stale and not stale_ok:
+            return CachedResultResponse(cached=False)
+
+        return CachedResultResponse(
+            cached=True,
+            stale=is_stale,
+            computed_at=row["computed_at"],
+            expires_at=row["expires_at"],
+            result=row["result_data"],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch cached result: {e}")
+
+
+@app.get("/dashboard/{dashboard_type}/cached", response_model=CachedResultResponse)
+def get_cached_dashboard_result(
+    dashboard_type: str,
+    request: Request,
+    params: str = "{}",
+    query_version: int = 1,
+    stale_ok: bool = True,
+):
+    """
+    Get cached/materialized result for a dashboard.
+    Returns the latest non-expired result matching the cache key.
+    Falls through to 404 if no cache exists.
+    """
+    import json
+    from scheduler import compute_params_hash
+
+    sb = _get_supabase_for_request(request)
+
+    try:
+        params_dict = json.loads(params)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid params JSON")
+
+    params_hash = compute_params_hash(dashboard_type, query_version, params_dict)
+
+    try:
+        result = sb.table("materialized_results").select("*").eq(
+            "dashboard_type", dashboard_type
+        ).eq("params_hash", params_hash).eq(
+            "query_version", query_version
+        ).order("computed_at", desc=True).limit(1).execute()
+
+        if not result.data:
+            return CachedResultResponse(cached=False)
+
+        row = result.data[0]
+        from datetime import datetime, timezone as tz
+        expires_at = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+        now = datetime.now(tz.utc)
+        is_stale = expires_at < now
+
+        if is_stale and not stale_ok:
+            return CachedResultResponse(cached=False)
+
+        return CachedResultResponse(
+            cached=True,
+            stale=is_stale,
+            computed_at=row["computed_at"],
+            expires_at=row["expires_at"],
+            result=row["result_data"],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch cached result: {e}")
+
+
+@app.post("/reports/add-snapshot")
+def add_dashboard_snapshot_to_report(payload: SnapshotAddRequest, request: Request):
+    """Add a dashboard snapshot to the user's report."""
+    sb = _get_supabase_for_request(request)
+    user_id = _get_user_id(request)
+
+    import secrets as _secrets
+    item = {
+        "id": _secrets.token_hex(8),
+        "type": "dashboard_snapshot",
+        "title": payload.dashboard_name,
+        "content": {
+            "dashboard_type": payload.dashboard_type,
+            "params": payload.params,
+            "result": payload.result_data,
+            "computed_at": payload.computed_at,
+            "job_id": payload.job_id,
+            "auto_refresh": payload.auto_refresh,
+        },
+        "comment": "",
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    return {"ok": True, "item": item}
 
 
 if __name__ == "__main__":

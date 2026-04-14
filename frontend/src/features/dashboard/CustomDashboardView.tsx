@@ -26,6 +26,8 @@ import {
     type CustomDashboardQueryResponse,
 } from '@/lib/api';
 import { generateDashboardQuery } from '@/lib/knowledgeApi';
+import { ScheduleJobDialog } from '@/features/dashboard/ScheduleJobDialog';
+import { JobHistoryPanel } from '@/features/dashboard/JobHistoryPanel';
 interface CustomDashboardViewProps {
     folder: string;
     slug: string;
@@ -969,6 +971,23 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                                 </>
                             )}
                         </button>
+                        {dashboard && (
+                            <ScheduleJobDialog
+                                dashboardType="custom"
+                                dashboardName={dashboard.name || `${folder}/${slug}`}
+                                params={{
+                                    parameters: Object.fromEntries(
+                                        Object.entries(paramValues).filter(([, v]) => v != null).map(([k, v]) => [k, Array.isArray(v) ? v.join(',') : v])
+                                    ),
+                                    parameter_types: Object.fromEntries(
+                                        parameters.map(p => [p.name, p.type])
+                                    ),
+                                }}
+                                prestoUsername={username}
+                                customDashboardId={dashboard.id}
+                            />
+                        )}
+                        <JobHistoryPanel />
                         {isOwner && (
                             <Button
                                 variant={saveSuccess ? 'default' : 'outline'}

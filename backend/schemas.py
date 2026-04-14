@@ -656,3 +656,112 @@ class CalculatedColumnApplyResponse(BaseModel):
     row_count: int = 0
     columns: Optional[List[str]] = None
 
+
+# =============================================================================
+# SCHEDULED DASHBOARD PRECOMPUTATION SCHEMAS
+# =============================================================================
+
+VALID_DASHBOARD_TYPES = {
+    "dapr_bucket", "fe2net", "rtu_performance",
+    "r2a", "r2a_percentage", "a2phh_summary", "custom",
+}
+
+
+class ScheduledJobCreate(BaseModel):
+    dashboard_type: str
+    custom_dashboard_id: Optional[str] = None
+    params: Dict[str, Any] = Field(default_factory=dict)
+    presto_username: str
+    cron_expression: str
+    timezone: str = "Asia/Kolkata"
+    name: str = ""
+    description: Optional[str] = None
+    timeout_seconds: int = 300
+    result_ttl_seconds: int = 86400
+    max_retries: int = 3
+    enabled: bool = True
+
+
+class ScheduledJobUpdate(BaseModel):
+    params: Optional[Dict[str, Any]] = None
+    cron_expression: Optional[str] = None
+    timezone: Optional[str] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+    timeout_seconds: Optional[int] = None
+    result_ttl_seconds: Optional[int] = None
+    max_retries: Optional[int] = None
+
+
+class ScheduledJobResponse(BaseModel):
+    id: str
+    dashboard_type: str
+    custom_dashboard_id: Optional[str] = None
+    params: Dict[str, Any]
+    presto_username: str
+    cron_expression: str
+    timezone: str
+    enabled: bool
+    name: str
+    description: Optional[str] = None
+    next_run_at: Optional[str] = None
+    last_run_at: Optional[str] = None
+    retry_count: int
+    max_retries: int
+    timeout_seconds: int
+    result_ttl_seconds: int
+    query_version: int
+    created_at: str
+    updated_at: str
+
+
+class JobRunResponse(BaseModel):
+    id: str
+    job_id: str
+    status: str
+    worker_id: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    duration_ms: Optional[int] = None
+    result_rows: Optional[int] = None
+    result_bytes: Optional[int] = None
+    result_data: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    retry_attempt: int
+    params_snapshot: Optional[Dict[str, Any]] = None
+    query_version: Optional[int] = None
+    created_at: str
+
+
+class JobAnalyticsResponse(BaseModel):
+    total_runs: int = 0
+    success_count: int = 0
+    failed_count: int = 0
+    timeout_count: int = 0
+    success_rate: float = 0.0
+    avg_duration_ms: Optional[float] = None
+    p50_duration_ms: Optional[float] = None
+    p95_duration_ms: Optional[float] = None
+    avg_result_rows: Optional[float] = None
+    last_success_at: Optional[str] = None
+    last_failure_at: Optional[str] = None
+
+
+class CachedResultResponse(BaseModel):
+    cached: bool
+    stale: bool = False
+    computed_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None
+
+
+class SnapshotAddRequest(BaseModel):
+    dashboard_type: str
+    params: Dict[str, Any]
+    dashboard_name: str
+    result_data: Dict[str, Any]
+    computed_at: str
+    job_id: Optional[str] = None
+    auto_refresh: bool = True
+

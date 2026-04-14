@@ -35,7 +35,7 @@ export type SavedReport = {
 
 export type ReportItemData = {
   id: string
-  type: 'chart' | 'table' | 'text'
+  type: 'chart' | 'table' | 'text' | 'dashboard_snapshot'
   title: string
   content: Record<string, unknown>
   comment: string

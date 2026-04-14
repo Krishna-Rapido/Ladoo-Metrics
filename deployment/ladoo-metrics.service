@@ -11,6 +11,11 @@ Environment="PATH=/opt/ladoo-metrics/backend/venv/bin:/usr/local/sbin:/usr/local
 Environment="PORT=8001"
 Environment="PRESTO_HOST=bi-trino-4.serving.data.production.internal"
 Environment="PRESTO_PORT=80"
+Environment="SUPABASE_URL=https://croniadpudboidlouhuu.supabase.co"
+Environment="SUPABASE_ANON_KEY=sb_publishable_XVL1eAexg-C1MpKPPC-b2Q_hl2pFTpT"
+# Scheduler: set SUPABASE_SERVICE_KEY to enable dashboard precomputation
+# Environment="SUPABASE_SERVICE_KEY=your-service-role-key-here"
+Environment="MAX_PRESTO_CONCURRENT=4"
 # CORS: not needed when frontend & API are same-origin behind Nginx.
 # If you ever serve the API on a separate origin, uncomment and set:
 # Environment="ALLOWED_ORIGINS=http://laddoo.labs.plectrum.dev"

@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { getR2A, type R2AResponse } from '../lib/api';
 import { FunnelDataGrid } from './FunnelDataGrid';
 import { ChartBuilder } from './ChartBuilder';
+import { ScheduleJobDialog } from '@/features/dashboard/ScheduleJobDialog';
+import { JobHistoryPanel } from '@/features/dashboard/JobHistoryPanel';
 
 export function R2AAnalysis() {
     const [loading, setLoading] = useState(false);
@@ -128,10 +130,10 @@ export function R2AAnalysis() {
                     </div>
                 </div>
 
-                <div className="mt-6">
+                <div className="mt-6 flex gap-3">
                     <button
                         onClick={handleRunAnalysis}
-                        className="btn btn-primary w-full"
+                        className="btn btn-primary flex-1"
                         disabled={loading || !username}
                     >
                         {loading ? (
@@ -146,6 +148,13 @@ export function R2AAnalysis() {
                             </>
                         )}
                     </button>
+                    <ScheduleJobDialog
+                        dashboardType="r2a"
+                        dashboardName={`R2A - ${city} ${service}`}
+                        params={{ start_date: startDate, end_date: endDate, city, service, time_level: timeLevel }}
+                        prestoUsername={username}
+                    />
+                    <JobHistoryPanel />
                 </div>
             </div>
 

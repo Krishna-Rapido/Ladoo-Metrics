@@ -8,6 +8,7 @@ import { ReportsPage } from './pages/ReportsPage';
 import { FunctionsPage } from './pages/FunctionsPage';
 import { KnowledgePage } from './pages/KnowledgePage';
 import { ResearcherPage } from './pages/ResearcherPage';
+import { ScheduledJobsPage } from './pages/ScheduledJobsPage';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import type { ReactNode } from 'react';
 
@@ -130,6 +131,14 @@ function AppRoutes() {
 
       {/* Other routes use the shared AppShell */}
       <Route element={<AppShell />}>
+        <Route
+          path="/scheduled"
+          element={
+            <ProtectedRoute>
+              <ScheduledJobsPage />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/dashboard"
           element={

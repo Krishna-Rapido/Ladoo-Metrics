@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { ReactNode } from 'react';
-import { createReport, addReportItem, listReportItems, type ReportItem, type ReportAddRequest } from '../lib/api';
+import { createReport, addReportItem, listReportItems, getCachedDashboardResult, type ReportItem, type ReportAddRequest } from '../lib/api';
 import { supabase, type SavedReport, type ReportItemData } from '../lib/supabase';
 
 interface ReportContextType {
@@ -231,13 +231,38 @@ export function ReportProvider({ children }: { children: ReactNode }) {
             localStorage.setItem('report_id', report_id);
 
             // Add each item from the saved report to the new session
+            // Auto-refresh dashboard_snapshot items that have auto_refresh enabled
             const savedItems = data.items as ReportItemData[];
             for (const item of savedItems) {
+                let content = item.content;
+
+                if (item.type === 'dashboard_snapshot' && (content as Record<string, unknown>)?.auto_refresh) {
+                    try {
+                        const snapshotContent = content as Record<string, unknown>;
+                        const cached = await getCachedDashboardResult(
+                            snapshotContent.dashboard_type as string,
+                            snapshotContent.params as Record<string, unknown>,
+                        );
+                        if (cached.cached && cached.result && cached.computed_at) {
+                            const existingComputedAt = snapshotContent.computed_at as string;
+                            if (cached.computed_at > existingComputedAt) {
+                                content = {
+                                    ...snapshotContent,
+                                    result: cached.result,
+                                    computed_at: cached.computed_at,
+                                };
+                            }
+                        }
+                    } catch {
+                        // Keep existing snapshot on refresh failure
+                    }
+                }
+
                 await addReportItem(
                     {
                         type: item.type,
                         title: item.title,
-                        content: item.content,
+                        content: content as Record<string, unknown>,
                         comment: item.comment,
                     },
                     report_id

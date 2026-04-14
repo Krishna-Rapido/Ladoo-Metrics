@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { getDaprBucket, type DaprBucketResponse } from '../lib/api';
 import { FunnelDataGrid } from './FunnelDataGrid';
 import { ChartBuilder } from './ChartBuilder';
+import { ScheduleJobDialog } from '@/features/dashboard/ScheduleJobDialog';
+import { JobHistoryPanel } from '@/features/dashboard/JobHistoryPanel';
 
 export function DaprBucketAnalysis() {
     const [loading, setLoading] = useState(false);
@@ -140,10 +142,10 @@ export function DaprBucketAnalysis() {
                     </div>
                 </div>
 
-                <div className="mt-6">
+                <div className="mt-6 flex gap-3">
                     <button
                         onClick={handleRunAnalysis}
-                        className="btn btn-primary w-full"
+                        className="btn btn-primary flex-1"
                         disabled={loading || !username}
                     >
                         {loading ? (
@@ -158,6 +160,13 @@ export function DaprBucketAnalysis() {
                             </>
                         )}
                     </button>
+                    <ScheduleJobDialog
+                        dashboardType="dapr_bucket"
+                        dashboardName={`DAPR - ${city} ${serviceCategory}`}
+                        params={{ start_date: startDate, end_date: endDate, city, service_category: serviceCategory, low_dapr: lowDapr, high_dapr: highDapr }}
+                        prestoUsername={username}
+                    />
+                    <JobHistoryPanel />
                 </div>
             </div>
 

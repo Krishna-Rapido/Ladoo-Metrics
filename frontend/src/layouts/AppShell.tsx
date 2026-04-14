@@ -17,12 +17,16 @@ export function AppShell() {
 
     // Determine page title based on route
     const getPageTitle = () => {
+        if (location.pathname.startsWith('/scheduled')) return 'Scheduled';
         if (location.pathname.startsWith('/dashboard')) return 'Dashboard';
         if (location.pathname.startsWith('/discover')) return 'Discover';
         if (location.pathname.startsWith('/insights')) return 'Insights';
         if (location.pathname.startsWith('/researcher')) return 'Researcher';
         return 'Ladoo Metrics';
     };
+
+    // Routes that don't need the secondary sidebar
+    const hideSecondary = location.pathname.startsWith('/scheduled');
 
     return (
         <div className="flex h-screen w-full overflow-hidden bg-muted/20">
@@ -47,14 +51,14 @@ export function AppShell() {
             )}
 
             {/* Desktop Secondary Sidebar */}
-            {!isMobile && (
+            {!isMobile && !hideSecondary && (
                 <aside className="hidden md:flex w-[320px] flex-shrink-0 border-r bg-background">
                     <SecondarySidebar />
                 </aside>
             )}
 
             {/* Mobile Secondary Sidebar Sheet */}
-            {isMobile && (
+            {isMobile && !hideSecondary && (
                 <Sheet open={secondaryOpen} onOpenChange={setSecondaryOpen}>
                     <SheetContent side="left" className="w-[320px] p-0">
                         <SheetHeader className="sr-only">

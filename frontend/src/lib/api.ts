@@ -931,7 +931,7 @@ export async function getSessionRows(sessionId: string): Promise<SessionRowsResp
 
 export type ReportItem = {
     id: string;
-    type: 'chart' | 'table' | 'text';
+    type: 'chart' | 'table' | 'text' | 'dashboard_snapshot';
     title: string;
     content: Record<string, any>;
     comment: string;
@@ -1638,4 +1638,36 @@ export async function downloadSegmentTransitions(
     a.click();
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
+}
+
+// =============================================================================
+// CACHED DASHBOARD RESULTS
+// =============================================================================
+
+export type CachedDashboardResult = {
+    cached: boolean;
+    stale: boolean;
+    computed_at?: string | null;
+    expires_at?: string | null;
+    result?: {
+        num_rows: number;
+        columns: string[];
+        data: Record<string, unknown>[];
+    } | null;
+};
+
+export async function getCachedDashboardResult(
+    dashboardType: string,
+    params: Record<string, unknown>,
+    queryVersion = 1,
+    staleOk = true,
+): Promise<CachedDashboardResult> {
+    const paramsJson = encodeURIComponent(JSON.stringify(params));
+    const res = await fetch(
+        `${BASE_URL}/dashboard/${dashboardType}/cached?params=${paramsJson}&query_version=${queryVersion}&stale_ok=${staleOk}`,
+    );
+    if (!res.ok) {
+        throw new Error(`Cache fetch failed: ${res.statusText}`);
+    }
+    return res.json();
 }
