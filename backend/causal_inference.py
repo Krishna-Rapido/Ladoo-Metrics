@@ -19,6 +19,26 @@ import pandas as pd
 from causal_schemas import MethodRecommendation
 
 
+def _to_native(obj: Any) -> Any:
+    """Recursively convert numpy types to native Python types for JSON serialization."""
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        v = float(obj)
+        if np.isnan(v) or np.isinf(v):
+            return 0.0
+        return v
+    if isinstance(obj, np.ndarray):
+        return [_to_native(x) for x in obj.tolist()]
+    if isinstance(obj, dict):
+        return {k: _to_native(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_native(x) for x in obj]
+    if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
+        return 0.0
+    return obj
+
+
 # ── Shared data preparation ──────────────────────────────────────────
 
 def _normalize_date_col(df: pd.DataFrame) -> pd.DataFrame:

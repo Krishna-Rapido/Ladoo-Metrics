@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()  # Load .env before any os.environ access
 
 import ast
+import atexit
 import io
 import logging
 import os
@@ -133,11 +134,29 @@ from causal_schemas import (
 from causal_inference import (
     PSMAnalyzer, CausalImpactAnalyzer, HTEAnalyzer,
     SyntheticControlAnalyzer, RDDAnalyzer,
-    recommend_methods,
+    recommend_methods, _to_native,
 )
 
 
 app = FastAPI(title="Cohort Metrics API")
+
+# PostHog analytics client
+from posthog import Posthog as _Posthog
+posthog_client = _Posthog(
+    project_api_key=os.environ.get("POSTHOG_PROJECT_TOKEN", ""),
+    host=os.environ.get("POSTHOG_HOST", "https://us.i.posthog.com"),
+    enable_exception_autocapture=True,
+)
+atexit.register(posthog_client.shutdown)
+
+
+def _ph_capture(event: str, distinct_id: str = "anonymous", properties: dict | None = None) -> None:
+    """Fire-and-forget PostHog event capture. Silently skips if client not configured."""
+    try:
+        posthog_client.capture(distinct_id=distinct_id, event=event, properties=properties or {})
+    except Exception:
+        pass
+
 
 # Configuration for large file uploads (5GB max)
 MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024  # 5GB in bytes
@@ -626,7 +645,7 @@ async def upload_csv(file: UploadFile = File(...)) -> UploadResponse:
             date_max = df["date"].max()
             metric_candidates = [c for c in df.columns if c not in {"cohort", "date", "time"}]
             
-            return UploadResponse(
+            response = UploadResponse(
                 session_id=session_id,
                 num_rows=df.shape[0],
                 columns=list(df.columns.astype(str)),
@@ -635,18 +654,26 @@ async def upload_csv(file: UploadFile = File(...)) -> UploadResponse:
                 date_max=date_max.strftime("%Y-%m-%d"),
                 metrics=metric_candidates,
             )
+            _ph_capture("csv_uploaded", properties={
+                "file_size_mb": round(file_size / (1024 * 1024), 2),
+                "num_rows": df.shape[0],
+                "num_columns": len(df.columns),
+                "num_cohorts": len(cohorts),
+                "is_large_file": False,
+            })
+            return response
         else:
             # For large files, use DuckDB-based storage (parquet on disk)
             parquet_path = os.path.join(temp_dir, "data.parquet")
-            
+
             # Process CSV to Parquet and get metadata (without loading into memory)
             session_metadata = process_csv_to_parquet(temp_path, parquet_path)
-            
+
             # Store metadata in session (NOT the full DataFrame)
             SESSION_STORE[session_id] = session_metadata
             SESSION_FILE_STORE[session_id] = temp_dir  # Store dir for cleanup
-            
-            return UploadResponse(
+
+            response = UploadResponse(
                 session_id=session_id,
                 num_rows=session_metadata["num_rows"],
                 columns=session_metadata["columns"],
@@ -655,6 +682,14 @@ async def upload_csv(file: UploadFile = File(...)) -> UploadResponse:
                 date_max=session_metadata["date_max"],
                 metrics=session_metadata["metrics"],
             )
+            _ph_capture("csv_uploaded", properties={
+                "file_size_mb": round(file_size / (1024 * 1024), 2),
+                "num_rows": session_metadata["num_rows"],
+                "num_columns": len(session_metadata["columns"]),
+                "num_cohorts": len(session_metadata["cohorts"]),
+                "is_large_file": True,
+            })
+            return response
     except HTTPException:
         # Clean up temp dir on validation errors
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -1428,12 +1463,26 @@ def compute_insights(payload: InsightsRequest, x_session_id: Optional[str] = Hea
     # Check if it's a DuckDB session
     if isinstance(session, dict) and "parquet_path" in session:
         # Use DuckDB for memory-efficient query execution
-        return compute_insights_duckdb(payload, session["parquet_path"])
-    
+        result = compute_insights_duckdb(payload, session["parquet_path"])
+        _ph_capture("insights_computed", properties={
+            "num_metrics": len(payload.metrics) if hasattr(payload, "metrics") else 0,
+            "has_pre_period": payload.pre_period is not None if hasattr(payload, "pre_period") else False,
+            "has_post_period": payload.post_period is not None if hasattr(payload, "post_period") else False,
+            "is_large_file": True,
+        })
+        return result
+
     # Otherwise use pandas (for small files stored as DataFrames)
     if isinstance(session, pd.DataFrame):
-        return compute_insights_pandas(payload, session)
-    
+        result = compute_insights_pandas(payload, session)
+        _ph_capture("insights_computed", properties={
+            "num_metrics": len(payload.metrics) if hasattr(payload, "metrics") else 0,
+            "has_pre_period": payload.pre_period is not None if hasattr(payload, "pre_period") else False,
+            "has_post_period": payload.post_period is not None if hasattr(payload, "post_period") else False,
+            "is_large_file": False,
+        })
+        return result
+
     raise HTTPException(status_code=400, detail="Invalid session data format")
 
 
@@ -1667,6 +1716,11 @@ def funnel(payload: FunnelRequest, df: pd.DataFrame = Depends(get_session_df)) -
         tmp = d.groupby("cohort")[metric].sum().reset_index()
         return {str(row["cohort"]): float(row[metric]) for _, row in tmp.iterrows()}
 
+    _ph_capture("funnel_analysis_run", properties={
+        "metric": metric,
+        "agg": agg,
+        "has_series_breakout": series_breakout_col is not None,
+    })
     return FunnelResponse(
         metrics_available=metrics_available,
         pre_series=to_points(pre_df),
@@ -1806,6 +1860,10 @@ def run_statistical_test_endpoint(
     
     try:
         result = run_statistical_test(request)
+        _ph_capture("statistical_test_run", properties={
+            "test_type": getattr(request, "test_type", "unknown"),
+            "metric": getattr(request, "metric", None),
+        })
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1954,7 +2012,11 @@ def captain_level_aggregation(
     
     # Extract metric names
     metrics = [f"{m.column}_{m.agg_func}" for m in payload.metric_aggregations]
-    
+
+    _ph_capture("captain_level_aggregation_run", properties={
+        "metric_count": len(metrics),
+        "group_by_column": payload.group_by_column,
+    })
     return CaptainLevelResponse(
         data=result_data,
         group_by_column=payload.group_by_column,
@@ -2253,6 +2315,7 @@ async def get_fe2net(payload: Fe2NetRequest) -> Fe2NetResponse:
     # Convert all data to records
     data = result_df.to_dict('records')
     
+    _ph_capture("captain_dashboard_queried", properties={"dashboard_type": "fe2net", "city": getattr(payload, "city", None)})
     return Fe2NetResponse(
         num_rows=len(result_df),
         columns=list(result_df.columns),
@@ -2284,6 +2347,7 @@ async def get_rtu_performance(payload: RtuPerformanceRequest) -> RtuPerformanceR
     # Convert all data to records
     data = result_df.to_dict('records')
     
+    _ph_capture("captain_dashboard_queried", properties={"dashboard_type": "rtu", "city": getattr(payload, "city", None)})
     return RtuPerformanceResponse(
         num_rows=len(result_df),
         columns=list(result_df.columns),
@@ -2312,6 +2376,7 @@ async def get_r2a(payload: R2ARequest) -> R2AResponse:
     # Convert all data to records
     data = result_df.to_dict('records')
     
+    _ph_capture("captain_dashboard_queried", properties={"dashboard_type": "r2a", "city": getattr(payload, "city", None)})
     return R2AResponse(
         num_rows=len(result_df),
         columns=list(result_df.columns),
@@ -2340,6 +2405,7 @@ async def get_r2a_percentage(payload: R2APercentageRequest) -> R2APercentageResp
     # Convert all data to records
     data = result_df.to_dict('records')
     
+    _ph_capture("captain_dashboard_queried", properties={"dashboard_type": "r2a_percentage", "city": getattr(payload, "city", None)})
     return R2APercentageResponse(
         num_rows=len(result_df),
         columns=list(result_df.columns),
@@ -2368,6 +2434,7 @@ async def get_a2phh_summary(payload: A2PhhSummaryRequest) -> A2PhhSummaryRespons
     # Convert all data to records
     data = result_df.to_dict('records')
     
+    _ph_capture("captain_dashboard_queried", properties={"dashboard_type": "a2phh", "city": getattr(payload, "city", None)})
     return A2PhhSummaryResponse(
         num_rows=len(result_df),
         columns=list(result_df.columns),
@@ -2564,7 +2631,11 @@ def add_report_item(
     REPORT_STORE[x_report_id].append(item)
     print(f"DEBUG: Added item to report {x_report_id}, total items: {len(REPORT_STORE[x_report_id])}")
     print(f"DEBUG: REPORT_STORE keys after: {list(REPORT_STORE.keys())}")
-    
+
+    _ph_capture("report_item_added", properties={
+        "item_type": item.get("type"),
+        "num_items": len(REPORT_STORE[x_report_id]),
+    })
     return ReportAddResponse(
         report_id=x_report_id,
         item_id=item_id,
@@ -2845,6 +2916,10 @@ def export_report(x_report_id: Optional[str] = Header(default=None, alias="x-rep
         </html>
     """)
     
+    _ph_capture("report_exported", properties={
+        "format": "html",
+        "num_items": len(items),
+    })
     return ReportExportResponse(report_html="".join(html_parts))
 
 
@@ -2968,6 +3043,10 @@ def export_report_pdf(x_report_id: Optional[str] = Header(default=None, alias="x
             except Exception as e:
                 print(f"Error cleaning up temp file {temp_file}: {e}")
         
+        _ph_capture("report_exported", properties={
+            "format": "pdf",
+            "num_items": len(items),
+        })
         return Response(
             content=buffer.read(),
             media_type="application/pdf",
@@ -3182,6 +3261,10 @@ def export_report_word(x_report_id: Optional[str] = Header(default=None, alias="
         doc.save(buffer)
         buffer.seek(0)
         
+        _ph_capture("report_exported", properties={
+            "format": "word",
+            "num_items": len(items),
+        })
         return Response(
             content=buffer.read(),
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -3237,12 +3320,18 @@ async def execute_metric_function(request: FunctionExecuteRequest) -> FunctionEx
         )
         
         if error:
+            _ph_capture("custom_function_executed", properties={"success": False})
             return FunctionExecuteResponse(
                 success=False,
                 error=error,
                 row_count=0
             )
-        
+
+        _ph_capture("custom_function_executed", properties={
+            "success": True,
+            "row_count": len(result_df),
+            "output_column_count": len(output_columns) if output_columns else 0,
+        })
         return FunctionExecuteResponse(
             success=True,
             data=result_df.to_dict(orient='records'),
@@ -3251,6 +3340,7 @@ async def execute_metric_function(request: FunctionExecuteRequest) -> FunctionEx
             row_count=len(result_df)
         )
     except Exception as e:
+        _ph_capture("custom_function_executed", properties={"success": False})
         return FunctionExecuteResponse(
             success=False,
             error=f"Execution failed: {str(e)}",
@@ -3870,13 +3960,18 @@ async def visualize_session_data(
                 elif pd.isna(value):
                     record[key] = ''
         
+        _ph_capture("data_visualized", properties={
+            "chart_type": getattr(payload, "chart_type", None),
+            "num_y_axes": len(payload.y_axes) if hasattr(payload, "y_axes") else 0,
+            "has_series": getattr(payload, "series", None) is not None,
+        })
         return VisualizationResponse(
             success=True,
             data=result_data,
             columns=result_columns,
             total_rows=total_rows
         )
-        
+
     except Exception as e:
         logger.exception("Error aggregating visualization data")
         return VisualizationResponse(
@@ -4200,7 +4295,11 @@ async def apply_calculated_column(
             df[payload.output_column] = result
             
             preview_df = df.head(100).copy()
-        
+
+        _ph_capture("calculated_column_applied", properties={
+            "row_count": len(df),
+            "success": True,
+        })
         return CalculatedColumnApplyResponse(
             success=True,
             preview=preview_df.fillna('').to_dict(orient='records'),
@@ -4467,7 +4566,13 @@ def pivot(
     if not isinstance(session, dict) or "parquet_path" not in session:
         raise HTTPException(status_code=400, detail="Pivot is only supported for large (DuckDB) sessions. Use the Pivot tab with an uploaded large file.")
     parquet_path = session["parquet_path"]
-    return compute_pivot_duckdb(parquet_path, payload)
+    result = compute_pivot_duckdb(parquet_path, payload)
+    _ph_capture("pivot_computed", properties={
+        "row_field": getattr(payload, "row_field", None),
+        "col_field": getattr(payload, "col_field", None),
+        "value_field": getattr(payload, "value_field", None),
+    })
+    return result
 
 
 @app.get("/data/session/rows")
@@ -4622,6 +4727,10 @@ async def get_experiment_performance_data(payload: ExperimentPerformanceRequest)
             for item in result.get("cohort_breakdown", [])
         ]
         
+        _ph_capture("experiment_performance_analyzed", properties={
+            "experiment_id": getattr(payload, "experiment_id", None),
+            "city": getattr(payload, "city", None),
+        })
         return ExperimentPerformanceResponse(
             row_count=result.get("row_count", 0),
             columns=result.get("columns", []),
@@ -4722,6 +4831,11 @@ async def get_segment_transitions_data(payload: SegmentTransitionRequest) -> Seg
                 error=result["error"],
             )
         
+        _ph_capture("segment_transitions_analyzed", properties={
+            "city": getattr(payload, "city", None),
+            "service_category": getattr(payload, "service_category", None),
+            "period": getattr(payload, "period", None),
+        })
         return SegmentTransitionResponse(
             row_count=result.get("row_count", 0),
             columns=result.get("columns", []),
@@ -5252,7 +5366,13 @@ def list_relationships(request: Request):
 def nl_query(payload: NLQueryRequest, request: Request):
     """Natural language → SQL query (+ optional execution)."""
     try:
-        return _nl_query_inner(payload, request)
+        result = _nl_query_inner(payload, request)
+        _ph_capture("nl_query_run", distinct_id=request.headers.get("X-User-Id", "anonymous"), properties={
+            "executed": payload.execute,
+            "used_sql_override": bool(payload.sql_override),
+            "success": result.success,
+        })
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -5395,6 +5515,9 @@ def query_feedback(query_id: str, payload: QueryFeedbackRequest, request: Reques
         result = sb.table("nl_queries").update(
             {"feedback": payload.feedback}
         ).eq("id", query_id).execute()
+        _ph_capture("query_feedback_given", distinct_id=request.headers.get("X-User-Id", "anonymous"), properties={
+            "feedback": payload.feedback,
+        })
         return {"ok": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -5468,6 +5591,9 @@ def generate_dashboard_query(payload: GenerateDashboardQueryRequest, request: Re
         # Detect template parameters
         detected_params = list({m.group(1) for m in _re.finditer(r"\{\{\s*(\w+)\s*\}\}", sql)})
 
+        _ph_capture("dashboard_query_generated", distinct_id=request.headers.get("X-User-Id", "anonymous"), properties={
+            "param_count": len(detected_params),
+        })
         return GenerateDashboardQueryResponse(
             success=True,
             sql=sql,
@@ -6631,34 +6757,45 @@ def _load_session_df(x_session_id: Optional[str]) -> pd.DataFrame:
     raise HTTPException(status_code=400, detail="Invalid session data format.")
 
 
-@app.post("/causal/psm", response_model=PSMResponse)
+def _causal_response(result) -> JSONResponse:
+    """Serialize a causal analysis result, converting numpy types to native Python."""
+    data = _to_native(result.model_dump())
+    return JSONResponse(content=data)
+
+
+@app.post("/causal/psm")
 def causal_psm(payload: PSMRequest, x_session_id: Optional[str] = Header(default=None)):
     df = _load_session_df(x_session_id)
-    return PSMAnalyzer(df, payload).run()
+    result = PSMAnalyzer(df, payload).run()
+    return _causal_response(result)
 
 
-@app.post("/causal/impact", response_model=CausalImpactResponse)
+@app.post("/causal/impact")
 def causal_impact(payload: CausalImpactRequest, x_session_id: Optional[str] = Header(default=None)):
     df = _load_session_df(x_session_id)
-    return CausalImpactAnalyzer(df, payload).run()
+    result = CausalImpactAnalyzer(df, payload).run()
+    return _causal_response(result)
 
 
-@app.post("/causal/hte", response_model=HTEResponse)
+@app.post("/causal/hte")
 def causal_hte(payload: HTERequest, x_session_id: Optional[str] = Header(default=None)):
     df = _load_session_df(x_session_id)
-    return HTEAnalyzer(df, payload).run()
+    result = HTEAnalyzer(df, payload).run()
+    return _causal_response(result)
 
 
-@app.post("/causal/synthetic-control", response_model=SyntheticControlResponse)
+@app.post("/causal/synthetic-control")
 def causal_synthetic_control(payload: SyntheticControlRequest, x_session_id: Optional[str] = Header(default=None)):
     df = _load_session_df(x_session_id)
-    return SyntheticControlAnalyzer(df, payload).run()
+    result = SyntheticControlAnalyzer(df, payload).run()
+    return _causal_response(result)
 
 
-@app.post("/causal/rdd", response_model=RDDResponse)
+@app.post("/causal/rdd")
 def causal_rdd(payload: RDDRequest, x_session_id: Optional[str] = Header(default=None)):
     df = _load_session_df(x_session_id)
-    return RDDAnalyzer(df, payload).run()
+    result = RDDAnalyzer(df, payload).run()
+    return _causal_response(result)
 
 
 @app.post("/causal/recommend", response_model=CausalRecommendResponse)
