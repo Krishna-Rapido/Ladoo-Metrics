@@ -432,14 +432,260 @@ class PSMAnalyzer:
         )
 
 
+def _patch_pandas_causalimpact() -> None:
+    """Monkey-patch pandas 2.x to restore `is_datetime_or_timedelta_dtype`
+    that was removed in pandas 2.2 but is still used by causalimpact 0.2.x."""
+    import pandas.core.dtypes.common as _c
+    if not hasattr(_c, "is_datetime_or_timedelta_dtype"):
+        def _is_datetime_or_timedelta_dtype(arr_or_dtype):  # type: ignore[misc]
+            try:
+                return (
+                    _c.is_datetime64_any_dtype(arr_or_dtype)
+                    or _c.is_timedelta64_dtype(arr_or_dtype)
+                )
+            except Exception:
+                return False
+        _c.is_datetime_or_timedelta_dtype = _is_datetime_or_timedelta_dtype
+
+
 class CausalImpactAnalyzer:
-    """Bayesian Structural Time Series (CausalImpact)."""
+    """Bayesian Structural Time Series (CausalImpact).
+
+    Uses the ``causalimpact`` package which requires pandas 2.x compatibility
+    patching (see ``_patch_pandas_causalimpact``).
+
+    When no control cohort is available the model uses a linear time-trend as
+    the single exogenous regressor, which still allows the BSTS model to fit a
+    counterfactual.
+    """
+
     def __init__(self, df: pd.DataFrame, config: "CausalImpactRequest"):
         self.df = df
         self.config = config
 
+    # ── public ───────────────────────────────────────────────────────────
+
     def run(self) -> "CausalImpactResponse":
-        raise NotImplementedError("CausalImpact implementation pending")
+        from causal_schemas import CausalImpactResponse, ChartData, ChartSeries
+
+        _patch_pandas_causalimpact()
+        from causalimpact import CausalImpact  # noqa: PLC0415  (local import after patch)
+
+        cfg = self.config
+        out = _normalize_date_col(self.df)
+
+        # 1. Filter to test cohort
+        if cfg.test_cohort and "cohort" in out.columns:
+            test_df = out[out["cohort"] == cfg.test_cohort]
+        else:
+            test_df = out
+
+        # 2. Aggregate to daily time series
+        agg_func = cfg.aggregation  # "sum" or "mean"
+        daily = (
+            test_df.groupby("date")
+            .agg({cfg.outcome_metric: agg_func})
+            .reset_index()
+        )
+        daily["date"] = pd.to_datetime(daily["date"])
+        daily = daily.sort_values("date").set_index("date")
+        daily.columns = ["y"]
+
+        # 3. Build covariate: control group OR linear time trend
+        data = daily.copy()
+        warnings: List[str] = []
+
+        if (
+            cfg.use_control_as_covariate
+            and cfg.control_cohort
+            and "cohort" in out.columns
+            and cfg.control_cohort in out["cohort"].values
+        ):
+            ctrl_df = out[out["cohort"] == cfg.control_cohort]
+            ctrl_daily = (
+                ctrl_df.groupby("date")
+                .agg({cfg.outcome_metric: agg_func})
+                .reset_index()
+            )
+            ctrl_daily["date"] = pd.to_datetime(ctrl_daily["date"])
+            ctrl_daily = ctrl_daily.sort_values("date").set_index("date")
+            ctrl_daily.columns = ["x1"]
+            data = data.join(ctrl_daily, how="left").ffill().fillna(0)
+        else:
+            # Fall back to a linear time trend so the model has a covariate
+            data["x1"] = np.arange(len(data), dtype=float)
+            if not cfg.use_control_as_covariate:
+                pass  # user explicitly chose no control
+            elif cfg.control_cohort:
+                warnings.append(
+                    f"Control cohort '{cfg.control_cohort}' not found in data. "
+                    "Using a linear time trend as covariate instead."
+                )
+            else:
+                warnings.append(
+                    "No control cohort specified. "
+                    "Using a linear time trend as covariate."
+                )
+
+        # 4. Map dates to integer positions (avoids pandas DatetimeIndex bug)
+        n_points = len(data)
+        date_index = data.index  # keep for later
+        data_int = data.copy()
+        data_int.index = np.arange(n_points)
+
+        pre_dates = pd.date_range(cfg.pre_start, cfg.pre_end)
+        post_dates = pd.date_range(cfg.post_start, cfg.post_end)
+
+        pre_mask = date_index.isin(pre_dates)
+        post_mask = date_index.isin(post_dates)
+
+        pre_indices = np.where(pre_mask)[0]
+        post_indices = np.where(post_mask)[0]
+
+        if len(pre_indices) == 0:
+            raise ValueError(
+                f"Pre-period [{cfg.pre_start}, {cfg.pre_end}] has no data points."
+            )
+        if len(post_indices) == 0:
+            raise ValueError(
+                f"Post-period [{cfg.post_start}, {cfg.post_end}] has no data points."
+            )
+
+        pre_period = [int(pre_indices[0]), int(pre_indices[-1])]
+        post_period = [int(post_indices[0]), int(post_indices[-1])]
+
+        # 5. Run CausalImpact
+        ci = CausalImpact(data_int, pre_period, post_period)
+        ci.run()
+
+        inf = ci.inferences  # DataFrame indexed 0..n-1
+
+        # 6. Extract time-series rows
+        time_series: List[Dict[str, Any]] = []
+        for i, dt in enumerate(date_index):
+            row = inf.iloc[i]
+            time_series.append({
+                "date": dt.strftime("%Y-%m-%d"),
+                "actual": float(row["response"]),
+                "predicted": float(row["point_pred"]),
+                "ci_lower": float(row["point_pred_lower"]),
+                "ci_upper": float(row["point_pred_upper"]),
+                "pointwise": float(row["point_effect"]),
+                "cumulative": float(row["cum_effect"]),
+            })
+
+        # 7. Compute summary statistics
+        post_inf = inf.iloc[post_indices[0]: post_indices[-1] + 1]
+        pre_inf = inf.iloc[pre_indices[0]: pre_indices[-1] + 1]
+
+        avg_effect = float(post_inf["point_effect"].mean())
+        avg_effect_lower = float(post_inf["point_effect_lower"].mean())
+        avg_effect_upper = float(post_inf["point_effect_upper"].mean())
+        cum_effect = float(post_inf["cum_effect"].iloc[-1])
+        cum_effect_lower = float(post_inf["cum_effect_lower"].iloc[-1])
+        cum_effect_upper = float(post_inf["cum_effect_upper"].iloc[-1])
+
+        # Posterior probability: fraction of post-period where lower CI > 0
+        # (or upper CI < 0 for negative effects)
+        if avg_effect >= 0:
+            post_prob = float(
+                (post_inf["point_effect_lower"] > 0).mean() * 100
+            )
+        else:
+            post_prob = float(
+                (post_inf["point_effect_upper"] < 0).mean() * 100
+            )
+        post_prob = min(100.0, max(0.0, post_prob))
+
+        # Pre-period MAPE
+        actual_pre = pre_inf["response"].replace(0, np.nan)
+        mape = float(
+            (abs(pre_inf["response"] - pre_inf["point_pred"]) / actual_pre.abs())
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+            .mean()
+            * 100
+        )
+
+        # % effect
+        avg_predicted = float(post_inf["point_pred"].mean())
+        avg_effect_pct = (
+            (avg_effect / avg_predicted * 100) if avg_predicted != 0 else 0.0
+        )
+        avg_effect_ci_pct = [
+            (avg_effect_lower / avg_predicted * 100) if avg_predicted != 0 else 0.0,
+            (avg_effect_upper / avg_predicted * 100) if avg_predicted != 0 else 0.0,
+        ]
+        cum_predicted = float(post_inf["cum_pred"].iloc[-1])
+        cum_effect_ci = [cum_effect_lower, cum_effect_upper]
+
+        # 8. Build charts
+        dates_all = [r["date"] for r in time_series]
+        actual_vals = [r["actual"] for r in time_series]
+        predicted_vals = [r["predicted"] for r in time_series]
+        ci_lower_vals = [r["ci_lower"] for r in time_series]
+        ci_upper_vals = [r["ci_upper"] for r in time_series]
+        pointwise_vals = [r["pointwise"] for r in time_series]
+        cumulative_vals = [r["cumulative"] for r in time_series]
+
+        charts: Dict[str, Any] = {
+            "time_series": ChartData(
+                chart_type="line",
+                title="Actual vs Counterfactual",
+                x_label="Date",
+                y_label=cfg.outcome_metric,
+                series=[
+                    ChartSeries(name="Actual", values=actual_vals, labels=dates_all),
+                    ChartSeries(name="Predicted", values=predicted_vals, labels=dates_all),
+                    ChartSeries(name="CI Lower", values=ci_lower_vals, labels=dates_all),
+                    ChartSeries(name="CI Upper", values=ci_upper_vals, labels=dates_all),
+                ],
+                annotations={"intervention_date": cfg.post_start},
+            ),
+            "pointwise_effect": ChartData(
+                chart_type="bar",
+                title="Pointwise Causal Effect",
+                x_label="Date",
+                y_label="Effect",
+                series=[
+                    ChartSeries(name="Pointwise Effect", values=pointwise_vals, labels=dates_all),
+                ],
+                annotations={"intervention_date": cfg.post_start},
+            ),
+            "cumulative_effect": ChartData(
+                chart_type="line",
+                title="Cumulative Causal Effect",
+                x_label="Date",
+                y_label="Cumulative Effect",
+                series=[
+                    ChartSeries(name="Cumulative Effect", values=cumulative_vals, labels=dates_all),
+                ],
+                annotations={"intervention_date": cfg.post_start},
+            ),
+        }
+
+        # 9. Narrative
+        narrative_dict: Dict[str, Any] = {
+            "average_effect": avg_effect_pct,
+            "average_effect_ci": avg_effect_ci_pct,
+            "posterior_probability": post_prob,
+            "model_mape": mape,
+            "cumulative_effect": cum_effect,
+        }
+        narrative = generate_narrative("causal_impact", narrative_dict)
+
+        return CausalImpactResponse(
+            average_effect=avg_effect_pct,
+            average_effect_ci=avg_effect_ci_pct,
+            cumulative_effect=cum_effect,
+            cumulative_effect_ci=cum_effect_ci,
+            posterior_probability=post_prob,
+            model_mape=mape,
+            charts=charts,
+            time_series=time_series,
+            narrative=narrative,
+            warnings=warnings,
+        )
 
 
 class HTEAnalyzer:

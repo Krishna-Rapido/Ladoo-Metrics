@@ -144,3 +144,53 @@ class TestPSMAnalyzer:
         for row in result.balance:
             if abs(row.smd_before) > 0.1:
                 assert abs(row.smd_after) <= abs(row.smd_before) + 0.05
+
+
+# ── CausalImpactAnalyzer ─────────────────────────────────────────────
+
+
+from causal_inference import CausalImpactAnalyzer
+from causal_schemas import CausalImpactRequest
+
+
+@pytest.fixture()
+def time_series_df() -> pd.DataFrame:
+    """Daily time series with a clear treatment effect starting day 30."""
+    np.random.seed(42)
+    rows = []
+    for day in range(60):
+        date = pd.Timestamp("2025-01-01") + pd.Timedelta(days=day)
+        base = 100 + day * 0.5 + np.random.normal(0, 5)
+        treatment = 20 if day >= 30 else 0
+        for cid in [f"C{i:03d}" for i in range(50)]:
+            rows.append({
+                "captain_id": cid,
+                "date": date.strftime("%Y-%m-%d"),
+                "cohort": "test",
+                "trips": max(0, base + treatment + np.random.normal(0, 3)),
+            })
+    return pd.DataFrame(rows)
+
+
+class TestCausalImpactAnalyzer:
+    def test_returns_valid_response(self, time_series_df: pd.DataFrame):
+        config = CausalImpactRequest(
+            outcome_metric="trips",
+            pre_start="2025-01-01", pre_end="2025-01-30",
+            post_start="2025-01-31", post_end="2025-03-01",
+            control_cohort=None,
+        )
+        result = CausalImpactAnalyzer(time_series_df, config).run()
+        assert result.average_effect != 0
+        assert len(result.time_series) > 0
+        assert result.narrative != ""
+
+    def test_cumulative_effect_positive(self, time_series_df: pd.DataFrame):
+        config = CausalImpactRequest(
+            outcome_metric="trips",
+            pre_start="2025-01-01", pre_end="2025-01-30",
+            post_start="2025-01-31", post_end="2025-03-01",
+            control_cohort=None,
+        )
+        result = CausalImpactAnalyzer(time_series_df, config).run()
+        assert result.cumulative_effect > 0
