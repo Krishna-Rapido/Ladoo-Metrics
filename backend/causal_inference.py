@@ -278,14 +278,158 @@ def _narrative_rdd(r: Dict[str, Any]) -> str:
 
 # ── Analyzer stubs ───────────────────────────────────────────────────
 
+def _standardized_mean_diff(treated: np.ndarray, control: np.ndarray) -> float:
+    """Compute standardized mean difference (Cohen's d variant for balance)."""
+    diff = treated.mean() - control.mean()
+    pooled_std = np.sqrt((treated.var() + control.var()) / 2)
+    if pooled_std < 1e-10:
+        return 0.0
+    return float(diff / pooled_std)
+
+
 class PSMAnalyzer:
-    """Propensity Score Matching."""
+    """Propensity Score Matching for selection bias correction."""
+
     def __init__(self, df: pd.DataFrame, config: "PSMRequest"):
+        from causal_schemas import PSMRequest
         self.df = df
         self.config = config
 
     def run(self) -> "PSMResponse":
-        raise NotImplementedError("PSM implementation pending")
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.neighbors import NearestNeighbors
+        from scipy import stats
+        from causal_schemas import PSMResponse, PSMBalanceRow, ChartData, ChartSeries
+
+        cfg = self.config
+        metrics = cfg.covariates or [
+            c for c in self.df.select_dtypes(include=[np.number]).columns
+            if c not in ("captain_id", "yyyymmdd") and c != cfg.outcome_metric
+        ]
+
+        features = prepare_pre_period_features(self.df, cfg.pre_start, cfg.pre_end, metrics)
+        outcomes = prepare_post_period_outcome(self.df, cfg.post_start, cfg.post_end, cfg.outcome_metric)
+
+        merged = features.merge(outcomes, on="captain_id", how="inner")
+        test_mask = merged["cohort"] == cfg.test_cohort
+        control_mask = merged["cohort"] == cfg.control_cohort
+        merged = merged[test_mask | control_mask].copy()
+
+        feature_cols = [c for c in merged.columns if c.endswith(("_mean", "_std", "_active_days"))]
+        X = merged[feature_cols].fillna(0).values
+        T = (merged["cohort"] == cfg.test_cohort).astype(int).values
+        Y = merged["outcome"].values
+
+        # Fit propensity scores
+        lr = LogisticRegression(max_iter=1000, random_state=42)
+        lr.fit(X, T)
+        ps = lr.predict_proba(X)[:, 1]
+
+        ps_test = ps[T == 1]
+        ps_control = ps[T == 0]
+
+        # Overlap
+        ps_min = max(ps_test.min(), ps_control.min())
+        ps_max = min(ps_test.max(), ps_control.max())
+        in_common_support = ((ps >= ps_min) & (ps <= ps_max))
+        overlap_score = float(in_common_support.mean())
+
+        # Match on logit propensity
+        logit_ps = np.log(ps / (1 - ps + 1e-10) + 1e-10)
+        logit_test = logit_ps[T == 1].reshape(-1, 1)
+        logit_control = logit_ps[T == 0].reshape(-1, 1)
+
+        nn = NearestNeighbors(n_neighbors=1, metric="euclidean")
+        nn.fit(logit_control)
+        distances, indices = nn.kneighbors(logit_test)
+
+        caliper = cfg.caliper_width * logit_ps.std()
+        within_caliper = distances.flatten() <= caliper
+        matched_test_idx = np.where(T == 1)[0][within_caliper]
+        matched_control_idx = np.where(T == 0)[0][indices.flatten()[within_caliper]]
+
+        n_matched = len(matched_test_idx)
+        n_unmatched = int((T == 1).sum()) - n_matched
+
+        # Balance
+        balance_rows = []
+        for col_idx, col_name in enumerate(feature_cols):
+            smd_before = _standardized_mean_diff(X[T == 1, col_idx], X[T == 0, col_idx])
+            smd_after = _standardized_mean_diff(X[matched_test_idx, col_idx], X[matched_control_idx, col_idx])
+            balance_rows.append(PSMBalanceRow(
+                covariate=col_name,
+                smd_before=float(smd_before),
+                smd_after=float(smd_after),
+                mean_test_before=float(X[T == 1, col_idx].mean()),
+                mean_control_before=float(X[T == 0, col_idx].mean()),
+                mean_test_after=float(X[matched_test_idx, col_idx].mean()),
+                mean_control_after=float(X[matched_control_idx, col_idx].mean()),
+            ))
+
+        # ATT
+        y_test_matched = Y[matched_test_idx]
+        y_control_matched = Y[matched_control_idx]
+        att_diff = y_test_matched - y_control_matched
+        att = float(att_diff.mean())
+        naive = float(Y[T == 1].mean() - Y[T == 0].mean())
+
+        if n_matched >= 2:
+            t_stat, p_val = stats.ttest_rel(y_test_matched, y_control_matched)
+            se = att_diff.std() / np.sqrt(n_matched)
+            ci_lower = att - 1.96 * se
+            ci_upper = att + 1.96 * se
+        else:
+            p_val, ci_lower, ci_upper = 1.0, att, att
+
+        control_mean = float(Y[T == 0].mean())
+        if control_mean != 0:
+            att_pct = att / control_mean * 100
+            naive_pct = naive / control_mean * 100
+            ci_lower_pct = ci_lower / control_mean * 100
+            ci_upper_pct = ci_upper / control_mean * 100
+        else:
+            att_pct = naive_pct = ci_lower_pct = ci_upper_pct = 0.0
+
+        charts = {
+            "overlap": ChartData(
+                chart_type="histogram", title="Propensity Score Distribution",
+                x_label="Propensity Score", y_label="Density",
+                series=[
+                    ChartSeries(name="Test", values=ps_test.tolist()),
+                    ChartSeries(name="Control", values=ps_control.tolist()),
+                ],
+            ),
+            "love_plot": ChartData(
+                chart_type="scatter", title="Covariate Balance (Love Plot)",
+                x_label="Standardized Mean Difference", y_label="Covariate",
+                data=[{"covariate": b.covariate, "before": b.smd_before, "after": b.smd_after} for b in balance_rows],
+            ),
+            "att_comparison": ChartData(
+                chart_type="bar", title="Naive vs PSM-Adjusted Estimate",
+                series=[
+                    ChartSeries(name="Naive DiD", values=[naive_pct]),
+                    ChartSeries(name="PSM-Adjusted", values=[att_pct]),
+                ],
+            ),
+        }
+
+        result_dict = {
+            "att": att_pct, "att_ci_lower": ci_lower_pct, "att_ci_upper": ci_upper_pct,
+            "att_p_value": float(p_val), "naive_estimate": naive_pct,
+            "n_matched_pairs": n_matched, "n_unmatched_test": n_unmatched,
+        }
+        narrative = generate_narrative("psm", result_dict)
+
+        return PSMResponse(
+            att=att_pct, att_ci_lower=ci_lower_pct, att_ci_upper=ci_upper_pct,
+            att_p_value=float(p_val), naive_estimate=naive_pct,
+            n_matched_pairs=n_matched, n_unmatched_test=n_unmatched,
+            n_total_test=int((T == 1).sum()), n_total_control=int((T == 0).sum()),
+            overlap_score=overlap_score, balance=balance_rows, charts=charts,
+            propensity_scores_test=ps_test.tolist(),
+            propensity_scores_control=ps_control.tolist(),
+            narrative=narrative, warnings=[],
+        )
 
 
 class CausalImpactAnalyzer:
