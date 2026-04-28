@@ -279,3 +279,65 @@ class TestSyntheticControlAnalyzer:
         result = SyntheticControlAnalyzer(city_panel_df, config).run()
         for w in result.donor_weights:
             assert w.weight >= -0.001
+
+
+# ── RDDAnalyzer ──────────────────────────────────────────────────────
+
+from causal_inference import RDDAnalyzer
+from causal_schemas import RDDRequest
+
+
+@pytest.fixture()
+def rdd_df() -> pd.DataFrame:
+    """Captains with a running variable (DAPR score). Treatment below cutoff 0.5."""
+    np.random.seed(42)
+    rows = []
+    for i in range(300):
+        cid = f"C{i:04d}"
+        dapr = np.random.uniform(0.1, 0.9)
+        treatment = 3.0 if dapr < 0.5 else 0
+        base_trips = 5 + dapr * 10
+        for day in range(10):
+            date = pd.Timestamp("2025-01-01") + pd.Timedelta(days=day)
+            rows.append({
+                "captain_id": cid,
+                "date": date.strftime("%Y-%m-%d"),
+                "cohort": "test",
+                "dapr_score": dapr,
+                "trips": max(0, base_trips + treatment + np.random.normal(0, 1.5)),
+            })
+    return pd.DataFrame(rows)
+
+
+class TestRDDAnalyzer:
+    def test_returns_valid_response(self, rdd_df: pd.DataFrame):
+        config = RDDRequest(
+            running_variable="dapr_score",
+            cutoff_value=0.5,
+            outcome_metric="trips",
+        )
+        result = RDDAnalyzer(rdd_df, config).run()
+        assert result.rd_estimate != 0
+        assert result.optimal_bandwidth > 0
+        assert result.n_left > 0
+        assert result.n_right > 0
+        assert len(result.scatter_data) > 0
+        assert result.narrative != ""
+
+    def test_detects_treatment_effect(self, rdd_df: pd.DataFrame):
+        config = RDDRequest(
+            running_variable="dapr_score",
+            cutoff_value=0.5,
+            outcome_metric="trips",
+        )
+        result = RDDAnalyzer(rdd_df, config).run()
+        assert abs(result.rd_estimate) > 0.5
+
+    def test_bandwidth_sensitivity_returned(self, rdd_df: pd.DataFrame):
+        config = RDDRequest(
+            running_variable="dapr_score",
+            cutoff_value=0.5,
+            outcome_metric="trips",
+        )
+        result = RDDAnalyzer(rdd_df, config).run()
+        assert len(result.bandwidth_sensitivity) >= 3
