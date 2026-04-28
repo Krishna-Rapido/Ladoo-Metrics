@@ -689,13 +689,246 @@ class CausalImpactAnalyzer:
 
 
 class HTEAnalyzer:
-    """Heterogeneous Treatment Effects via Causal Forest."""
+    """Heterogeneous Treatment Effects via Causal Forest (CausalForestDML)."""
+
     def __init__(self, df: pd.DataFrame, config: "HTERequest"):
         self.df = df
         self.config = config
 
     def run(self) -> "HTEResponse":
-        raise NotImplementedError("HTE implementation pending")
+        from econml.dml import CausalForestDML
+        from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifier
+        from causal_schemas import (
+            HTEResponse, HTESegmentEffect, HTEFeatureImportance, ChartData, ChartSeries,
+        )
+
+        cfg = self.config
+        warnings: List[str] = []
+
+        # ── 1. Build pre-period features (X) ────────────────────────────
+        metrics = cfg.covariates or [
+            c for c in self.df.select_dtypes(include=[np.number]).columns
+            if c not in ("captain_id", "yyyymmdd") and c != cfg.outcome_metric
+        ]
+
+        features = prepare_pre_period_features(
+            self.df, cfg.pre_start, cfg.pre_end, metrics
+        )
+        outcomes = prepare_post_period_outcome(
+            self.df, cfg.post_start, cfg.post_end, cfg.outcome_metric
+        )
+
+        merged = features.merge(outcomes, on="captain_id", how="inner")
+        test_mask = merged["cohort"] == cfg.test_cohort
+        control_mask = merged["cohort"] == cfg.control_cohort
+        merged = merged[test_mask | control_mask].copy().reset_index(drop=True)
+
+        feature_cols = [
+            c for c in merged.columns
+            if c.endswith(("_mean", "_std", "_active_days"))
+        ]
+
+        X = merged[feature_cols].fillna(0).values.astype(float)
+        T = (merged["cohort"] == cfg.test_cohort).astype(int).values  # 1D
+        Y = merged["outcome"].values.astype(float)
+        captain_ids = merged["captain_id"].tolist()
+
+        n_test = int(T.sum())
+        n_control = int((T == 0).sum())
+        if n_test < 10 or n_control < 10:
+            raise ValueError(
+                f"Not enough captains: {n_test} test, {n_control} control (need ≥10 each)."
+            )
+
+        # ── 2. Fit CausalForestDML ────────────────────────────────────────
+        cf = CausalForestDML(
+            model_y=GradientBoostingRegressor(
+                n_estimators=100, max_depth=3, random_state=42
+            ),
+            model_t=GradientBoostingClassifier(
+                n_estimators=100, max_depth=3, random_state=42
+            ),
+            n_estimators=200,
+            random_state=42,
+            discrete_treatment=True,
+        )
+        cf.fit(Y, T, X=X)
+
+        # ── 3. Individual CATEs ───────────────────────────────────────────
+        cates = cf.effect(X)  # shape (n,)
+        inf = cf.effect_inference(X)
+        ci_lower, ci_upper = inf.conf_int()  # each shape (n,)
+
+        # ── 4. ATE and CI ─────────────────────────────────────────────────
+        ate_raw = float(cf.ate(X))
+        ate_lower_raw, ate_upper_raw = cf.ate_interval(X)
+
+        control_mean = float(Y[T == 0].mean())
+        if control_mean != 0:
+            ate_pct = ate_raw / control_mean * 100
+            ate_ci = [
+                float(ate_lower_raw) / control_mean * 100,
+                float(ate_upper_raw) / control_mean * 100,
+            ]
+        else:
+            ate_pct = 0.0
+            ate_ci = [0.0, 0.0]
+            warnings.append("Control mean is 0; ATE expressed as raw difference.")
+
+        # ── 5. Feature importance ─────────────────────────────────────────
+        feature_importances = cf.feature_importances_  # 1D array
+        fi_rows = [
+            HTEFeatureImportance(feature=col, importance=float(imp))
+            for col, imp in sorted(
+                zip(feature_cols, feature_importances),
+                key=lambda x: x[1],
+                reverse=True,
+            )
+        ]
+
+        # ── 6. Individual CATEs list ──────────────────────────────────────
+        individual_cates = []
+        for i, cid in enumerate(captain_ids):
+            row: Dict[str, Any] = {
+                "captain_id": cid,
+                "cate": float(cates[i]),
+                "cate_ci_lower": float(ci_lower[i]),
+                "cate_ci_upper": float(ci_upper[i]),
+            }
+            for col_idx, col in enumerate(feature_cols):
+                row[col] = float(X[i, col_idx])
+            individual_cates.append(row)
+
+        # ── 7. Segment effects ────────────────────────────────────────────
+        segment_effects: List[HTESegmentEffect] = []
+
+        # Auto-detect segment columns: categorical cols from original data for captains in merged
+        seg_cols = cfg.segment_columns or []
+        if not seg_cols:
+            orig = _normalize_date_col(self.df)
+            cat_cols = [
+                c for c in orig.select_dtypes(include=["object", "category"]).columns
+                if c not in ("captain_id", "date", "cohort")
+            ]
+            seg_cols = cat_cols[:3]  # limit to first 3
+
+        # Build a captain → segment value lookup from the original DataFrame
+        orig_df = _normalize_date_col(self.df)
+        captain_level = (
+            orig_df[orig_df["captain_id"].isin(captain_ids)]
+            .groupby("captain_id")
+            .first()
+            .reset_index()
+        )
+        cate_series = pd.Series(cates, index=captain_ids, name="cate")
+        ci_lower_series = pd.Series(ci_lower, index=captain_ids, name="ci_lower")
+        ci_upper_series = pd.Series(ci_upper, index=captain_ids, name="ci_upper")
+
+        for seg_col in seg_cols:
+            if seg_col not in captain_level.columns:
+                continue
+            seg_map = captain_level.set_index("captain_id")[seg_col]
+            for seg_val, group in seg_map.groupby(seg_map):
+                group_ids = group.index.tolist()
+                if len(group_ids) < 3:
+                    continue
+                group_cates = cate_series.loc[group_ids].values
+                group_ci_lo = ci_lower_series.loc[group_ids].values
+                group_ci_hi = ci_upper_series.loc[group_ids].values
+                seg_cate = float(group_cates.mean())
+                seg_ci_lo = float(group_ci_lo.mean())
+                seg_ci_hi = float(group_ci_hi.mean())
+                if control_mean != 0:
+                    seg_cate = seg_cate / control_mean * 100
+                    seg_ci_lo = seg_ci_lo / control_mean * 100
+                    seg_ci_hi = seg_ci_hi / control_mean * 100
+                segment_effects.append(HTESegmentEffect(
+                    segment_name=seg_col,
+                    segment_value=str(seg_val),
+                    cate=seg_cate,
+                    cate_ci_lower=seg_ci_lo,
+                    cate_ci_upper=seg_ci_hi,
+                    n_captains=len(group_ids),
+                ))
+
+        # Sort segments by CATE descending
+        segment_effects.sort(key=lambda s: s.cate, reverse=True)
+
+        # ── 8. CATE distribution histogram ───────────────────────────────
+        hist_counts, bin_edges = np.histogram(cates, bins=20)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        cate_distribution: Dict[str, Any] = {
+            "bins": bin_centers.tolist(),
+            "counts": hist_counts.tolist(),
+            "bin_edges": bin_edges.tolist(),
+        }
+
+        # ── 9. Charts ─────────────────────────────────────────────────────
+        charts: Dict[str, Any] = {
+            "cate_histogram": ChartData(
+                chart_type="histogram",
+                title="Distribution of Individual Treatment Effects",
+                x_label="CATE",
+                y_label="Count",
+                series=[
+                    ChartSeries(
+                        name="CATE Distribution",
+                        values=hist_counts.tolist(),
+                        labels=[f"{v:.2f}" for v in bin_centers.tolist()],
+                    )
+                ],
+            ),
+            "feature_importance": ChartData(
+                chart_type="bar",
+                title="Feature Importance (Heterogeneity Drivers)",
+                x_label="Importance",
+                y_label="Feature",
+                data=[{"feature": fi.feature, "importance": fi.importance} for fi in fi_rows],
+            ),
+        }
+        if segment_effects:
+            charts["segment_effects"] = ChartData(
+                chart_type="bar",
+                title="Average CATE by Segment",
+                x_label="Segment",
+                y_label="CATE (%)",
+                data=[
+                    {
+                        "segment": f"{s.segment_name}={s.segment_value}",
+                        "cate": s.cate,
+                        "ci_lower": s.cate_ci_lower,
+                        "ci_upper": s.cate_ci_upper,
+                    }
+                    for s in segment_effects
+                ],
+            )
+
+        # ── 10. Narrative ─────────────────────────────────────────────────
+        narrative_dict: Dict[str, Any] = {
+            "ate": ate_pct,
+            "ate_ci": ate_ci,
+            "segment_effects": [
+                {"segment_value": s.segment_value, "cate": s.cate}
+                for s in segment_effects
+            ],
+            "feature_importance": [
+                {"feature": fi.feature, "importance": fi.importance}
+                for fi in fi_rows
+            ],
+        }
+        narrative = generate_narrative("hte", narrative_dict)
+
+        return HTEResponse(
+            ate=ate_pct,
+            ate_ci=ate_ci,
+            segment_effects=segment_effects,
+            feature_importance=fi_rows,
+            cate_distribution=cate_distribution,
+            individual_cates=individual_cates,
+            charts=charts,
+            narrative=narrative,
+            warnings=warnings,
+        )
 
 
 class SyntheticControlAnalyzer:

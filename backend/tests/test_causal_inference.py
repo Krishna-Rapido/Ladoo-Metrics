@@ -194,3 +194,33 @@ class TestCausalImpactAnalyzer:
         )
         result = CausalImpactAnalyzer(time_series_df, config).run()
         assert result.cumulative_effect > 0
+
+
+# ── HTEAnalyzer ──────────────────────────────────────────────────────
+
+from causal_inference import HTEAnalyzer
+from causal_schemas import HTERequest
+
+
+class TestHTEAnalyzer:
+    def test_returns_valid_response(self, psm_experiment_df: pd.DataFrame):
+        config = HTERequest(
+            outcome_metric="trips",
+            pre_start="2025-01-01", pre_end="2025-01-10",
+            post_start="2025-01-11", post_end="2025-01-20",
+        )
+        result = HTEAnalyzer(psm_experiment_df, config).run()
+        assert result.ate != 0
+        assert len(result.feature_importance) > 0
+        assert result.narrative != ""
+
+    def test_individual_cates_returned(self, psm_experiment_df: pd.DataFrame):
+        config = HTERequest(
+            outcome_metric="trips",
+            pre_start="2025-01-01", pre_end="2025-01-10",
+            post_start="2025-01-11", post_end="2025-01-20",
+        )
+        result = HTEAnalyzer(psm_experiment_df, config).run()
+        assert len(result.individual_cates) > 0
+        assert "captain_id" in result.individual_cates[0]
+        assert "cate" in result.individual_cates[0]
