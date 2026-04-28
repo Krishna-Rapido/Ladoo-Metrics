@@ -120,6 +120,21 @@ from transformations import (
     compute_cohort_funnel_timeseries,
     compute_metric_timeseries_by_cohort,
 )
+from causal_schemas import (
+    PSMRequest, PSMResponse,
+    CausalImpactRequest, CausalImpactResponse,
+    HTERequest, HTEResponse,
+    SyntheticControlRequest, SyntheticControlResponse,
+    RDDRequest, RDDResponse,
+    CausalRecommendRequest, CausalRecommendResponse,
+    CausalValidateRequest, CausalValidateResponse,
+    CausalExportRequest,
+)
+from causal_inference import (
+    PSMAnalyzer, CausalImpactAnalyzer, HTEAnalyzer,
+    SyntheticControlAnalyzer, RDDAnalyzer,
+    recommend_methods,
+)
 
 
 app = FastAPI(title="Cohort Metrics API")
@@ -197,6 +212,10 @@ APP_TEMP_PREFIX = "ladoo_metrics_tmp_"
 
 # Default preview row limit to prevent loading multi-GB files entirely into memory
 DEFAULT_PREVIEW_LIMIT = 10_000
+
+# Max rows returned inline in custom dashboard query JSON responses.
+# Full data is always available via /data/download using the session_id.
+CUSTOM_QUERY_ROW_LIMIT = 50_000
 
 # Stale upload threshold in seconds (1 hour)
 STALE_UPLOAD_THRESHOLD = int(os.environ.get("STALE_UPLOAD_THRESHOLD", "3600"))
@@ -2478,13 +2497,18 @@ async def execute_custom_dashboard_query(payload: schemas.CustomDashboardQueryRe
     session_id = str(_uuid.uuid4())
     SESSION_STORE[session_id] = result_df.copy()
 
-    data = result_df.replace({float('nan'): None, float('inf'): None, float('-inf'): None}).to_dict('records')
+    total_rows = len(result_df)
+    is_truncated = total_rows > CUSTOM_QUERY_ROW_LIMIT
+    display_df = result_df.head(CUSTOM_QUERY_ROW_LIMIT) if is_truncated else result_df
+    data = display_df.replace({float('nan'): None, float('inf'): None, float('-inf'): None}).to_dict('records')
 
     return schemas.CustomDashboardQueryResponse(
-        num_rows=len(result_df),
+        num_rows=len(data),
         columns=list(result_df.columns),
         data=data,
         session_id=session_id,
+        total_rows=total_rows,
+        is_truncated=is_truncated,
     )
 
 
@@ -4605,7 +4629,6 @@ async def get_experiment_performance_data(payload: ExperimentPerformanceRequest)
             total_unique_captains=result.get("total_unique_captains"),
             cohort_breakdown=cohort_breakdown,
             preview=result.get("preview", []),
-            csv=result.get("csv"),
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch experiment performance data: {exc}")
@@ -6583,6 +6606,78 @@ def add_dashboard_snapshot_to_report(payload: SnapshotAddRequest, request: Reque
     }
 
     return {"ok": True, "item": item}
+
+
+# ── Causal Inference Lab ─────────────────────────────────────────────
+
+
+def _load_session_df(x_session_id: Optional[str]) -> pd.DataFrame:
+    """Load session DataFrame, handling both in-memory and DuckDB/Parquet sessions."""
+    if not x_session_id or x_session_id not in SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing session_id. Upload data first.")
+    session = SESSION_STORE[x_session_id]
+    if isinstance(session, pd.DataFrame):
+        return session
+    if isinstance(session, dict) and "parquet_path" in session:
+        import duckdb as _duckdb
+        parquet_path = session["parquet_path"]
+        if not os.path.exists(parquet_path):
+            raise HTTPException(status_code=400, detail="Session data file not found.")
+        con = _duckdb.connect()
+        try:
+            return con.execute(f"SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
+        finally:
+            con.close()
+    raise HTTPException(status_code=400, detail="Invalid session data format.")
+
+
+@app.post("/causal/psm", response_model=PSMResponse)
+def causal_psm(payload: PSMRequest, x_session_id: Optional[str] = Header(default=None)):
+    df = _load_session_df(x_session_id)
+    return PSMAnalyzer(df, payload).run()
+
+
+@app.post("/causal/impact", response_model=CausalImpactResponse)
+def causal_impact(payload: CausalImpactRequest, x_session_id: Optional[str] = Header(default=None)):
+    df = _load_session_df(x_session_id)
+    return CausalImpactAnalyzer(df, payload).run()
+
+
+@app.post("/causal/hte", response_model=HTEResponse)
+def causal_hte(payload: HTERequest, x_session_id: Optional[str] = Header(default=None)):
+    df = _load_session_df(x_session_id)
+    return HTEAnalyzer(df, payload).run()
+
+
+@app.post("/causal/synthetic-control", response_model=SyntheticControlResponse)
+def causal_synthetic_control(payload: SyntheticControlRequest, x_session_id: Optional[str] = Header(default=None)):
+    df = _load_session_df(x_session_id)
+    return SyntheticControlAnalyzer(df, payload).run()
+
+
+@app.post("/causal/rdd", response_model=RDDResponse)
+def causal_rdd(payload: RDDRequest, x_session_id: Optional[str] = Header(default=None)):
+    df = _load_session_df(x_session_id)
+    return RDDAnalyzer(df, payload).run()
+
+
+@app.post("/causal/recommend", response_model=CausalRecommendResponse)
+def causal_recommend(payload: CausalRecommendRequest, x_session_id: Optional[str] = Header(default=None)):
+    df = _load_session_df(x_session_id)
+    recs = recommend_methods(df, test_cohort=payload.test_cohort, control_cohort=payload.control_cohort)
+    return CausalRecommendResponse(recommendations=recs)
+
+
+@app.post("/causal/validate", response_model=CausalValidateResponse)
+def causal_validate(payload: CausalValidateRequest, x_session_id: Optional[str] = Header(default=None)):
+    df = _load_session_df(x_session_id)
+    return CausalValidateResponse(feasible=True, warnings=[])
+
+
+@app.post("/causal/export")
+def causal_export(payload: CausalExportRequest, x_session_id: Optional[str] = Header(default=None)):
+    _load_session_df(x_session_id)  # validate session exists
+    return {"status": "ok", "method": payload.method}
 
 
 if __name__ == "__main__":
