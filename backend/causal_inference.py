@@ -932,13 +932,139 @@ class HTEAnalyzer:
 
 
 class SyntheticControlAnalyzer:
-    """Synthetic Control Method."""
+    """Synthetic Control Method — custom implementation via scipy.optimize."""
+
     def __init__(self, df: pd.DataFrame, config: "SyntheticControlRequest"):
         self.df = df
         self.config = config
 
     def run(self) -> "SyntheticControlResponse":
-        raise NotImplementedError("Synthetic Control implementation pending")
+        from scipy.optimize import minimize
+        from causal_schemas import SyntheticControlResponse, DonorWeight, ChartData
+
+        cfg = self.config
+        out = _normalize_date_col(self.df)
+        unit_col = cfg.unit_column
+
+        if unit_col not in out.columns:
+            raise ValueError(f"Column '{unit_col}' not found in data.")
+
+        # Aggregate to unit × date panel
+        panel = out.groupby([unit_col, "date"]).agg({cfg.outcome_metric: cfg.aggregation}).reset_index()
+        panel_wide = panel.pivot(index="date", columns=unit_col, values=cfg.outcome_metric).sort_index()
+        panel_wide = panel_wide.ffill().fillna(0)
+
+        if cfg.treated_unit not in panel_wide.columns:
+            raise ValueError(f"Treated unit '{cfg.treated_unit}' not found.")
+
+        treated = panel_wide[cfg.treated_unit].values
+        donor_names = [c for c in panel_wide.columns if c != cfg.treated_unit]
+        donors = panel_wide[donor_names].values
+
+        dates = panel_wide.index.tolist()
+        intervention_idx = next(
+            (i for i, d in enumerate(dates) if d >= cfg.intervention_date), len(dates)
+        )
+        treated_pre = treated[:intervention_idx]
+        donors_pre = donors[:intervention_idx]
+
+        n_donors = donors_pre.shape[1]
+
+        def objective(w):
+            synthetic = donors_pre @ w
+            return float(np.sum((treated_pre - synthetic) ** 2))
+
+        constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
+        bounds = [(0, 1)] * n_donors
+        w0 = np.ones(n_donors) / n_donors
+
+        result = minimize(objective, w0, method="SLSQP", bounds=bounds, constraints=constraints)
+        weights = result.x
+
+        synthetic = donors @ weights
+        gap = treated - synthetic
+        pre_rmspe = float(np.sqrt(np.mean(gap[:intervention_idx] ** 2)))
+        post_gap = gap[intervention_idx:]
+        post_rmspe = float(np.sqrt(np.mean(post_gap ** 2))) if len(post_gap) > 0 else 0
+        avg_effect = float(post_gap.mean()) if len(post_gap) > 0 else 0
+        avg_treated_post = float(treated[intervention_idx:].mean()) if len(treated[intervention_idx:]) > 0 else 1
+        effect_pct = avg_effect / (avg_treated_post - avg_effect) * 100 if (avg_treated_post - avg_effect) != 0 else 0
+
+        # Placebo tests
+        placebo_gaps_data = []
+        ratios = []
+        for donor_name in donor_names:
+            p_treated = panel_wide[donor_name].values
+            p_donors_names = [c for c in panel_wide.columns if c != donor_name]
+            p_donors = panel_wide[p_donors_names].values
+            p_donors_pre = p_donors[:intervention_idx]
+            p_treated_pre = p_treated[:intervention_idx]
+
+            p_n = p_donors_pre.shape[1]
+            p_w0 = np.ones(p_n) / p_n
+            p_bounds = [(0, 1)] * p_n
+            p_constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
+
+            def p_obj(w, dp=p_donors_pre, tp=p_treated_pre):
+                return float(np.sum((tp - dp @ w) ** 2))
+
+            p_result = minimize(p_obj, p_w0, method="SLSQP", bounds=p_bounds, constraints=p_constraints)
+            p_synthetic = p_donors @ p_result.x
+            p_gap = p_treated - p_synthetic
+            p_pre_rmspe = float(np.sqrt(np.mean(p_gap[:intervention_idx] ** 2)))
+            p_post_rmspe = float(np.sqrt(np.mean(p_gap[intervention_idx:] ** 2))) if len(p_gap[intervention_idx:]) > 0 else 0
+
+            placebo_gaps_data.append({"unit": donor_name, "gaps": p_gap.tolist()})
+            if p_pre_rmspe > 0:
+                ratios.append(p_post_rmspe / p_pre_rmspe)
+
+        actual_ratio = post_rmspe / pre_rmspe if pre_rmspe > 0 else float("inf")
+        p_value = float(sum(1 for r in ratios if r >= actual_ratio) + 1) / (len(ratios) + 1)
+
+        ts = [
+            {"date": str(dates[i]), "actual": float(treated[i]), "synthetic": float(synthetic[i]), "gap": float(gap[i])}
+            for i in range(len(dates))
+        ]
+
+        donor_weights = sorted(
+            [DonorWeight(unit=donor_names[i], weight=float(weights[i])) for i in range(n_donors)],
+            key=lambda x: x.weight, reverse=True,
+        )
+
+        charts = {
+            "actual_vs_synthetic": ChartData(
+                chart_type="line", title=f"Actual vs Synthetic {cfg.treated_unit}",
+                x_label="Date", y_label=cfg.outcome_metric, data=ts,
+            ),
+            "weights": ChartData(
+                chart_type="bar", title="Donor Weights",
+                data=[{"unit": w.unit, "weight": w.weight} for w in donor_weights if w.weight > 0.01],
+            ),
+            "gap": ChartData(
+                chart_type="line", title="Gap (Actual - Synthetic)",
+                data=[{"date": r["date"], "gap": r["gap"]} for r in ts],
+            ),
+            "placebo": ChartData(
+                chart_type="line", title="Placebo Tests",
+                data=placebo_gaps_data,
+                annotations={"treated_unit": cfg.treated_unit, "treated_gaps": gap.tolist()},
+            ),
+        }
+
+        result_dict = {
+            "estimated_effect_pct": effect_pct,
+            "pre_rmspe": pre_rmspe, "placebo_p_value": p_value,
+            "donor_weights": [{"unit": w.unit, "weight": w.weight} for w in donor_weights if w.weight > 0.01],
+        }
+        narrative = generate_narrative("synthetic_control", result_dict)
+
+        return SyntheticControlResponse(
+            estimated_effect=avg_effect, estimated_effect_pct=effect_pct,
+            pre_rmspe=pre_rmspe, post_rmspe=post_rmspe,
+            placebo_p_value=p_value, donor_weights=donor_weights,
+            time_series=ts, placebo_gaps=placebo_gaps_data,
+            charts=charts, narrative=narrative, warnings=[],
+        )
 
 
 class RDDAnalyzer:

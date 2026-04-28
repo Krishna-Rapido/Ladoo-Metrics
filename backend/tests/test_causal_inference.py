@@ -224,3 +224,58 @@ class TestHTEAnalyzer:
         assert len(result.individual_cates) > 0
         assert "captain_id" in result.individual_cates[0]
         assert "cate" in result.individual_cates[0]
+
+
+# ── SyntheticControlAnalyzer ─────────────────────────────────────────
+
+from causal_inference import SyntheticControlAnalyzer
+from causal_schemas import SyntheticControlRequest
+
+
+@pytest.fixture()
+def city_panel_df() -> pd.DataFrame:
+    """Panel data: 5 cities × 40 days. CityA gets treatment on day 20."""
+    np.random.seed(42)
+    rows = []
+    cities = ["CityA", "CityB", "CityC", "CityD", "CityE"]
+    base_levels = {"CityA": 100, "CityB": 90, "CityC": 110, "CityD": 95, "CityE": 105}
+    for city in cities:
+        base = base_levels[city]
+        for day in range(40):
+            date = pd.Timestamp("2025-01-01") + pd.Timedelta(days=day)
+            trend = day * 0.3
+            treatment = 15 if city == "CityA" and day >= 20 else 0
+            value = base + trend + treatment + np.random.normal(0, 3)
+            for cid in range(10):
+                rows.append({
+                    "captain_id": f"{city}_C{cid:02d}",
+                    "date": date.strftime("%Y-%m-%d"),
+                    "city": city,
+                    "cohort": "test" if city == "CityA" else "control",
+                    "trips": max(0, value + np.random.normal(0, 2)),
+                })
+    return pd.DataFrame(rows)
+
+
+class TestSyntheticControlAnalyzer:
+    def test_returns_valid_response(self, city_panel_df: pd.DataFrame):
+        config = SyntheticControlRequest(
+            outcome_metric="trips",
+            treated_unit="CityA",
+            intervention_date="2025-01-21",
+        )
+        result = SyntheticControlAnalyzer(city_panel_df, config).run()
+        assert result.estimated_effect > 0
+        assert len(result.donor_weights) > 0
+        assert sum(w.weight for w in result.donor_weights) == pytest.approx(1.0, abs=0.01)
+        assert result.narrative != ""
+
+    def test_donor_weights_non_negative(self, city_panel_df: pd.DataFrame):
+        config = SyntheticControlRequest(
+            outcome_metric="trips",
+            treated_unit="CityA",
+            intervention_date="2025-01-21",
+        )
+        result = SyntheticControlAnalyzer(city_panel_df, config).run()
+        for w in result.donor_weights:
+            assert w.weight >= -0.001
