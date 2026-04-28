@@ -301,22 +301,25 @@ function PSMResults({ data }: { data: PSMResponse }) {
 function CausalImpactResults({ data }: { data: CausalImpactResponse }) {
     const ts = data.time_series ?? []
 
-    // Find intervention boundary from the data
-    const interventionIdx = ts.findIndex((d: Record<string, unknown>) => d.post === true || d.post === 1)
+    // Find intervention boundary: first point where cumulative effect becomes non-zero
+    const interventionIdx = ts.findIndex((d: Record<string, unknown>) => {
+        const cum = (d.cumulative ?? d.cumulative_effect ?? d.cum_effect) as number
+        return cum !== 0 && cum !== undefined && cum !== null
+    })
     const interventionDate = interventionIdx >= 0 ? (ts[interventionIdx] as Record<string, unknown>).date as string : undefined
 
     const panelData = ts.map((d: Record<string, unknown>) => ({
         date: d.date as string,
-        actual: d.actual as number,
-        predicted: d.predicted as number,
-        ci_lower: d.predicted_lower as number,
-        ci_upper: d.predicted_upper as number,
-        pointwise: d.pointwise_effect as number,
-        pointwise_lower: d.pointwise_lower as number,
-        pointwise_upper: d.pointwise_upper as number,
-        cumulative: d.cumulative_effect as number,
-        cumulative_lower: d.cumulative_lower as number,
-        cumulative_upper: d.cumulative_upper as number,
+        actual: (d.actual ?? d.response) as number,
+        predicted: (d.predicted ?? d.point_pred) as number,
+        ci_lower: (d.ci_lower ?? d.point_pred_lower ?? d.predicted_lower) as number,
+        ci_upper: (d.ci_upper ?? d.point_pred_upper ?? d.predicted_upper) as number,
+        pointwise: (d.pointwise ?? d.pointwise_effect ?? d.point_effect) as number,
+        pointwise_lower: (d.pointwise_lower ?? d.point_effect_lower) as number,
+        pointwise_upper: (d.pointwise_upper ?? d.point_effect_upper) as number,
+        cumulative: (d.cumulative ?? d.cumulative_effect ?? d.cum_effect) as number,
+        cumulative_lower: (d.cumulative_lower ?? d.cum_effect_lower) as number,
+        cumulative_upper: (d.cumulative_upper ?? d.cum_effect_upper) as number,
     }))
 
     return (
