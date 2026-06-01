@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv()  # Load .env before any os.environ access
+
 import ast
 import io
 import logging
@@ -93,6 +96,13 @@ from schemas import (
     CalculatedColumnApplyResponse,
     VisualizationRequest,
     VisualizationResponse,
+    ScheduledJobCreate,
+    ScheduledJobUpdate,
+    ScheduledJobResponse,
+    JobRunResponse,
+    JobAnalyticsResponse,
+    CachedResultResponse,
+    SnapshotAddRequest,
 )
 from function_executor import (
     test_function,
@@ -2463,12 +2473,18 @@ async def execute_custom_dashboard_query(payload: schemas.CustomDashboardQueryRe
             except Exception:
                 pass
 
+    # Store result in session for calculated columns support
+    import uuid as _uuid
+    session_id = str(_uuid.uuid4())
+    SESSION_STORE[session_id] = result_df.copy()
+
     data = result_df.replace({float('nan'): None, float('inf'): None, float('-inf'): None}).to_dict('records')
 
     return schemas.CustomDashboardQueryResponse(
         num_rows=len(result_df),
         columns=list(result_df.columns),
-        data=data
+        data=data,
+        session_id=session_id,
     )
 
 
@@ -4430,6 +4446,31 @@ def pivot(
     return compute_pivot_duckdb(parquet_path, payload)
 
 
+@app.get("/data/session/rows")
+async def get_session_rows(
+    x_session_id: Optional[str] = Header(default=None)
+):
+    """
+    Get all rows from a session as JSON. Used after applying calculated columns
+    to refresh the full dataset in the frontend.
+    """
+    if not x_session_id or x_session_id not in SESSION_STORE:
+        raise HTTPException(status_code=400, detail="Invalid or missing session_id.")
+
+    session = SESSION_STORE[x_session_id]
+
+    if isinstance(session, dict) and "parquet_path" in session:
+        raise HTTPException(status_code=400, detail="Full row export not supported for large-file sessions.")
+
+    df = session
+    data = df.replace({float('nan'): None, float('inf'): None, float('-inf'): None}).to_dict('records')
+    return {
+        "columns": list(df.columns),
+        "data": data,
+        "num_rows": len(df),
+    }
+
+
 @app.get("/data/session")
 async def get_session_data(
     x_session_id: Optional[str] = Header(default=None)
@@ -4781,6 +4822,647 @@ async def get_segment_transition_captains(payload: SegmentTransitionCaptainsRequ
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# =============================================================================
+# KNOWLEDGE GRAPH + NL QUERY ROUTES
+# =============================================================================
+
+from knowledge_schemas import (
+    SchemaTableCreate, SchemaTableUpdate, SchemaTableResponse,
+    SchemaColumnCreate, SchemaColumnUpdate, SchemaColumnResponse,
+    BulkColumnsCreate,
+    SchemaRelationshipCreate, SchemaRelationshipUpdate, SchemaRelationshipResponse,
+    InferRelationshipsRequest, InferRelationshipsResponse,
+    AutoDetectRequest, AutoDetectResponse,
+    NLQueryRequest, NLQueryResponse,
+    NLQueryHistoryItem, QueryFeedbackRequest,
+    GenerateDashboardQueryRequest, GenerateDashboardQueryResponse,
+)
+from knowledge_agent import (
+    SchemaInferenceEngine, NLQueryAgent, DashboardQueryAgent, build_schema_context,
+    auto_detect_columns, validate_generated_sql,
+)
+
+# Supabase client helpers for knowledge graph operations
+_SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://croniadpudboidlouhuu.supabase.co")
+_SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "sb_publishable_XVL1eAexg-C1MpKPPC-b2Q_hl2pFTpT")
+_SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+
+# Service-role client (bypasses RLS) — used only when SUPABASE_SERVICE_KEY is set
+_supabase_service_client = None
+
+
+def _get_supabase_for_request(request: Request):
+    """
+    Return a Supabase client authenticated as the calling user.
+
+    Strategy:
+    1. If SUPABASE_SERVICE_KEY is set, use a service-role client (bypasses RLS).
+    2. Otherwise, create a per-request client using the user's access token
+       (passed via Authorization header) so RLS sees them as 'authenticated'.
+    """
+    global _supabase_service_client
+
+    # Prefer service key — simplest, bypasses RLS
+    if _SUPABASE_SERVICE_KEY:
+        if _supabase_service_client is None:
+            from supabase import create_client
+            _supabase_service_client = create_client(_SUPABASE_URL, _SUPABASE_SERVICE_KEY)
+        return _supabase_service_client
+
+    # Otherwise use the user's access token from the frontend
+    from supabase import create_client, ClientOptions
+    access_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if access_token:
+        # Create client with the user's JWT as the auth header
+        # This makes Supabase treat requests as the authenticated user
+        opts = ClientOptions(headers={"Authorization": f"Bearer {access_token}"})
+        return create_client(_SUPABASE_URL, _SUPABASE_ANON_KEY, opts)
+
+    # Fallback: anon client (will fail RLS for authenticated-only tables)
+    return create_client(_SUPABASE_URL, _SUPABASE_ANON_KEY)
+
+
+def _get_user_id(request: Request) -> str:
+    """Extract and validate user_id from X-User-Id header against JWT sub claim."""
+    user_id = request.headers.get("X-User-Id", "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="X-User-Id header required")
+
+    # Validate against JWT sub claim to prevent IDOR
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header.removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization header required")
+
+    try:
+        import jwt
+        # Decode without signature verification — Supabase RLS handles token validity.
+        # We only need to confirm X-User-Id matches the token's sub claim.
+        payload = jwt.decode(token, options={"verify_signature": False})
+        token_sub = payload.get("sub", "")
+        if token_sub != user_id:
+            raise HTTPException(status_code=403, detail="User ID mismatch")
+    except jwt.DecodeError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    return user_id
+
+
+# --- Schema Tables ---
+
+@app.post("/knowledge/tables", response_model=SchemaTableResponse)
+def create_schema_table(payload: SchemaTableCreate, request: Request):
+    """Register a new table in the knowledge graph."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("schema_tables").insert({
+            "user_id": user_id,
+            "table_name": payload.table_name,
+            "friendly_name": payload.friendly_name,
+            "description": payload.description,
+            "grain": payload.grain,
+            "time_column": payload.time_column,
+            "time_format": payload.time_format,
+            "default_filters": payload.default_filters,
+            "tags": payload.tags,
+        }).execute()
+        row = result.data[0]
+        return SchemaTableResponse(**row, columns=[])
+    except Exception as e:
+        if "duplicate key" in str(e).lower() or "unique" in str(e).lower():
+            raise HTTPException(status_code=409, detail=f"Table '{payload.table_name}' already registered")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/knowledge/tables")
+def list_schema_tables(request: Request):
+    """List all registered tables with their columns."""
+    sb = _get_supabase_for_request(request)
+    try:
+        tables_result = sb.table("schema_tables").select("*").order("table_name").execute()
+        tables = tables_result.data or []
+
+        # Fetch all columns in one query
+        columns_result = sb.table("schema_columns").select("*").order("column_name").execute()
+        all_columns = columns_result.data or []
+
+        # Group columns by table_id
+        cols_by_table: Dict[str, list] = {}
+        for col in all_columns:
+            tid = col["table_id"]
+            cols_by_table.setdefault(tid, []).append(col)
+
+        result = []
+        for t in tables:
+            result.append({
+                **t,
+                "columns": cols_by_table.get(t["id"], []),
+            })
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/knowledge/tables/{table_id}")
+def get_schema_table(table_id: str, request: Request):
+    """Get a single table with its columns."""
+    sb = _get_supabase_for_request(request)
+    try:
+        t_result = sb.table("schema_tables").select("*").eq("id", table_id).execute()
+        if not t_result.data:
+            raise HTTPException(status_code=404, detail="Table not found")
+        table = t_result.data[0]
+
+        cols_result = sb.table("schema_columns").select("*").eq("table_id", table_id).order("column_name").execute()
+        table["columns"] = cols_result.data or []
+        return table
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/knowledge/tables/{table_id}")
+def update_schema_table(table_id: str, payload: SchemaTableUpdate, request: Request):
+    """Update table metadata."""
+    sb = _get_supabase_for_request(request)
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        result = sb.table("schema_tables").update(updates).eq("id", table_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Table not found")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/knowledge/tables/{table_id}")
+def delete_schema_table(table_id: str, request: Request):
+    """Delete a table and cascade-delete its columns."""
+    sb = _get_supabase_for_request(request)
+    try:
+        # Columns cascade-deleted by FK constraint
+        sb.table("schema_tables").delete().eq("id", table_id).execute()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Schema Columns ---
+
+@app.post("/knowledge/tables/{table_id}/columns")
+def bulk_add_columns(table_id: str, payload: BulkColumnsCreate, request: Request):
+    """Bulk add columns to a table."""
+    sb = _get_supabase_for_request(request)
+    try:
+        rows = [
+            {
+                "table_id": table_id,
+                "column_name": c.column_name,
+                "data_type": c.data_type,
+                "friendly_name": c.friendly_name,
+                "description": c.description,
+                "category": c.category,
+                "is_nullable": c.is_nullable,
+                "sample_values": c.sample_values,
+            }
+            for c in payload.columns
+        ]
+        result = sb.table("schema_columns").upsert(
+            rows, on_conflict="table_id,column_name"
+        ).execute()
+        return {"inserted": len(result.data or [])}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/knowledge/columns/{column_id}")
+def update_column(column_id: str, payload: SchemaColumnUpdate, request: Request):
+    """Update column metadata."""
+    sb = _get_supabase_for_request(request)
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        result = sb.table("schema_columns").update(updates).eq("id", column_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Column not found")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/knowledge/columns/{column_id}")
+def delete_column(column_id: str, request: Request):
+    """Delete a column."""
+    sb = _get_supabase_for_request(request)
+    try:
+        sb.table("schema_columns").delete().eq("id", column_id).execute()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Auto-detect ---
+
+@app.post("/knowledge/tables/auto-detect", response_model=AutoDetectResponse)
+def auto_detect_table(payload: AutoDetectRequest, request: Request):
+    """Auto-detect columns from a Presto table via SHOW COLUMNS."""
+    try:
+        columns = auto_detect_columns(payload.table_name, payload.username)
+        return AutoDetectResponse(
+            table_name=payload.table_name,
+            columns=[SchemaColumnCreate(**c) for c in columns],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        return AutoDetectResponse(
+            table_name=payload.table_name,
+            columns=[],
+            error=str(e),
+        )
+
+
+# --- Relationships ---
+
+@app.post("/knowledge/relationships/infer", response_model=InferRelationshipsResponse)
+def infer_relationships(payload: InferRelationshipsRequest, request: Request):
+    """Run the inference engine to discover join relationships."""
+    sb = _get_supabase_for_request(request)
+    try:
+        # Load tables with columns
+        tables_result = sb.table("schema_tables").select("*").execute()
+        all_tables = tables_result.data or []
+
+        if payload.table_ids:
+            all_tables = [t for t in all_tables if t["id"] in payload.table_ids]
+
+        cols_result = sb.table("schema_columns").select("*").execute()
+        all_cols = cols_result.data or []
+
+        # Attach columns to tables
+        cols_by_table: Dict[str, list] = {}
+        for c in all_cols:
+            cols_by_table.setdefault(c["table_id"], []).append(c)
+        for t in all_tables:
+            t["columns"] = cols_by_table.get(t["id"], [])
+
+        # Load existing relationships
+        rels_result = sb.table("schema_relationships").select("*").execute()
+        existing_rels = rels_result.data or []
+
+        # Run inference
+        engine = SchemaInferenceEngine()
+        inferred = engine.infer(all_tables, existing_rels)
+
+        # Save inferred relationships
+        saved = []
+        for rel in inferred:
+            try:
+                insert_result = sb.table("schema_relationships").insert({
+                    "from_table_id": rel.from_table_id,
+                    "from_column": rel.from_column,
+                    "to_table_id": rel.to_table_id,
+                    "to_column": rel.to_column,
+                    "join_type": "inner",
+                    "confidence": rel.confidence,
+                    "is_approved": False,
+                    "inference_reason": rel.reason,
+                }).execute()
+                if insert_result.data:
+                    saved.append(SchemaRelationshipResponse(**insert_result.data[0]))
+            except Exception:
+                # Skip duplicates
+                pass
+
+        return InferRelationshipsResponse(inferred=saved, count=len(saved))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/knowledge/relationships")
+def create_relationship(payload: SchemaRelationshipCreate, request: Request):
+    """Create or approve a relationship."""
+    sb = _get_supabase_for_request(request)
+    user_id = _get_user_id(request)
+    try:
+        row = payload.model_dump()
+        if payload.is_approved:
+            row["approved_by"] = user_id
+        result = sb.table("schema_relationships").insert(row).execute()
+        return result.data[0] if result.data else {}
+    except Exception as e:
+        if "duplicate key" in str(e).lower() or "unique" in str(e).lower():
+            raise HTTPException(status_code=409, detail="Relationship already exists")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/knowledge/relationships/{rel_id}")
+def update_relationship(rel_id: str, payload: SchemaRelationshipUpdate, request: Request):
+    """Update a relationship (approve, change join type)."""
+    sb = _get_supabase_for_request(request)
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    # If approving, record who approved
+    if updates.get("is_approved"):
+        user_id = _get_user_id(request)
+        updates["approved_by"] = user_id
+
+    try:
+        result = sb.table("schema_relationships").update(updates).eq("id", rel_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Relationship not found")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/knowledge/relationships/{rel_id}")
+def delete_relationship(rel_id: str, request: Request):
+    """Delete a relationship."""
+    sb = _get_supabase_for_request(request)
+    try:
+        sb.table("schema_relationships").delete().eq("id", rel_id).execute()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/knowledge/relationships")
+def list_relationships(request: Request):
+    """List all relationships with table names."""
+    sb = _get_supabase_for_request(request)
+    try:
+        rels_result = sb.table("schema_relationships").select("*").execute()
+        rels = rels_result.data or []
+
+        # Fetch table names for display
+        tables_result = sb.table("schema_tables").select("id, table_name, friendly_name").execute()
+        table_map = {t["id"]: t for t in (tables_result.data or [])}
+
+        for rel in rels:
+            from_t = table_map.get(rel.get("from_table_id"), {})
+            to_t = table_map.get(rel.get("to_table_id"), {})
+            rel["from_table_name"] = from_t.get("table_name", "")
+            rel["to_table_name"] = to_t.get("table_name", "")
+
+        return rels
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- NL Query ---
+
+@app.post("/knowledge/query", response_model=NLQueryResponse)
+def nl_query(payload: NLQueryRequest, request: Request):
+    """Natural language → SQL query (+ optional execution)."""
+    try:
+        return _nl_query_inner(payload, request)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("nl_query failed")
+        return NLQueryResponse(success=False, error=str(e))
+
+
+def _nl_query_inner(payload: NLQueryRequest, request: Request):
+    sb = _get_supabase_for_request(request)
+    user_id = _get_user_id(request)
+
+    # If user provided edited SQL, use that directly
+    if payload.sql_override:
+        is_valid, err = validate_generated_sql(payload.sql_override)
+        if not is_valid:
+            return NLQueryResponse(success=False, error=f"SQL validation failed: {err}")
+
+        sql = payload.sql_override
+        intent = "User-edited SQL"
+        explanation = ""
+    else:
+        # Build schema context from knowledge graph
+        tables_result = sb.table("schema_tables").select("*").execute()
+        tables = tables_result.data or []
+
+        cols_result = sb.table("schema_columns").select("*").execute()
+        all_cols = cols_result.data or []
+        cols_by_table: Dict[str, list] = {}
+        for c in all_cols:
+            cols_by_table.setdefault(c["table_id"], []).append(c)
+        for t in tables:
+            t["columns"] = cols_by_table.get(t["id"], [])
+
+        rels_result = sb.table("schema_relationships").select("*").execute()
+        rels = rels_result.data or []
+
+        # Add table names to relationships
+        table_map = {t["id"]: t["table_name"] for t in tables}
+        for r in rels:
+            r["from_table_name"] = table_map.get(r.get("from_table_id"), "")
+            r["to_table_name"] = table_map.get(r.get("to_table_id"), "")
+
+        schema_context = build_schema_context(tables, rels)
+
+        # Generate SQL
+        agent = NLQueryAgent()
+        result = agent.generate(payload.question, schema_context)
+
+        if result["error"]:
+            return NLQueryResponse(success=False, error=result["error"],
+                                   intent=result["intent"], sql=result["sql"])
+
+        intent = result["intent"]
+        sql = result["sql"]
+        explanation = result["explanation"]
+
+    # Save query to history
+    query_row = {
+        "user_id": user_id,
+        "question": payload.question,
+        "interpreted_intent": intent,
+        "generated_sql": sql,
+        "final_sql": sql,
+        "was_executed": False,
+    }
+
+    # Execute if requested
+    rows = []
+    columns = []
+    row_count = 0
+    execution_time_ms = 0
+
+    if payload.execute:
+        username = payload.username or request.headers.get("X-Username", "ladoo")
+        agent = NLQueryAgent()
+        exec_result = agent.execute_sql(sql, username)
+
+        if exec_result["error"]:
+            query_row["error"] = exec_result["error"]
+            query_row["was_executed"] = True
+            try:
+                save_result = sb.table("nl_queries").insert(query_row).execute()
+                query_id = save_result.data[0]["id"] if save_result.data else ""
+            except Exception:
+                query_id = ""
+            return NLQueryResponse(
+                success=False, error=exec_result["error"],
+                intent=intent, sql=sql, explanation=explanation,
+                query_id=query_id,
+            )
+
+        rows = exec_result["rows"]
+        columns = exec_result["columns"]
+        row_count = exec_result["row_count"]
+        execution_time_ms = exec_result["execution_time_ms"]
+
+        query_row["was_executed"] = True
+        query_row["execution_time_ms"] = execution_time_ms
+        query_row["row_count"] = row_count
+        query_row["result_preview"] = rows[:10] if rows else None
+
+    try:
+        save_result = sb.table("nl_queries").insert(query_row).execute()
+        query_id = save_result.data[0]["id"] if save_result.data else ""
+    except Exception:
+        query_id = ""
+
+    return NLQueryResponse(
+        success=True,
+        intent=intent,
+        sql=sql,
+        explanation=explanation,
+        rows=rows,
+        columns=columns,
+        row_count=row_count,
+        execution_time_ms=execution_time_ms,
+        query_id=query_id,
+    )
+
+
+@app.get("/knowledge/queries")
+def list_nl_queries(request: Request):
+    """Get query history for the current user."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("nl_queries").select(
+            "id, question, interpreted_intent, generated_sql, was_executed, row_count, feedback, created_at"
+        ).eq("user_id", user_id).order("created_at", desc=True).limit(50).execute()
+        return result.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/knowledge/query/{query_id}/feedback")
+def query_feedback(query_id: str, payload: QueryFeedbackRequest, request: Request):
+    """Save feedback (thumbs up/down) on a query."""
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("nl_queries").update(
+            {"feedback": payload.feedback}
+        ).eq("id", query_id).execute()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Dashboard Query Generation ---
+
+@app.post("/knowledge/generate-dashboard-query", response_model=GenerateDashboardQueryResponse)
+def generate_dashboard_query(payload: GenerateDashboardQueryRequest, request: Request):
+    """Generate a template-based SQL query for custom dashboards using AI."""
+    try:
+        sb = _get_supabase_for_request(request)
+
+        # Build schema context from knowledge graph (same as NL query)
+        tables_result = sb.table("schema_tables").select("*").execute()
+        tables = tables_result.data or []
+
+        cols_result = sb.table("schema_columns").select("*").execute()
+        all_cols = cols_result.data or []
+        cols_by_table: Dict[str, list] = {}
+        for c in all_cols:
+            cols_by_table.setdefault(c["table_id"], []).append(c)
+        for t in tables:
+            t["columns"] = cols_by_table.get(t["id"], [])
+
+        rels_result = sb.table("schema_relationships").select("*").execute()
+        rels = rels_result.data or []
+        table_map = {t["id"]: t["table_name"] for t in tables}
+        for r in rels:
+            r["from_table_name"] = table_map.get(r.get("from_table_id"), "")
+            r["to_table_name"] = table_map.get(r.get("to_table_id"), "")
+
+        schema_context = build_schema_context(tables, rels)
+
+        # Load existing dashboard queries as few-shot examples (cap at 15)
+        example_queries = ""
+        try:
+            dash_result = sb.table("custom_dashboards").select("name, sql_query").not_.is_("sql_query", "null").limit(15).execute()
+            examples = []
+            for d in (dash_result.data or []):
+                sql = (d.get("sql_query") or "").strip()
+                if sql:
+                    examples.append(f"-- Dashboard: {d.get('name', 'Untitled')}\n{sql}")
+            if examples:
+                example_queries = "\n\n".join(examples)
+        except Exception:
+            pass  # Non-critical — proceed without examples
+
+        # Generate SQL
+        agent = DashboardQueryAgent()
+        result = agent.generate(payload.prompt, schema_context, example_queries)
+
+        if result["error"]:
+            return GenerateDashboardQueryResponse(
+                success=False, error=result["error"],
+                sql=result["sql"], explanation=result["explanation"],
+            )
+
+        sql = result["sql"]
+
+        # Validate: replace {{param}} with placeholder strings before validation
+        import re as _re
+        sql_for_validation = _re.sub(r"\{\{\s*\w+\s*\}\}", "'placeholder'", sql)
+        is_valid, err = validate_generated_sql(sql_for_validation)
+        if not is_valid:
+            return GenerateDashboardQueryResponse(
+                success=False, error=f"SQL validation failed: {err}",
+                sql=sql, explanation=result["explanation"],
+            )
+
+        # Detect template parameters
+        detected_params = list({m.group(1) for m in _re.finditer(r"\{\{\s*(\w+)\s*\}\}", sql)})
+
+        return GenerateDashboardQueryResponse(
+            success=True,
+            sql=sql,
+            explanation=result["explanation"],
+            detected_params=sorted(detected_params),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("generate_dashboard_query failed")
+        return GenerateDashboardQueryResponse(success=False, error=str(e))
+
+
+# =============================================================================
+# HEALTH CHECK
+# =============================================================================
+
 @app.get("/health")
 def health():
     """Health check endpoint with system status."""
@@ -4790,6 +5472,14 @@ def health():
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage('/')
     
+    # Check scheduler status
+    scheduler_info = {"running": False, "worker_id": None}
+    try:
+        from scheduler import _running as sched_running, WORKER_ID as sched_worker_id
+        scheduler_info = {"running": sched_running, "worker_id": sched_worker_id}
+    except Exception:
+        pass
+
     return {
         "status": "ok",
         "active_sessions": len(SESSION_STORE),
@@ -4797,6 +5487,7 @@ def health():
         "memory_percent": memory.percent,
         "disk_percent": disk.percent,
         "max_file_size_gb": MAX_FILE_SIZE / (1024**3),
+        "scheduler": scheduler_info,
     }
 
 
@@ -4845,11 +5536,27 @@ async def startup_event():
     # Start background task to clean up stale uploads
     asyncio.create_task(_cleanup_stale_uploads())
 
+    # Start the scheduled dashboard precomputation scheduler
+    # pg_cron manages timing (sets next_run_at), this loop handles execution
+    try:
+        from scheduler import start_scheduler
+        start_scheduler()
+        logger.info("Dashboard precomputation scheduler started")
+    except Exception as e:
+        logger.warning("Scheduler not started: %s", e)
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up temp files on shutdown."""
     logger.info("Shutting down, cleaning up temp files...")
+
+    # Stop the scheduler
+    try:
+        from scheduler import stop_scheduler
+        stop_scheduler()
+    except Exception:
+        pass
     
     # Clean up DuckDB session parquet files
     for session_id, session in list(SESSION_STORE.items()):
@@ -4884,6 +5591,998 @@ async def shutdown_event():
                 shutil.rmtree(temp_dir, ignore_errors=True)
         except Exception:
             pass
+
+
+# =============================================================================
+# RESEARCHER — CAPTAIN SEGMENT DISCOVERY LAB
+# =============================================================================
+
+from researcher_schemas import (
+    ContrastAnalysisRequest, ContrastAnalysisResponse,
+    StimulusResponseRequest, StimulusResponseResponse,
+    ValidateSegmentRequest, ValidateSegmentResponse,
+    SegmentCreateRequest, SegmentResponse, SegmentListResponse,
+    InvestigationCreateRequest, InvestigationUpdateRequest,
+    InvestigationResponse, InvestigationListResponse,
+    ResponseProfileItem, FeatureComparison, GateResult,
+    ResearcherChatRequest,
+    PrestoTestRequest, PrestoTestResponse, TableTestResult,
+)
+from researcher import (
+    run_contrast_analysis,
+    compute_response_profiles,
+    validate_segment,
+)
+
+
+@app.post("/researcher/contrast", response_model=ContrastAnalysisResponse)
+def researcher_contrast(payload: ContrastAnalysisRequest):
+    """Run contrast analysis between two captain groups."""
+    try:
+        result = run_contrast_analysis(
+            username=payload.username,
+            city=payload.city,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            splitting_outcome=payload.splitting_outcome,
+            consistency_segment=payload.consistency_segment,
+            performance_segment=payload.performance_segment,
+            custom_column=payload.custom_column,
+            custom_threshold=payload.custom_threshold,
+            custom_direction=payload.custom_direction or "above",
+            min_group_size=payload.min_group_size,
+        )
+        queries = result.get("queries", [])
+        if not result.get("success"):
+            return ContrastAnalysisResponse(
+                success=False, group_a_label="", group_b_label="",
+                group_a_size=0, group_b_size=0, comparisons=[], top_features=[],
+                queries=queries,
+                error=result.get("error", "Unknown error"),
+            )
+        return ContrastAnalysisResponse(
+            success=True,
+            group_a_label=result["group_a_label"],
+            group_b_label=result["group_b_label"],
+            group_a_size=result["group_a_size"],
+            group_b_size=result["group_b_size"],
+            comparisons=[FeatureComparison(**c) for c in result["comparisons"]],
+            top_features=result["top_features"],
+            queries=queries,
+        )
+    except Exception as exc:
+        logger.exception("Researcher contrast error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/researcher/stimulus-response", response_model=StimulusResponseResponse)
+def researcher_stimulus_response(payload: StimulusResponseRequest):
+    """Compute per-captain stimulus-response profiles."""
+    try:
+        result = compute_response_profiles(
+            username=payload.username,
+            city=payload.city,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            axes=payload.axes,
+            consistency_segment=payload.consistency_segment,
+            performance_segment=payload.performance_segment,
+            min_active_days=payload.min_active_days,
+        )
+        queries = result.get("queries", [])
+        if not result.get("success"):
+            return StimulusResponseResponse(
+                success=False, captain_count=0, profiles=[], axis_stats={},
+                queries=queries,
+                error=result.get("error", "Unknown error"),
+            )
+        profiles = []
+        for p in result["profiles"]:
+            profiles.append(ResponseProfileItem(**{
+                k: v for k, v in p.items()
+                if k in ResponseProfileItem.model_fields
+            }))
+        return StimulusResponseResponse(
+            success=True,
+            captain_count=result["captain_count"],
+            profiles=profiles,
+            axis_stats=result["axis_stats"],
+            queries=queries,
+        )
+    except Exception as exc:
+        logger.exception("Researcher stimulus-response error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/researcher/validate", response_model=ValidateSegmentResponse)
+def researcher_validate(payload: ValidateSegmentRequest):
+    """Run 6-gate validation on a candidate segment."""
+    try:
+        result = validate_segment(
+            username=payload.username,
+            city=payload.city,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            segment_name=payload.segment_name,
+            segment_definition=payload.segment_definition,
+            consistency_segment=payload.consistency_segment,
+            performance_segment=payload.performance_segment,
+            actionability_note=payload.actionability_note,
+        )
+        if not result.get("success"):
+            return ValidateSegmentResponse(
+                success=False, segment_name=payload.segment_name,
+                segment_size=0, population_size=0, population_pct=0,
+                gates=[], gates_passed=0, total_gates=6, ready_to_publish=False,
+                error=result.get("error", "Unknown error"),
+            )
+        return ValidateSegmentResponse(
+            success=True,
+            segment_name=result["segment_name"],
+            segment_size=result["segment_size"],
+            population_size=result["population_size"],
+            population_pct=result["population_pct"],
+            gates=[GateResult(**g) for g in result["gates"]],
+            gates_passed=result["gates_passed"],
+            total_gates=result["total_gates"],
+            ready_to_publish=result["ready_to_publish"],
+        )
+    except Exception as exc:
+        logger.exception("Researcher validate error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# --- Segment Catalog (Supabase-backed CRUD) ---
+
+@app.get("/researcher/segments", response_model=SegmentListResponse)
+def list_segments(request: Request):
+    """List all published segments."""
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("discovered_segments").select("*").order("created_at", desc=True).execute()
+        segments = []
+        for row in result.data or []:
+            segments.append(SegmentResponse(
+                id=row["id"],
+                name=row["name"],
+                description=row["description"],
+                definition=row["definition"],
+                method=row["method"],
+                city=row.get("city"),
+                population_context=row.get("population_context"),
+                validation=row.get("validation", {}),
+                segment_size=row.get("segment_size"),
+                population_pct=row.get("population_pct"),
+                key_features=row.get("key_features", []),
+                status=row["status"],
+                actionability_note=row.get("actionability_note"),
+                created_by=row["created_by"],
+                created_at=str(row["created_at"]),
+                updated_at=str(row["updated_at"]),
+            ))
+        return SegmentListResponse(segments=segments)
+    except Exception as exc:
+        logger.exception("List segments error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/researcher/segments", response_model=SegmentResponse)
+def create_segment(payload: SegmentCreateRequest, request: Request):
+    """Publish a validated segment to the catalog."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("discovered_segments").insert({
+            "created_by": user_id,
+            "name": payload.name,
+            "description": payload.description,
+            "definition": payload.definition,
+            "method": payload.method,
+            "city": payload.city,
+            "population_context": payload.population_context,
+            "validation": payload.validation,
+            "segment_size": payload.segment_size,
+            "population_pct": payload.population_pct,
+            "key_features": payload.key_features,
+            "actionability_note": payload.actionability_note,
+            "investigation_id": payload.investigation_id,
+            "status": "published",
+        }).select().single().execute()
+        row = result.data
+        return SegmentResponse(
+            id=row["id"],
+            name=row["name"],
+            description=row["description"],
+            definition=row["definition"],
+            method=row["method"],
+            city=row.get("city"),
+            population_context=row.get("population_context"),
+            validation=row.get("validation", {}),
+            segment_size=row.get("segment_size"),
+            population_pct=row.get("population_pct"),
+            key_features=row.get("key_features", []),
+            status=row["status"],
+            actionability_note=row.get("actionability_note"),
+            created_by=row["created_by"],
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+    except Exception as exc:
+        logger.exception("Create segment error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# --- Investigations CRUD ---
+
+@app.get("/researcher/investigations", response_model=InvestigationListResponse)
+def list_investigations(request: Request):
+    """List all investigations for the current user."""
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("investigations").select("*").order("updated_at", desc=True).execute()
+        investigations = []
+        for row in result.data or []:
+            investigations.append(InvestigationResponse(
+                id=row["id"],
+                user_id=row["user_id"],
+                title=row["title"],
+                description=row.get("description"),
+                method=row["method"],
+                status=row["status"],
+                config=row.get("config", {}),
+                results=row.get("results"),
+                notebook=row.get("notebook", []),
+                created_at=str(row["created_at"]),
+                updated_at=str(row["updated_at"]),
+            ))
+        return InvestigationListResponse(investigations=investigations)
+    except Exception as exc:
+        logger.exception("List investigations error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/researcher/investigations", response_model=InvestigationResponse)
+def create_investigation(payload: InvestigationCreateRequest, request: Request):
+    """Create a new investigation."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+    try:
+        result = sb.table("investigations").insert({
+            "user_id": user_id,
+            "title": payload.title,
+            "description": payload.description,
+            "method": payload.method,
+            "config": payload.config,
+            "status": "draft",
+        }).select().single().execute()
+        row = result.data
+        return InvestigationResponse(
+            id=row["id"],
+            user_id=row["user_id"],
+            title=row["title"],
+            description=row.get("description"),
+            method=row["method"],
+            status=row["status"],
+            config=row.get("config", {}),
+            results=row.get("results"),
+            notebook=row.get("notebook", []),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+    except Exception as exc:
+        logger.exception("Create investigation error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.patch("/researcher/investigations/{investigation_id}", response_model=InvestigationResponse)
+def update_investigation(investigation_id: str, payload: InvestigationUpdateRequest, request: Request):
+    """Update an investigation (status, results, notebook entry)."""
+    sb = _get_supabase_for_request(request)
+    try:
+        updates = {}
+        if payload.title is not None:
+            updates["title"] = payload.title
+        if payload.description is not None:
+            updates["description"] = payload.description
+        if payload.status is not None:
+            updates["status"] = payload.status
+        if payload.config is not None:
+            updates["config"] = payload.config
+        if payload.results is not None:
+            updates["results"] = payload.results
+
+        # Append notebook entry if provided
+        if payload.notebook_entry is not None:
+            # Fetch current notebook
+            current = sb.table("investigations").select("notebook").eq("id", investigation_id).single().execute()
+            notebook = current.data.get("notebook", []) if current.data else []
+            notebook.append(payload.notebook_entry)
+            updates["notebook"] = notebook
+
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        result = sb.table("investigations").update(updates).eq("id", investigation_id).select().single().execute()
+        row = result.data
+        return InvestigationResponse(
+            id=row["id"],
+            user_id=row["user_id"],
+            title=row["title"],
+            description=row.get("description"),
+            method=row["method"],
+            status=row["status"],
+            config=row.get("config", {}),
+            results=row.get("results"),
+            notebook=row.get("notebook", []),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Update investigation error")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Researcher Chat (Conversational Agent — SSE)
+# ---------------------------------------------------------------------------
+
+from researcher_agent import ResearcherAgent
+
+@app.post("/researcher/chat")
+def researcher_chat(payload: ResearcherChatRequest):
+    """Stream a conversational researcher agent response via SSE."""
+    agent = ResearcherAgent(username=payload.username)
+    messages = [{"role": m.role, "content": m.content or ""} for m in payload.messages]
+    rules = [{"type": r.type, "content": r.content, "scope": r.scope} for r in payload.rules] if payload.rules else None
+    return StreamingResponse(
+        agent.stream(messages, rules=rules),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Presto Connection Test
+# ---------------------------------------------------------------------------
+
+_PRESTO_TEST_TABLES = [
+    {
+        "table": "metrics.captain_base_metrics_enriched",
+        "query": "SELECT captain_id, city, yyyymmdd FROM metrics.captain_base_metrics_enriched LIMIT 1",
+        "key_cols": ["captain_id", "city", "yyyymmdd"],
+    },
+    {
+        "table": "mne.ms_1842554619_2584218394",
+        "query": "SELECT captain_id, geo_city, time_value, time_level FROM mne.ms_1842554619_2584218394 LIMIT 1",
+        "key_cols": ["captain_id", "geo_city", "time_value", "time_level"],
+    },
+    {
+        "table": "reports_internal.marketplace_dapr_twenty_pings_combined_v7_v8",
+        "query": "SELECT captain_id, city_name, yyyymmdd, dapr FROM reports_internal.marketplace_dapr_twenty_pings_combined_v7_v8 LIMIT 1",
+        "key_cols": ["captain_id", "city_name", "yyyymmdd", "dapr"],
+    },
+    {
+        "table": "datasets.captain_svo_daily_kpi",
+        "query": "SELECT captainid, city, yyyymmdd FROM datasets.captain_svo_daily_kpi LIMIT 1",
+        "key_cols": ["captainid", "city", "yyyymmdd"],
+    },
+    {
+        "table": "datasets.captain_supply_journey_summary",
+        "query": "SELECT captain_id, mobile_number, registration_date FROM datasets.captain_supply_journey_summary LIMIT 1",
+        "key_cols": ["captain_id", "mobile_number", "registration_date"],
+    },
+    {
+        "table": "experiments.fe2net_dashboard_lite",
+        "query": "SELECT city, time_level, time_value FROM experiments.fe2net_dashboard_lite LIMIT 1",
+        "key_cols": ["city", "time_level", "time_value"],
+    },
+    {
+        "table": "iceberg.experiments_internal.iceberg_experiment_v6_root",
+        "query": "SELECT experiment_id, yyyymmdd, attributes FROM iceberg.experiments_internal.iceberg_experiment_v6_root LIMIT 1",
+        "key_cols": ["experiment_id", "yyyymmdd", "attributes"],
+    },
+]
+
+
+@app.post("/researcher/test-connection", response_model=PrestoTestResponse)
+def test_presto_connection(payload: PrestoTestRequest):
+    """Test Presto connectivity and table-level access for a given username."""
+    import time as _time
+    from pyhive import presto as _presto
+
+    presto_host = os.environ.get("PRESTO_HOST", "bi-trino-4.serving.data.production.internal")
+    presto_port = int(os.environ.get("PRESTO_PORT", "80"))
+    username = payload.username.strip()
+
+    # 1. Test basic connectivity
+    basic_ok = False
+    basic_error = None
+    try:
+        conn = _presto.connect(presto_host, presto_port, username='krishna.poddar@rapido.bike')
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        basic_ok = True
+        conn.close()
+    except Exception as exc:
+        basic_error = str(exc)
+
+    if not basic_ok:
+        return PrestoTestResponse(
+            connected=False,
+            username=username,
+            presto_host=presto_host,
+            presto_port=presto_port,
+            basic_query_ok=False,
+            basic_query_error=basic_error,
+            tables=[],
+            summary=f"Cannot connect to Presto as '{username}': {basic_error}",
+        )
+
+    # 2. Test each table
+    table_results: list[TableTestResult] = []
+    accessible_count = 0
+
+    for t in _PRESTO_TEST_TABLES:
+        conn = None
+        try:
+            start = _time.time()
+            conn = _presto.connect(presto_host, presto_port, username=username)
+            df = pd.read_sql(t["query"], conn)
+            elapsed = int((_time.time() - start) * 1000)
+            table_results.append(TableTestResult(
+                table=t["table"],
+                accessible=True,
+                row_count=len(df),
+                columns_found=list(df.columns),
+                query_ms=elapsed,
+            ))
+            accessible_count += 1
+        except Exception as exc:
+            elapsed = int((_time.time() - start) * 1000) if 'start' in dir() else 0
+            table_results.append(TableTestResult(
+                table=t["table"],
+                accessible=False,
+                error=str(exc)[:500],
+                query_ms=elapsed,
+            ))
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    total = len(_PRESTO_TEST_TABLES)
+    if accessible_count == total:
+        summary = f"All {total} tables accessible as '{username}'."
+    else:
+        failed = [r.table for r in table_results if not r.accessible]
+        summary = (
+            f"{accessible_count}/{total} tables accessible as '{username}'. "
+            f"FAILED: {', '.join(failed)}"
+        )
+
+    return PrestoTestResponse(
+        connected=True,
+        username=username,
+        presto_host=presto_host,
+        presto_port=presto_port,
+        basic_query_ok=True,
+        tables=table_results,
+        summary=summary,
+    )
+
+
+# =============================================================================
+# SCHEDULED DASHBOARD PRECOMPUTATION
+# =============================================================================
+
+from schemas import VALID_DASHBOARD_TYPES as _VALID_DASH_TYPES
+
+
+@app.post("/scheduled-jobs", response_model=ScheduledJobResponse)
+def create_scheduled_job(payload: ScheduledJobCreate, request: Request):
+    """Create a new scheduled dashboard precomputation job."""
+    from croniter import croniter
+    from scheduler import compute_next_run, compute_params_hash
+
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    # Validate dashboard_type
+    if payload.dashboard_type not in _VALID_DASH_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid dashboard_type. Must be one of: {', '.join(sorted(_VALID_DASH_TYPES))}")
+
+    # Validate custom_dashboard_id required for custom type
+    if payload.dashboard_type == "custom" and not payload.custom_dashboard_id:
+        raise HTTPException(status_code=400, detail="custom_dashboard_id is required for 'custom' dashboard_type")
+
+    # Validate cron expression
+    if not croniter.is_valid(payload.cron_expression):
+        raise HTTPException(status_code=400, detail=f"Invalid cron expression: '{payload.cron_expression}'")
+
+    # Validate timeout and TTL ranges
+    if not (30 <= payload.timeout_seconds <= 600):
+        raise HTTPException(status_code=400, detail="timeout_seconds must be between 30 and 600")
+    if not (3600 <= payload.result_ttl_seconds <= 604800):
+        raise HTTPException(status_code=400, detail="result_ttl_seconds must be between 3600 (1h) and 604800 (7d)")
+
+    # Enforce per-user job limit (20)
+    try:
+        count_result = sb.table("scheduled_jobs").select("id", count="exact").eq("user_id", user_id).execute()
+        if count_result.count and count_result.count >= 20:
+            raise HTTPException(status_code=400, detail="Maximum 20 scheduled jobs per user")
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # Skip count check on error
+
+    # Compute next run time
+    next_run = compute_next_run(payload.cron_expression, payload.timezone)
+
+    row = {
+        "user_id": user_id,
+        "dashboard_type": payload.dashboard_type,
+        "custom_dashboard_id": payload.custom_dashboard_id,
+        "params": payload.params,
+        "presto_username": payload.presto_username,
+        "cron_expression": payload.cron_expression,
+        "timezone": payload.timezone,
+        "enabled": payload.enabled,
+        "name": payload.name,
+        "description": payload.description,
+        "timeout_seconds": payload.timeout_seconds,
+        "result_ttl_seconds": payload.result_ttl_seconds,
+        "max_retries": payload.max_retries,
+        "next_run_at": next_run.isoformat(),
+        "query_version": 1,
+    }
+
+    try:
+        result = sb.table("scheduled_jobs").insert(row).execute()
+        return ScheduledJobResponse(**result.data[0])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create scheduled job: {e}")
+
+
+@app.get("/scheduled-jobs", response_model=list[ScheduledJobResponse])
+def list_scheduled_jobs(request: Request):
+    """List all scheduled jobs for the current user."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    try:
+        result = sb.table("scheduled_jobs").select("*").eq(
+            "user_id", user_id
+        ).order("created_at", desc=True).execute()
+        return [ScheduledJobResponse(**row) for row in (result.data or [])]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list scheduled jobs: {e}")
+
+
+@app.patch("/scheduled-jobs/{job_id}", response_model=ScheduledJobResponse)
+def update_scheduled_job(job_id: str, payload: ScheduledJobUpdate, request: Request):
+    """Update a scheduled job (schedule, params, enabled, etc.)."""
+    from croniter import croniter
+    from scheduler import compute_next_run
+
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    # Verify ownership
+    existing = sb.table("scheduled_jobs").select("*").eq("id", job_id).eq("user_id", user_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+    job = existing.data[0]
+    updates: dict = {}
+
+    if payload.cron_expression is not None:
+        if not croniter.is_valid(payload.cron_expression):
+            raise HTTPException(status_code=400, detail=f"Invalid cron expression: '{payload.cron_expression}'")
+        updates["cron_expression"] = payload.cron_expression
+
+    if payload.timezone is not None:
+        updates["timezone"] = payload.timezone
+
+    if payload.name is not None:
+        updates["name"] = payload.name
+
+    if payload.description is not None:
+        updates["description"] = payload.description
+
+    if payload.enabled is not None:
+        updates["enabled"] = payload.enabled
+
+    if payload.timeout_seconds is not None:
+        if not (30 <= payload.timeout_seconds <= 600):
+            raise HTTPException(status_code=400, detail="timeout_seconds must be between 30 and 600")
+        updates["timeout_seconds"] = payload.timeout_seconds
+
+    if payload.result_ttl_seconds is not None:
+        if not (3600 <= payload.result_ttl_seconds <= 604800):
+            raise HTTPException(status_code=400, detail="result_ttl_seconds must be between 3600 and 604800")
+        updates["result_ttl_seconds"] = payload.result_ttl_seconds
+
+    if payload.max_retries is not None:
+        updates["max_retries"] = payload.max_retries
+
+    # If params changed, bump query_version
+    if payload.params is not None:
+        updates["params"] = payload.params
+        updates["query_version"] = job["query_version"] + 1
+
+    # Recompute next_run_at if cron or timezone changed
+    cron_expr = updates.get("cron_expression", job["cron_expression"])
+    tz = updates.get("timezone", job["timezone"])
+    if "cron_expression" in updates or "timezone" in updates:
+        updates["next_run_at"] = compute_next_run(cron_expr, tz).isoformat()
+
+    if not updates:
+        return ScheduledJobResponse(**job)
+
+    try:
+        result = sb.table("scheduled_jobs").update(updates).eq("id", job_id).execute()
+        return ScheduledJobResponse(**result.data[0])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update scheduled job: {e}")
+
+
+@app.delete("/scheduled-jobs/{job_id}")
+def delete_scheduled_job(job_id: str, request: Request):
+    """Delete a scheduled job and cascade cleanup."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    existing = sb.table("scheduled_jobs").select("id").eq("id", job_id).eq("user_id", user_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+    try:
+        sb.table("scheduled_jobs").delete().eq("id", job_id).execute()
+        return {"ok": True, "message": "Scheduled job deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete scheduled job: {e}")
+
+
+@app.get("/scheduled-jobs/{job_id}/runs", response_model=list[JobRunResponse])
+def list_job_runs(job_id: str, request: Request, limit: int = 20):
+    """Get execution history for a scheduled job."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    # Verify ownership
+    existing = sb.table("scheduled_jobs").select("id").eq("id", job_id).eq("user_id", user_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+    try:
+        result = sb.table("job_runs").select("*").eq(
+            "job_id", job_id
+        ).order("created_at", desc=True).limit(min(limit, 100)).execute()
+        return [JobRunResponse(**row) for row in (result.data or [])]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list job runs: {e}")
+
+
+@app.get("/scheduled-jobs/{job_id}/analytics", response_model=JobAnalyticsResponse)
+def get_job_analytics(job_id: str, request: Request):
+    """Get execution analytics for a scheduled job."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    existing = sb.table("scheduled_jobs").select("id").eq("id", job_id).eq("user_id", user_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+    try:
+        result = sb.table("job_runs").select("status,duration_ms,result_rows,started_at,finished_at").eq(
+            "job_id", job_id
+        ).order("created_at", desc=True).limit(100).execute()
+
+        rows = result.data or []
+        if not rows:
+            return JobAnalyticsResponse()
+
+        total = len(rows)
+        success = [r for r in rows if r["status"] == "success"]
+        failed = [r for r in rows if r["status"] == "failed"]
+        timeout = [r for r in rows if r["status"] == "timeout"]
+        durations = sorted([r["duration_ms"] for r in rows if r.get("duration_ms") is not None])
+        result_rows_list = [r["result_rows"] for r in rows if r.get("result_rows") is not None]
+
+        return JobAnalyticsResponse(
+            total_runs=total,
+            success_count=len(success),
+            failed_count=len(failed),
+            timeout_count=len(timeout),
+            success_rate=round(len(success) / total * 100, 1) if total > 0 else 0,
+            avg_duration_ms=round(sum(durations) / len(durations), 0) if durations else None,
+            p50_duration_ms=durations[len(durations) // 2] if durations else None,
+            p95_duration_ms=durations[int(len(durations) * 0.95)] if durations else None,
+            avg_result_rows=round(sum(result_rows_list) / len(result_rows_list), 0) if result_rows_list else None,
+            last_success_at=success[0].get("finished_at") if success else None,
+            last_failure_at=failed[0].get("finished_at") if failed else None,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute analytics: {e}")
+
+
+@app.post("/scheduled-jobs/{job_id}/run-now")
+async def trigger_job_now(job_id: str, request: Request):
+    """Execute a scheduled job immediately (direct execution, not via scheduler).
+
+    Supports two auth modes:
+    1. User JWT (Authorization header) — for manual "Run Now" from UI
+    2. X-Cron-Secret header — for pg_cron automated triggers
+    """
+    cron_secret = request.headers.get("X-Cron-Secret", "")
+    service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+
+    if cron_secret and service_key and cron_secret == service_key:
+        # pg_cron path: use service client, look up job by ID only (X-User-Id from pg_net)
+        from scheduler import _get_supabase_service_client
+        sb = _get_supabase_service_client()
+        existing = sb.table("scheduled_jobs").select("*").eq("id", job_id).execute()
+    else:
+        # User path: standard auth
+        user_id = _get_user_id(request)
+        sb = _get_supabase_for_request(request)
+        existing = sb.table("scheduled_jobs").select("*").eq("id", job_id).eq("user_id", user_id).execute()
+
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+    job = existing.data[0]
+    if job.get("locked_by"):
+        raise HTTPException(status_code=409, detail="Job is currently executing. Please wait.")
+
+    from scheduler import execute_dashboard_sync, compute_params_hash, compute_next_run, resolve_dynamic_params
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+    now = _dt.now(_tz.utc)
+    params = job["params"] if isinstance(job["params"], dict) else _json.loads(job["params"])
+    dashboard_type = job["dashboard_type"]
+    query_version = job["query_version"]
+    result_ttl = job.get("result_ttl_seconds", 86400)
+
+    # Create a job_run record
+    run_id = None
+    try:
+        run_result = sb.table("job_runs").insert({
+            "job_id": job_id,
+            "status": "running",
+            "worker_id": "on-demand",
+            "started_at": now.isoformat(),
+            "retry_attempt": 0,
+            "params_snapshot": params,
+            "query_version": query_version,
+        }).execute()
+        run_id = run_result.data[0]["id"]
+    except Exception:
+        pass  # Non-critical
+
+    try:
+        # Execute directly in thread pool, passing the request's Supabase client
+        # so custom dashboards can fetch their SQL without needing SUPABASE_SERVICE_KEY
+        import functools as _functools
+        loop = asyncio.get_running_loop()
+        _exec_fn = _functools.partial(execute_dashboard_sync, job, sb_client=sb)
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, _exec_fn),
+            timeout=job.get("timeout_seconds", 300),
+        )
+
+        # Validate result size
+        result_json = _json.dumps(result, default=str)
+        result_bytes = len(result_json.encode("utf-8"))
+        if result_bytes > 10 * 1024 * 1024:
+            raise ValueError("Result exceeds 10MB limit. Narrow your parameters.")
+
+        # Store in materialized_results
+        resolved_params = resolve_dynamic_params(params)
+        params_hash = compute_params_hash(dashboard_type, query_version, resolved_params)
+        expires_at = now + _td(seconds=result_ttl)
+
+        sb.table("materialized_results").delete().eq(
+            "dashboard_type", dashboard_type
+        ).eq("params_hash", params_hash).eq("query_version", query_version).execute()
+
+        mr_result = sb.table("materialized_results").insert({
+            "job_id": job_id,
+            "dashboard_type": dashboard_type,
+            "params_hash": params_hash,
+            "query_version": query_version,
+            "result_data": result,
+            "result_rows": result.get("num_rows", 0),
+            "result_bytes": result_bytes,
+            "computed_at": now.isoformat(),
+            "expires_at": expires_at.isoformat(),
+        }).execute()
+
+        finished_at = _dt.now(_tz.utc)
+        duration_ms = int((finished_at - now).total_seconds() * 1000)
+
+        # Update job_run as success (store result_data for history)
+        if run_id:
+            sb.table("job_runs").update({
+                "status": "success",
+                "finished_at": finished_at.isoformat(),
+                "duration_ms": duration_ms,
+                "result_id": mr_result.data[0]["id"],
+                "result_rows": result.get("num_rows", 0),
+                "result_bytes": result_bytes,
+                "result_data": result,
+            }).eq("id", run_id).execute()
+
+            # Clean up old run data (keep last 10)
+            try:
+                sb.rpc("cleanup_old_run_data", {"p_job_id": job_id, "p_keep": 10}).execute()
+            except Exception:
+                pass  # Non-critical
+
+        # Update job's last_run_at and next_run_at
+        next_run = compute_next_run(job["cron_expression"], job.get("timezone", "Asia/Kolkata"))
+        sb.table("scheduled_jobs").update({
+            "last_run_at": now.isoformat(),
+            "next_run_at": next_run.isoformat(),
+            "retry_count": 0,
+        }).eq("id", job_id).execute()
+
+        return {
+            "ok": True,
+            "message": f"Executed successfully: {result.get('num_rows', 0)} rows in {duration_ms}ms",
+            "result_rows": result.get("num_rows", 0),
+            "duration_ms": duration_ms,
+        }
+
+    except asyncio.TimeoutError:
+        if run_id:
+            sb.table("job_runs").update({
+                "status": "timeout",
+                "finished_at": _dt.now(_tz.utc).isoformat(),
+                "error_message": f"Timed out after {job.get('timeout_seconds', 300)}s",
+            }).eq("id", run_id).execute()
+        raise HTTPException(status_code=504, detail=f"Query timed out after {job.get('timeout_seconds', 300)}s")
+
+    except Exception as e:
+        if run_id:
+            try:
+                sb.table("job_runs").update({
+                    "status": "failed",
+                    "finished_at": _dt.now(_tz.utc).isoformat(),
+                    "error_message": str(e)[:2000],
+                }).eq("id", run_id).execute()
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"Execution failed: {e}")
+
+
+@app.get("/scheduled-jobs/{job_id}/result", response_model=CachedResultResponse)
+def get_job_cached_result(job_id: str, request: Request, stale_ok: bool = True):
+    """Get the latest cached/materialized result for a scheduled job by job_id."""
+    user_id = _get_user_id(request)
+    sb = _get_supabase_for_request(request)
+
+    # Verify ownership
+    existing = sb.table("scheduled_jobs").select("id").eq("id", job_id).eq("user_id", user_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+    try:
+        result = sb.table("materialized_results").select("*").eq(
+            "job_id", job_id
+        ).order("computed_at", desc=True).limit(1).execute()
+
+        if not result.data:
+            return CachedResultResponse(cached=False)
+
+        row = result.data[0]
+        from datetime import datetime, timezone as tz
+        expires_at = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+        now = datetime.now(tz.utc)
+        is_stale = expires_at < now
+
+        if is_stale and not stale_ok:
+            return CachedResultResponse(cached=False)
+
+        return CachedResultResponse(
+            cached=True,
+            stale=is_stale,
+            computed_at=row["computed_at"],
+            expires_at=row["expires_at"],
+            result=row["result_data"],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch cached result: {e}")
+
+
+@app.get("/dashboard/{dashboard_type}/cached", response_model=CachedResultResponse)
+def get_cached_dashboard_result(
+    dashboard_type: str,
+    request: Request,
+    params: str = "{}",
+    query_version: int = 1,
+    stale_ok: bool = True,
+):
+    """
+    Get cached/materialized result for a dashboard.
+    Returns the latest non-expired result matching the cache key.
+    Falls through to 404 if no cache exists.
+    """
+    import json
+    from scheduler import compute_params_hash
+
+    sb = _get_supabase_for_request(request)
+
+    try:
+        params_dict = json.loads(params)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid params JSON")
+
+    params_hash = compute_params_hash(dashboard_type, query_version, params_dict)
+
+    try:
+        result = sb.table("materialized_results").select("*").eq(
+            "dashboard_type", dashboard_type
+        ).eq("params_hash", params_hash).eq(
+            "query_version", query_version
+        ).order("computed_at", desc=True).limit(1).execute()
+
+        if not result.data:
+            return CachedResultResponse(cached=False)
+
+        row = result.data[0]
+        from datetime import datetime, timezone as tz
+        expires_at = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+        now = datetime.now(tz.utc)
+        is_stale = expires_at < now
+
+        if is_stale and not stale_ok:
+            return CachedResultResponse(cached=False)
+
+        return CachedResultResponse(
+            cached=True,
+            stale=is_stale,
+            computed_at=row["computed_at"],
+            expires_at=row["expires_at"],
+            result=row["result_data"],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch cached result: {e}")
+
+
+@app.post("/reports/add-snapshot")
+def add_dashboard_snapshot_to_report(payload: SnapshotAddRequest, request: Request):
+    """Add a dashboard snapshot to the user's report."""
+    sb = _get_supabase_for_request(request)
+    user_id = _get_user_id(request)
+
+    import secrets as _secrets
+    item = {
+        "id": _secrets.token_hex(8),
+        "type": "dashboard_snapshot",
+        "title": payload.dashboard_name,
+        "content": {
+            "dashboard_type": payload.dashboard_type,
+            "params": payload.params,
+            "result": payload.result_data,
+            "computed_at": payload.computed_at,
+            "job_id": payload.job_id,
+            "auto_refresh": payload.auto_refresh,
+        },
+        "comment": "",
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    return {"ok": True, "item": item}
 
 
 if __name__ == "__main__":

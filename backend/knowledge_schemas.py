@@ -182,3 +182,19 @@ class NLQueryHistoryItem(BaseModel):
 
 class QueryFeedbackRequest(BaseModel):
     feedback: str                         # "thumbs_up" | "thumbs_down"
+
+
+# ---------------------------------------------------------------------------
+# Dashboard Query Generation
+# ---------------------------------------------------------------------------
+
+class GenerateDashboardQueryRequest(BaseModel):
+    prompt: str
+
+
+class GenerateDashboardQueryResponse(BaseModel):
+    success: bool
+    sql: str = ""
+    explanation: str = ""
+    detected_params: List[str] = []
+    error: str = 

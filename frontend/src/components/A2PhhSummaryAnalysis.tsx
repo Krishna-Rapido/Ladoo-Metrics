@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { getA2PhhSummary, type A2PhhSummaryResponse } from '../lib/api';
 import { FunnelDataGrid } from './FunnelDataGrid';
 import { ChartBuilder } from './ChartBuilder';
+import { ScheduleJobDialog } from '@/features/dashboard/ScheduleJobDialog';
+import { JobHistoryPanel } from '@/features/dashboard/JobHistoryPanel';
 
 export function A2PhhSummaryAnalysis() {
     const [loading, setLoading] = useState(false);
@@ -128,10 +130,10 @@ export function A2PhhSummaryAnalysis() {
                     </div>
                 </div>
 
-                <div className="mt-6">
+                <div className="mt-6 flex gap-3">
                     <button
                         onClick={handleRunAnalysis}
-                        className="btn btn-primary w-full"
+                        className="btn btn-primary flex-1"
                         disabled={loading || !username}
                     >
                         {loading ? (
@@ -146,6 +148,13 @@ export function A2PhhSummaryAnalysis() {
                             </>
                         )}
                     </button>
+                    <ScheduleJobDialog
+                        dashboardType="a2phh_summary"
+                        dashboardName={`A2PHH - ${city} ${service}`}
+                        params={{ start_date: startDate, end_date: endDate, city, service, time_level: timeLevel }}
+                        prestoUsername={username}
+                    />
+                    <JobHistoryPanel />
                 </div>
             </div>
 

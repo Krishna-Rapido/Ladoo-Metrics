@@ -113,7 +113,7 @@ from pyhive import presto
 import os
 presto_host = os.environ.get('PRESTO_HOST', 'bi-trino-4.serving.data.production.internal')
 try:
-    c = presto.connect(presto_host, 80, username='krishna.poddar')
+    c = presto.connect(presto_host, 80, username='krishna.poddar@rapido.bike')
     print('✓ Presto connection successful')
 except Exception as e:
     print(f'⚠ Presto connection failed: {e}')

@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { getRtuPerformance, type RtuPerformanceResponse } from '../lib/api';
 import { FunnelDataGrid } from './FunnelDataGrid';
 import { ChartBuilder } from './ChartBuilder';
+import { ScheduleJobDialog } from '@/features/dashboard/ScheduleJobDialog';
+import { JobHistoryPanel } from '@/features/dashboard/JobHistoryPanel';
 
 export function RtuPerformanceAnalysis() {
     const [loading, setLoading] = useState(false);
@@ -173,10 +175,10 @@ export function RtuPerformanceAnalysis() {
                     </div>
                 </div>
 
-                <div className="mt-6">
+                <div className="mt-6 flex gap-3">
                     <button
                         onClick={handleRunAnalysis}
-                        className="btn btn-primary w-full"
+                        className="btn btn-primary flex-1"
                         disabled={loading || !username}
                     >
                         {loading ? (
@@ -191,6 +193,13 @@ export function RtuPerformanceAnalysis() {
                             </>
                         )}
                     </button>
+                    <ScheduleJobDialog
+                        dashboardType="rtu_performance"
+                        dashboardName={`RTU - ${city} ${serviceCategory}`}
+                        params={{ start_date: startDate, end_date: endDate, city, perf_cut: perfCut, consistency_cut: consistencyCut, time_level: timeLevel, tod_level: todLevel, service_category: serviceCategory }}
+                        prestoUsername={username}
+                    />
+                    <JobHistoryPanel />
                 </div>
             </div>
 

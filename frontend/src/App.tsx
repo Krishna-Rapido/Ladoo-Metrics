@@ -6,6 +6,9 @@ import { InsightsPage } from './pages/InsightsPage';
 import { LoginPage } from './pages/LoginPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { FunctionsPage } from './pages/FunctionsPage';
+import { KnowledgePage } from './pages/KnowledgePage';
+import { ResearcherPage } from './pages/ResearcherPage';
+import { ScheduledJobsPage } from './pages/ScheduledJobsPage';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import type { ReactNode } from 'react';
 
@@ -106,8 +109,36 @@ function AppRoutes() {
         }
       />
 
+      {/* Knowledge page - knowledge graph and NL query */}
+      <Route
+        path="/knowledge"
+        element={
+          <ProtectedRoute>
+            <KnowledgePage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Researcher - Captain Segment Discovery Lab */}
+      <Route
+        path="/researcher"
+        element={
+          <ProtectedRoute>
+            <ResearcherPage />
+          </ProtectedRoute>
+        }
+      />
+
       {/* Other routes use the shared AppShell */}
       <Route element={<AppShell />}>
+        <Route
+          path="/scheduled"
+          element={
+            <ProtectedRoute>
+              <ScheduledJobsPage />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/dashboard"
           element={

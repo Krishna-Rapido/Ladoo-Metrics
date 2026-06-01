@@ -14,9 +14,10 @@ interface SchemaModeProps {
   loading: boolean
   error: string
   refresh: () => Promise<void>
+  isAdmin?: boolean
 }
 
-export function SchemaMode({ tables, relationships, loading, error, refresh }: SchemaModeProps) {
+export function SchemaMode({ tables, relationships, loading, error, refresh, isAdmin = false }: SchemaModeProps) {
   const [selectedTableId, setSelectedTableId] = useState<string | null>(null)
   const [selectedEdgePair, setSelectedEdgePair] = useState<EdgePairDetail | null>(null)
   const [showAddDialog, setShowAddDialog] = useState(false)
@@ -149,15 +150,17 @@ export function SchemaMode({ tables, relationships, loading, error, refresh }: S
             <Link2 className="h-3.5 w-3.5" />
             Connect Tables
           </button>
-          <button
-            type="button"
-            onClick={handleInfer}
-            disabled={inferring || tables.length < 2}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${inferring ? "animate-spin" : ""}`} />
-            Infer Joins
-          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={handleInfer}
+              disabled={inferring || tables.length < 2}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${inferring ? "animate-spin" : ""}`} />
+              Infer Joins
+            </button>
+          )}
           <span className="ml-auto text-xs text-muted-foreground">
             {tables.length} table{tables.length !== 1 ? "s" : ""} &middot;{" "}
             {approvedRels.length} connection{approvedRels.length !== 1 ? "s" : ""}
@@ -185,10 +188,10 @@ export function SchemaMode({ tables, relationships, loading, error, refresh }: S
             tables={tables}
             relationships={approvedRels}
             deletingRelId={deletingRelId}
-            onDeleteJoin={handleDeleteJoin}
+            onDeleteJoin={isAdmin ? handleDeleteJoin : undefined}
             onClose={() => setSelectedEdgePair(null)}
           />
-        ) : unapprovedRels.length > 0 && !selectedTable ? (
+        ) : unapprovedRels.length > 0 && !selectedTable && isAdmin ? (
           <RelationshipApproval
             relationships={unapprovedRels}
             tables={tables}
@@ -202,6 +205,7 @@ export function SchemaMode({ tables, relationships, loading, error, refresh }: S
             onUpdate={refresh}
             onClose={() => setSelectedTableId(null)}
             onConnect={() => handleConnectFrom(selectedTable.id)}
+            isAdmin={isAdmin}
           />
         ) : (
           <div className="flex h-full items-center justify-center p-8 text-center">
@@ -225,6 +229,7 @@ export function SchemaMode({ tables, relationships, loading, error, refresh }: S
           preselectedTableId={connectPreselectedTableId}
           onClose={() => setShowConnectDialog(false)}
           onCreated={refresh}
+          autoApprove={isAdmin}
         />
       )}
     </div>
@@ -247,7 +252,7 @@ function EdgeJoinsPanel({
   tables: SchemaTable[]
   relationships: SchemaRelationship[]
   deletingRelId: string | null
-  onDeleteJoin: (relId: string) => void
+  onDeleteJoin?: (relId: string) => void
   onClose: () => void
 }) {
   const sourceTable = tables.find((t) => t.id === detail.sourceTableId)
@@ -311,7 +316,7 @@ function EdgeJoinsPanel({
                 <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 uppercase">
                   {join.join_type} join
                 </span>
-                {relId && (
+                {relId && onDeleteJoin && (
                   <button
                     type="button"
                     onClick={() => onDeleteJoin(relId)}

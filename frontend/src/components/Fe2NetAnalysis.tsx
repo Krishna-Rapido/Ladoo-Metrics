@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { getFe2Net, type Fe2NetResponse } from '../lib/api';
 import { FunnelDataGrid } from './FunnelDataGrid';
 import { ChartBuilder } from './ChartBuilder';
+import { ScheduleJobDialog } from '@/features/dashboard/ScheduleJobDialog';
+import { JobHistoryPanel } from '@/features/dashboard/JobHistoryPanel';
 
 export function Fe2NetAnalysis() {
     const [loading, setLoading] = useState(false);
@@ -144,10 +146,10 @@ export function Fe2NetAnalysis() {
                     </div>
                 </div>
 
-                <div className="mt-6">
+                <div className="mt-6 flex gap-3">
                     <button
                         onClick={handleRunAnalysis}
-                        className="btn btn-primary w-full"
+                        className="btn btn-primary flex-1"
                         disabled={loading || !username}
                     >
                         {loading ? (
@@ -162,6 +164,13 @@ export function Fe2NetAnalysis() {
                             </>
                         )}
                     </button>
+                    <ScheduleJobDialog
+                        dashboardType="fe2net"
+                        dashboardName={`FE2Net - ${city} ${serviceCategory}`}
+                        params={{ start_date: startDate, end_date: endDate, city, service_category: serviceCategory, geo_level: geoLevel, time_level: timeLevel }}
+                        prestoUsername={username}
+                    />
+                    <JobHistoryPanel />
                 </div>
             </div>
 

@@ -10,6 +10,7 @@ import { R2AAnalysis } from '@/components/R2AAnalysis';
 import { R2APercentageAnalysis } from '@/components/R2APercentageAnalysis';
 import { A2PhhSummaryAnalysis } from '@/components/A2PhhSummaryAnalysis';
 import { CustomDashboardView } from './CustomDashboardView';
+import { JobHistoryPanel } from './JobHistoryPanel';
 
 // Component mapping based on folder/item slug
 const componentMap: Record<string, Record<string, React.ComponentType>> = {
@@ -39,10 +40,13 @@ export function DashboardPage() {
                     <LayoutDashboard className="h-8 w-8 text-white" />
                 </div>
                 <h1 className="text-2xl font-semibold text-foreground mb-2">Select a Dashboard</h1>
-                <p className="text-muted-foreground max-w-md mb-8">
+                <p className="text-muted-foreground max-w-md mb-4">
                     Choose a dashboard from the navigation panel on the left to view specialized analytics
                     and insights for captain management.
                 </p>
+                <div className="mb-8">
+                    <JobHistoryPanel />
+                </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-3xl w-full">
                     <Card className="hover:shadow-md transition-shadow cursor-pointer group" onClick={() => navigate('/dashboard/acquisition/r2a')}>

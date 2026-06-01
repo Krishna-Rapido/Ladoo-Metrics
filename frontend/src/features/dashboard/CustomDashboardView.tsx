@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Save, Play, Plus, X, ChevronDown, ChevronUp, Loader2, ChevronsUpDown, Trash2 } from 'lucide-react';
+import { Save, Play, Plus, X, ChevronDown, ChevronUp, Loader2, ChevronsUpDown, Trash2, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -19,12 +19,16 @@ import {
     type CustomDashboard,
     type DashboardParameter,
     type GlobalParameterOption,
+    type ChartConfig,
 } from '@/lib/supabase';
 import {
     executeCustomDashboardQuery,
+    getSessionRows,
     type CustomDashboardQueryResponse,
 } from '@/lib/api';
-
+import { generateDashboardQuery } from '@/lib/knowledgeApi';
+import { ScheduleJobDialog } from '@/features/dashboard/ScheduleJobDialog';
+import { JobHistoryPanel } from '@/features/dashboard/JobHistoryPanel';
 interface CustomDashboardViewProps {
     folder: string;
     slug: string;
@@ -270,16 +274,28 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [data, setData] = useState<CustomDashboardQueryResponse | null>(null);
-    const [showChart, setShowChart] = useState(false);
+
+    // Visualization template state — multiple chart configs per dashboard
+    const [chartConfigs, setChartConfigs] = useState<ChartConfig[]>([]);
 
     // Save state
     const [saving, setSaving] = useState(false);
     const [saveSuccess, setSaveSuccess] = useState(false);
     const [dirty, setDirty] = useState(false);
 
+    // Calculated columns state
+    const [sessionId, setSessionId] = useState<string | null>(null);
+    const [appliedCalcColumns, setAppliedCalcColumns] = useState<string[]>([]);
+
     // UI state
     const [showQueryEditor, setShowQueryEditor] = useState(true);
     const [showParamManager, setShowParamManager] = useState(false);
+
+    // AI query generator state
+    const [showAiPanel, setShowAiPanel] = useState(false);
+    const [aiPrompt, setAiPrompt] = useState('');
+    const [aiLoading, setAiLoading] = useState(false);
+    const [aiError, setAiError] = useState<string | null>(null);
 
     const isOwner = dashboard?.user_id === user?.id;
 
@@ -314,6 +330,10 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                     setSqlQuery(db.sql_query || '');
                     if (db.parameters.length > 0) {
                         setParameters(db.parameters);
+                    }
+                    // Load saved chart configs
+                    if (db.chart_configs?.length > 0) {
+                        setChartConfigs(db.chart_configs);
                     }
                     // Initialize param values from defaults
                     const defaults: Record<string, string | string[] | null> = {};
@@ -394,6 +414,27 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
         });
     }, [sqlQuery, globalOptions]);
 
+    const handleAiGenerate = useCallback(async () => {
+        if (!aiPrompt.trim()) return;
+        setAiLoading(true);
+        setAiError(null);
+        try {
+            const res = await generateDashboardQuery(aiPrompt.trim());
+            if (res.success && res.sql) {
+                setSqlQuery(res.sql);
+                setDirty(true);
+                setShowAiPanel(false);
+                setAiPrompt('');
+            } else {
+                setAiError(res.error || 'Failed to generate query');
+            }
+        } catch (err: unknown) {
+            setAiError(err instanceof Error ? err.message : 'Failed to generate query');
+        } finally {
+            setAiLoading(false);
+        }
+    }, [aiPrompt]);
+
     const handleRunQuery = useCallback(async () => {
         if (!sqlQuery.trim() || !username) return;
 
@@ -412,6 +453,8 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                 parameter_types: typeMap,
             });
             setData(res);
+            setSessionId(res.session_id || null);
+            setAppliedCalcColumns([]);
         } catch (e: any) {
             const msg = e.message || 'Query execution failed';
             // Try to parse JSON error detail from backend
@@ -434,6 +477,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
             await updateCustomDashboard(dashboard.id, {
                 sql_query: sqlQuery,
                 parameters,
+                chart_configs: chartConfigs,
             });
             setSaveSuccess(true);
             setDirty(false);
@@ -444,7 +488,51 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
         } finally {
             setSaving(false);
         }
-    }, [dashboard, isOwner, sqlQuery, parameters]);
+    }, [dashboard, isOwner, sqlQuery, parameters, chartConfigs]);
+
+    const handleConfigChange = useCallback((config: ChartConfig) => {
+        setChartConfigs(prev => prev.map(c => c.id === config.id ? config : c));
+        setDirty(true);
+    }, []);
+
+    const addVisualization = useCallback(() => {
+        const newConfig: ChartConfig = {
+            id: crypto.randomUUID(),
+            title: `Visualization ${chartConfigs.length + 1}`,
+            chartType: 'line',
+            xAxis: '',
+            yAxes: [],
+            seriesColumns: [],
+            aggregation: 'sum',
+        };
+        setChartConfigs(prev => [...prev, newConfig]);
+        setDirty(true);
+    }, [chartConfigs.length]);
+
+    const removeVisualization = useCallback((id: string) => {
+        setChartConfigs(prev => prev.filter(c => c.id !== id));
+        setDirty(true);
+    }, []);
+
+    const handleColumnApplied = useCallback(async (columnName: string) => {
+        if (!sessionId) return;
+        try {
+            const fresh = await getSessionRows(sessionId);
+            setData({
+                num_rows: fresh.num_rows,
+                columns: fresh.columns,
+                data: fresh.data,
+                session_id: sessionId,
+            });
+            setAppliedCalcColumns((prev) => [...prev, columnName]);
+        } catch (err) {
+            console.error('Failed to refresh after apply:', err);
+        }
+    }, [sessionId]);
+
+    const handleColumnRemoved = useCallback((columnName: string) => {
+        setAppliedCalcColumns((prev) => prev.filter((c) => c !== columnName));
+    }, []);
 
     const addParameter = () => {
         const newParam: DashboardParameter = {
@@ -543,12 +631,75 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                             className="overflow-hidden"
                         >
                             <div className="mt-6">
-                                <Label className="text-sm font-medium text-slate-700">
-                                    SQL Query
-                                </Label>
+                                <div className="flex items-center justify-between mb-1">
+                                    <Label className="text-sm font-medium text-slate-700">
+                                        SQL Query
+                                    </Label>
+                                    <Button
+                                        variant={showAiPanel ? 'default' : 'outline'}
+                                        size="sm"
+                                        onClick={() => setShowAiPanel(!showAiPanel)}
+                                        className={showAiPanel
+                                            ? 'bg-violet-600 hover:bg-violet-700 text-white text-xs gap-1.5'
+                                            : 'text-xs gap-1.5 text-violet-600 border-violet-200 hover:bg-violet-50'}
+                                    >
+                                        <Sparkles className="h-3.5 w-3.5" />
+                                        Generate with AI
+                                    </Button>
+                                </div>
                                 <p className="text-xs text-muted-foreground mb-2">
                                     Use {'{{param_name}}'} for template variables (e.g. {'{{start_date}}'}, {'{{end_date}}'}, {'{{city}}'})
                                 </p>
+
+                                {/* AI Generation Panel */}
+                                <AnimatePresence>
+                                    {showAiPanel && (
+                                        <motion.div
+                                            initial={{ opacity: 0, height: 0 }}
+                                            animate={{ opacity: 1, height: 'auto' }}
+                                            exit={{ opacity: 0, height: 0 }}
+                                            className="overflow-hidden mb-3"
+                                        >
+                                            <div className="border border-violet-200 bg-violet-50/50 rounded-lg p-3 space-y-2">
+                                                <div className="flex gap-2">
+                                                    <Input
+                                                        value={aiPrompt}
+                                                        onChange={(e) => setAiPrompt(e.target.value)}
+                                                        onKeyDown={(e) => {
+                                                            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                                                                e.preventDefault();
+                                                                handleAiGenerate();
+                                                            }
+                                                        }}
+                                                        placeholder="Describe the query you want, e.g. 'daily captain count by city'"
+                                                        className="flex-1 text-sm bg-white"
+                                                        disabled={aiLoading}
+                                                    />
+                                                    <Button
+                                                        size="sm"
+                                                        onClick={handleAiGenerate}
+                                                        disabled={aiLoading || !aiPrompt.trim()}
+                                                        className="bg-violet-600 hover:bg-violet-700 text-white gap-1.5 shrink-0"
+                                                    >
+                                                        {aiLoading ? (
+                                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                        ) : (
+                                                            <Sparkles className="h-3.5 w-3.5" />
+                                                        )}
+                                                        {aiLoading ? 'Generating…' : 'Generate'}
+                                                    </Button>
+                                                </div>
+                                                <p className="text-[11px] text-violet-600/70">
+                                                    Press <kbd className="px-1 py-0.5 bg-violet-100 rounded text-[10px] font-mono">⌘ Enter</kbd> to generate
+                                                </p>
+                                                {aiError && (
+                                                    <p className="text-xs text-destructive">{aiError}</p>
+                                                )}
+                                            </div>
+                                        </motion.div>
+                                    )}
+                                </AnimatePresence>
+
                                 <Textarea
                                     value={sqlQuery}
                                     onChange={(e) => {
@@ -852,6 +1003,23 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                                 </>
                             )}
                         </button>
+                        {dashboard && (
+                            <ScheduleJobDialog
+                                dashboardType="custom"
+                                dashboardName={dashboard.name || `${folder}/${slug}`}
+                                params={{
+                                    parameters: Object.fromEntries(
+                                        Object.entries(paramValues).filter(([, v]) => v != null).map(([k, v]) => [k, Array.isArray(v) ? v.join(',') : v])
+                                    ),
+                                    parameter_types: Object.fromEntries(
+                                        parameters.map(p => [p.name, p.type])
+                                    ),
+                                }}
+                                prestoUsername={username}
+                                customDashboardId={dashboard.id}
+                            />
+                        )}
+                        <JobHistoryPanel />
                         {isOwner && (
                             <Button
                                 variant={saveSuccess ? 'default' : 'outline'}
@@ -912,13 +1080,6 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                                     columns
                                 </p>
                             </div>
-                            <button
-                                onClick={() => setShowChart(!showChart)}
-                                className={`btn ${showChart ? 'btn-primary' : 'btn-secondary'}`}
-                            >
-                                <span>{showChart ? '📊' : '📈'}</span>
-                                <span>{showChart ? 'Hide Chart' : 'Visualize Data'}</span>
-                            </button>
                         </div>
 
                         <div className="mt-6">
@@ -930,19 +1091,45 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                         </div>
                     </div>
 
-                    {/* Chart Builder */}
-                    {showChart && (
+                    {/* Visualizations — one ChartBuilder per saved config */}
+                    {chartConfigs.map((config, index) => (
                         <motion.div
-                            initial={{ opacity: 0, height: 0 }}
-                            animate={{ opacity: 1, height: 'auto' }}
-                            exit={{ opacity: 0, height: 0 }}
+                            key={config.id}
+                            initial={{ opacity: 0, y: 16 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -8 }}
+                            className="relative"
                         >
+                            {/* Remove button */}
+                            <button
+                                onClick={() => removeVisualization(config.id)}
+                                title="Remove this visualization"
+                                className="absolute top-4 right-4 z-10 p-1.5 rounded-md hover:bg-destructive/10 transition-colors"
+                            >
+                                <X className="h-4 w-4 text-muted-foreground hover:text-destructive" />
+                            </button>
                             <ChartBuilder
                                 data={data.data}
-                                title={dashboard?.name || 'Custom Dashboard'}
+                                title={config.title || `Visualization ${index + 1}`}
+                                calculatedColumns={appliedCalcColumns}
+                                sessionId={sessionId}
+                                onColumnApplied={handleColumnApplied}
+                                onColumnRemoved={handleColumnRemoved}
+                                configId={config.id}
+                                initialConfig={config}
+                                onConfigChange={handleConfigChange}
                             />
                         </motion.div>
-                    )}
+                    ))}
+
+                    {/* Add Visualization button */}
+                    <button
+                        onClick={addVisualization}
+                        className="w-full py-4 border-2 border-dashed border-slate-300 rounded-xl text-sm font-medium text-teal-700 hover:border-teal-400 hover:bg-teal-50/30 transition-colors flex items-center justify-center gap-2"
+                    >
+                        <Plus className="h-4 w-4" />
+                        Add Visualization
+                    </button>
                 </motion.div>
             )}
 
@@ -973,6 +1160,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                     </div>
                 </div>
             )}
+
         </div>
     );
 }

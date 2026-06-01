@@ -12,6 +12,7 @@ interface TableDetailPanelProps {
   onUpdate: () => Promise<void>
   onClose: () => void
   onConnect?: () => void
+  isAdmin?: boolean
 }
 
 const categoryColors: Record<string, string> = {
@@ -28,6 +29,7 @@ export function TableDetailPanel({
   onUpdate,
   onClose,
   onConnect,
+  isAdmin = false,
 }: TableDetailPanelProps) {
   const { user } = useAuth()
   const [editing, setEditing] = useState(false)
@@ -325,15 +327,17 @@ export function TableDetailPanel({
                       </div>
                       <span className="text-[10px] text-emerald-500">{r.join_type} join</span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteRelationship(r.id)}
-                      disabled={deletingRelId === r.id}
-                      className="rounded p-1 text-emerald-400 opacity-0 group-hover:opacity-100 hover:bg-emerald-100 hover:text-red-500 transition-all disabled:opacity-50"
-                      title="Remove connection"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteRelationship(r.id)}
+                        disabled={deletingRelId === r.id}
+                        className="rounded p-1 text-emerald-400 opacity-0 group-hover:opacity-100 hover:bg-emerald-100 hover:text-red-500 transition-all disabled:opacity-50"
+                        title="Remove connection"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    )}
                   </div>
                 )
               })}

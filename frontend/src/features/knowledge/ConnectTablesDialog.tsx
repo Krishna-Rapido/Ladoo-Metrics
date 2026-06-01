@@ -9,6 +9,8 @@ interface ConnectTablesDialogProps {
   preselectedTableId?: string | null
   onClose: () => void
   onCreated: () => Promise<void>
+  /** If true, connection is auto-approved (admin). Otherwise created as pending request. */
+  autoApprove?: boolean
 }
 
 export function ConnectTablesDialog({
@@ -16,6 +18,7 @@ export function ConnectTablesDialog({
   preselectedTableId,
   onClose,
   onCreated,
+  autoApprove = false,
 }: ConnectTablesDialogProps) {
   const { user } = useAuth()
   const [fromTableId, setFromTableId] = useState(preselectedTableId ?? "")
@@ -44,8 +47,8 @@ export function ConnectTablesDialog({
         to_column: toColumn,
         join_type: joinType,
         confidence: 1.0,
-        is_approved: true,
-        inference_reason: "manual",
+        is_approved: autoApprove,
+        inference_reason: autoApprove ? "manual" : "manual_request",
       })
       await onCreated()
       onClose()
