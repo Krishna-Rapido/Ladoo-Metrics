@@ -1,7 +1,7 @@
 """
 Shared fixtures for the Ladoo Metrics backend test suite.
 
-Sets PRESTO_HOST="" to prevent real Presto connections during tests.
+Sets TRINO_HOST="" to prevent real Trino connections during tests.
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ import os
 
 import pytest
 
-# Prevent Presto connections during tests
-os.environ["PRESTO_HOST"] = ""
+# Prevent Trino connections during tests
+os.environ["TRINO_HOST"] = ""
 
 from fastapi.testclient import TestClient  # noqa: E402
 

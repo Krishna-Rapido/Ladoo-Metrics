@@ -11,7 +11,9 @@ from datetime import datetime
 import traceback
 import re
 import os
-from pyhive import presto
+
+# Trino/Presto connections are centralized in presto_connection.py (OAuth2).
+from presto_connection import get_trino_connection
 
 
 # Allowed imports for user functions
@@ -52,12 +54,12 @@ FORBIDDEN_PATTERNS = [
 
 
 def get_presto_connection(username: str):
-    """Create a Presto connection with the given username"""
-    # Read Presto host from environment variable, fallback to default
-    presto_host = os.environ.get('PRESTO_HOST', 'bi-trino-4.serving.data.production.internal')
-    presto_port = os.environ.get('PRESTO_PORT', '80')
-    presto_connection = presto.connect(presto_host, presto_port, username=username)
-    return presto_connection
+    """Create a Trino connection for the signed-in analyst (OAuth2).
+
+    Thin wrapper kept for backward compatibility — delegates to the centralized
+    factory in presto_connection.py. `username` is the user's @rapido.bike email.
+    """
+    return get_trino_connection(username)
 
 
 def validate_code_security(code: str) -> Tuple[bool, Optional[str]]:

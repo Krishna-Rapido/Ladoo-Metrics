@@ -1,4 +1,6 @@
 import { useMemo, useState, useEffect } from "react"
+import { useNavigate } from "react-router-dom"
+import { Microscope } from "lucide-react"
 import type { DateRange as DayPickerRange } from "react-day-picker"
 
 import { PrimarySidebar } from "@/components/nav/PrimarySidebar"
@@ -58,6 +60,7 @@ function formatDateLocal(d: Date): string {
 export function InsightsPage() {
   const { user } = useAuth()
   const { loadFromCloud } = useReport()
+  const navigate = useNavigate()
   const [parsed, setParsed] = useState<ParsedCsv | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(getSessionId())
 
@@ -500,6 +503,18 @@ export function InsightsPage() {
                     />
 
                     <StatCards totalParticipants={computed?.totalParticipants ?? null} pValue={computed?.pValue ?? null} />
+
+                    {analysisParams ? (
+                      <div className="flex justify-end">
+                        <button
+                          onClick={() => navigate("/causal-lab")}
+                          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          <Microscope className="h-4 w-4" />
+                          Deepen with Causal Analysis
+                        </button>
+                      </div>
+                    ) : null}
 
                     {!analysisParams ? (
                       <div className="text-sm text-muted-foreground">

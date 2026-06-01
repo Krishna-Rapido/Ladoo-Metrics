@@ -885,6 +885,8 @@ export type CustomDashboardQueryResponse = {
     columns: string[];
     data: Record<string, any>[];
     session_id?: string;
+    total_rows?: number;
+    is_truncated?: boolean;
 };
 
 export async function executeCustomDashboardQuery(
@@ -902,6 +904,25 @@ export async function executeCustomDashboardQuery(
         throw new Error(error || 'Failed to execute custom dashboard query');
     }
     return await res.json();
+}
+
+export async function downloadCustomQueryCsv(sessionId: string, filename?: string): Promise<void> {
+    const headers = new Headers();
+    headers.set('X-Session-Id', sessionId);
+    const res = await fetch(`${BASE_URL}/data/download`, { headers });
+    if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Failed to download query results');
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || 'query_results.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 }
 
 export type SessionRowsResponse = {
@@ -1454,7 +1475,6 @@ export type ExperimentPerformanceResponse = {
     total_unique_captains?: number;
     cohort_breakdown: CohortBreakdown[];
     preview: Record<string, any>[];
-    csv?: string;
     error?: string;
 };
 
@@ -1669,5 +1689,230 @@ export async function getCachedDashboardResult(
     if (!res.ok) {
         throw new Error(`Cache fetch failed: ${res.statusText}`);
     }
+    return res.json();
+}
+
+// ── Causal Inference Lab ────────────────────────────────────────────
+
+export type CausalMethod = "psm" | "causal_impact" | "hte" | "synthetic_control" | "rdd";
+
+export type MethodRecommendation = {
+    method: CausalMethod;
+    feasible: boolean;
+    recommended: boolean;
+    reason: string;
+    warnings: string[];
+};
+
+export type PSMRequest = {
+    outcome_metric: string;
+    covariates?: string[];
+    matching_method?: "nearest" | "caliper" | "kernel";
+    caliper_width?: number;
+    pre_start: string;
+    pre_end: string;
+    post_start: string;
+    post_end: string;
+    test_cohort?: string;
+    control_cohort?: string;
+};
+
+export type PSMBalanceRow = {
+    covariate: string;
+    smd_before: number;
+    smd_after: number;
+    mean_test_before: number;
+    mean_control_before: number;
+    mean_test_after: number;
+    mean_control_after: number;
+};
+
+export type PSMResponse = {
+    att: number;
+    att_ci_lower: number;
+    att_ci_upper: number;
+    att_p_value: number;
+    naive_estimate: number;
+    n_matched_pairs: number;
+    n_unmatched_test: number;
+    n_total_test: number;
+    n_total_control: number;
+    overlap_score: number;
+    balance: PSMBalanceRow[];
+    charts: Record<string, any>;
+    propensity_scores_test: number[];
+    propensity_scores_control: number[];
+    narrative: string;
+    warnings: string[];
+};
+
+export type CausalImpactRequest = {
+    outcome_metric: string;
+    aggregation?: "sum" | "mean";
+    pre_start: string;
+    pre_end: string;
+    post_start: string;
+    post_end: string;
+    use_control_as_covariate?: boolean;
+    test_cohort?: string;
+    control_cohort?: string;
+};
+
+export type CausalImpactResponse = {
+    average_effect: number;
+    average_effect_ci: [number, number];
+    cumulative_effect: number;
+    cumulative_effect_ci: [number, number];
+    posterior_probability: number;
+    model_mape: number;
+    charts: Record<string, any>;
+    time_series: Array<Record<string, any>>;
+    narrative: string;
+    warnings: string[];
+};
+
+export type HTERequest = {
+    outcome_metric: string;
+    covariates?: string[];
+    segment_columns?: string[];
+    pre_start: string;
+    pre_end: string;
+    post_start: string;
+    post_end: string;
+    test_cohort?: string;
+    control_cohort?: string;
+};
+
+export type HTEResponse = {
+    ate: number;
+    ate_ci: [number, number];
+    segment_effects: Array<{
+        segment_name: string;
+        segment_value: string;
+        cate: number;
+        cate_ci_lower: number;
+        cate_ci_upper: number;
+        n_captains: number;
+    }>;
+    feature_importance: Array<{ feature: string; importance: number }>;
+    cate_distribution: Record<string, any>;
+    individual_cates: Array<Record<string, any>>;
+    charts: Record<string, any>;
+    narrative: string;
+    warnings: string[];
+};
+
+export type SyntheticControlRequest = {
+    outcome_metric: string;
+    unit_column?: string;
+    treated_unit: string;
+    intervention_date: string;
+    aggregation?: "sum" | "mean";
+};
+
+export type SyntheticControlResponse = {
+    estimated_effect: number;
+    estimated_effect_pct: number;
+    pre_rmspe: number;
+    post_rmspe: number;
+    placebo_p_value?: number;
+    donor_weights: Array<{ unit: string; weight: number }>;
+    time_series: Array<Record<string, any>>;
+    placebo_gaps?: Array<Record<string, any>>;
+    charts: Record<string, any>;
+    narrative: string;
+    warnings: string[];
+};
+
+export type RDDRequest = {
+    running_variable: string;
+    cutoff_value: number;
+    outcome_metric: string;
+    kernel?: "triangular" | "epanechnikov" | "uniform";
+    polynomial_order?: number;
+    post_start?: string;
+    post_end?: string;
+};
+
+export type RDDResponse = {
+    rd_estimate: number;
+    rd_ci_lower: number;
+    rd_ci_upper: number;
+    rd_p_value: number;
+    optimal_bandwidth: number;
+    mccrary_p_value?: number;
+    mccrary_manipulation: boolean;
+    n_left: number;
+    n_right: number;
+    bandwidth_sensitivity: Array<{
+        bandwidth: number;
+        estimate: number;
+        ci_lower: number;
+        ci_upper: number;
+        n_left: number;
+        n_right: number;
+    }>;
+    scatter_data: Array<Record<string, any>>;
+    fitted_lines: Record<string, Array<{ x: number; y: number }>>;
+    charts: Record<string, any>;
+    narrative: string;
+    warnings: string[];
+};
+
+export type CausalRecommendResponse = {
+    recommendations: MethodRecommendation[];
+};
+
+export async function getCausalRecommendations(
+    testCohort?: string,
+    controlCohort?: string,
+): Promise<CausalRecommendResponse> {
+    const headers = sessionHeaders();
+    headers.set("Content-Type", "application/json");
+    const res = await fetch(`${BASE_URL}/causal/recommend`, {
+        method: "POST", headers,
+        body: JSON.stringify({ test_cohort: testCohort, control_cohort: controlCohort }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+}
+
+export async function runPSM(req: PSMRequest): Promise<PSMResponse> {
+    const headers = sessionHeaders();
+    headers.set("Content-Type", "application/json");
+    const res = await fetch(`${BASE_URL}/causal/psm`, { method: "POST", headers, body: JSON.stringify(req) });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+}
+
+export async function runCausalImpact(req: CausalImpactRequest): Promise<CausalImpactResponse> {
+    const headers = sessionHeaders();
+    headers.set("Content-Type", "application/json");
+    const res = await fetch(`${BASE_URL}/causal/impact`, { method: "POST", headers, body: JSON.stringify(req) });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+}
+
+export async function runHTE(req: HTERequest): Promise<HTEResponse> {
+    const headers = sessionHeaders();
+    headers.set("Content-Type", "application/json");
+    const res = await fetch(`${BASE_URL}/causal/hte`, { method: "POST", headers, body: JSON.stringify(req) });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+}
+
+export async function runSyntheticControl(req: SyntheticControlRequest): Promise<SyntheticControlResponse> {
+    const headers = sessionHeaders();
+    headers.set("Content-Type", "application/json");
+    const res = await fetch(`${BASE_URL}/causal/synthetic-control`, { method: "POST", headers, body: JSON.stringify(req) });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+}
+
+export async function runRDD(req: RDDRequest): Promise<RDDResponse> {
+    const headers = sessionHeaders();
+    headers.set("Content-Type", "application/json");
+    const res = await fetch(`${BASE_URL}/causal/rdd`, { method: "POST", headers, body: JSON.stringify(req) });
+    if (!res.ok) throw new Error(await res.text());
     return res.json();
 }

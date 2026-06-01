@@ -9,6 +9,7 @@ import { FunctionsPage } from './pages/FunctionsPage';
 import { KnowledgePage } from './pages/KnowledgePage';
 import { ResearcherPage } from './pages/ResearcherPage';
 import { ScheduledJobsPage } from './pages/ScheduledJobsPage';
+import { CausalLabPage } from '@/features/causal/CausalLabPage';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import type { ReactNode } from 'react';
 
@@ -125,6 +126,16 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <ResearcherPage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Causal Inference Lab */}
+      <Route
+        path="/causal-lab"
+        element={
+          <ProtectedRoute>
+            <CausalLabPage />
           </ProtectedRoute>
         }
       />

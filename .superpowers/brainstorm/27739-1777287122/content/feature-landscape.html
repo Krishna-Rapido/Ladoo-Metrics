@@ -1,0 +1,106 @@
+<h2>Ladoo Metrics: Feature Landscape</h2>
+<p class="subtitle">Which category excites you most? Pick the area(s) you want to invest in next.</p>
+
+<div class="options" data-multiselect>
+
+  <div class="option" data-choice="quick-eda" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Quick EDA & Data Profiling</h3>
+      <p><strong>For: Analysts on first upload</strong></p>
+      <ul style="margin:8px 0;padding-left:20px;color:#94a3b8;font-size:14px;">
+        <li>Auto column profiler (distributions, nulls, outliers, cardinality)</li>
+        <li>Correlation heatmap between all metrics</li>
+        <li>Distribution comparison (violin/box plots: test vs control)</li>
+        <li>Automatic data quality score + warnings</li>
+        <li>Quick "describe" summary like pandas-profiling in-browser</li>
+      </ul>
+      <p style="color:#a78bfa;font-size:13px;">Impact: Every upload becomes 10x more informative before analysis even starts</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="causal-inference" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Advanced Causal Inference Toolkit</h3>
+      <p><strong>For: Data Scientists running experiments</strong></p>
+      <ul style="margin:8px 0;padding-left:20px;color:#94a3b8;font-size:14px;">
+        <li>Propensity Score Matching (fix imperfect randomization)</li>
+        <li>CausalImpact (Bayesian time-series for pre/post without control)</li>
+        <li>Heterogeneous Treatment Effects (which segments benefit most?)</li>
+        <li>Synthetic Control Method (city-level experiments)</li>
+        <li>Regression Discontinuity Design</li>
+      </ul>
+      <p style="color:#a78bfa;font-size:13px;">Impact: Move from "did it work?" to "why did it work and for whom?"</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="dashboarding" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Self-Serve Dashboard Builder</h3>
+      <p><strong>For: PMs and Leadership</strong></p>
+      <ul style="margin:8px 0;padding-left:20px;color:#94a3b8;font-size:14px;">
+        <li>Drag-and-drop dashboard builder (tiles, layouts, filters)</li>
+        <li>KPI cards with targets, spark lines, and trend arrows</li>
+        <li>Cohort retention triangles (classic retention curves)</li>
+        <li>Scheduled email/Slack digest of dashboard snapshots</li>
+        <li>Shareable dashboard URLs (no login for read-only)</li>
+      </ul>
+      <p style="color:#a78bfa;font-size:13px;">Impact: Leadership gets live metrics without asking analysts</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="behavioral-ds" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>Behavioral Data Science Lab</h3>
+      <p><strong>For: Senior DS doing deep captain analysis</strong></p>
+      <ul style="margin:8px 0;padding-left:20px;color:#94a3b8;font-size:14px;">
+        <li>Captain journey reconstruction (timeline of key events)</li>
+        <li>Survival analysis (time-to-churn Kaplan-Meier curves)</li>
+        <li>Auto-clustering (k-means/DBSCAN on behavioral features)</li>
+        <li>Uplift modeling (predict who responds to treatment)</li>
+        <li>Behavioral fingerprinting (engagement patterns by TOD/DOW)</li>
+      </ul>
+      <p style="color:#a78bfa;font-size:13px;">Impact: Understand the "why" behind captain behavior, not just the "what"</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="experiment-ops" onclick="toggleSelect(this)">
+    <div class="letter">E</div>
+    <div class="content">
+      <h3>Experiment Operations & Intelligence</h3>
+      <p><strong>For: The entire experiments org</strong></p>
+      <ul style="margin:8px 0;padding-left:20px;color:#94a3b8;font-size:14px;">
+        <li>Cross-experiment comparison table ("which experiments moved supply?")</li>
+        <li>Experiment power calculator (sample size before you start)</li>
+        <li>One-click readout (UUID in, formatted report out)</li>
+        <li>Guardrail metrics (auto-flag if experiment hurts safety metrics)</li>
+        <li>Experiment knowledge base (searchable history of all past experiments)</li>
+      </ul>
+      <p style="color:#a78bfa;font-size:13px;">Impact: Build institutional memory, never repeat a failed experiment</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="anomaly-alerting" onclick="toggleSelect(this)">
+    <div class="letter">F</div>
+    <div class="content">
+      <h3>Continuous Monitoring & Alerting</h3>
+      <p><strong>For: Ops teams and on-call analysts</strong></p>
+      <ul style="margin:8px 0;padding-left:20px;color:#94a3b8;font-size:14px;">
+        <li>Daily automated anomaly scan (captain supply drops, DAPR shifts)</li>
+        <li>Slack/email alerts with context (what changed, how much, since when)</li>
+        <li>Metric drift detection (gradual degradation that humans miss)</li>
+        <li>City x Service health scorecard (red/yellow/green)</li>
+        <li>"What you might have missed" digest panel</li>
+      </ul>
+      <p style="color:#a78bfa;font-size:13px;">Impact: Catch problems before they become incidents</p>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:24px;padding:16px;background:rgba(167,139,250,0.08);border-radius:12px;border:1px solid rgba(167,139,250,0.2);">
+  <p style="color:#c4b5fd;font-size:14px;margin:0;"><strong>Tip:</strong> You can select multiple categories. Click to select/deselect, then tell me your priorities in the terminal.</p>
+</div>
