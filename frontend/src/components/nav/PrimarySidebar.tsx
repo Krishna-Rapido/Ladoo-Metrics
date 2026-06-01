@@ -1,10 +1,10 @@
 import { NavLink } from "react-router-dom"
-import { BarChart3, Brain, Clock, Code, Compass, FileText, FlaskConical, LayoutDashboard, Settings, User } from "lucide-react"
+import { BarChart3, Brain, Clock, Code, Compass, FileText, FlaskConical, LayoutDashboard, Microscope, Settings, User } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
 type PrimarySidebarProps = {
-  activeOverride?: "dashboard" | "discover" | "insights" | "reports" | "functions" | "knowledge" | "researcher" | "scheduled"
+  activeOverride?: "dashboard" | "discover" | "insights" | "reports" | "functions" | "knowledge" | "researcher" | "scheduled" | "causal"
 }
 
 const navItems = [
@@ -16,6 +16,7 @@ const navItems = [
   { key: "functions" as const, to: "/functions", label: "FUNCTIONS", Icon: Code },
   { key: "knowledge" as const, to: "/knowledge", label: "KNOWLEDGE", Icon: Brain },
   { key: "researcher" as const, to: "/researcher", label: "RESEARCH", Icon: FlaskConical },
+  { key: "causal" as const, to: "/causal-lab", label: "CAUSAL LAB", Icon: Microscope },
 ]
 
 export function PrimarySidebar({ activeOverride }: PrimarySidebarProps) {

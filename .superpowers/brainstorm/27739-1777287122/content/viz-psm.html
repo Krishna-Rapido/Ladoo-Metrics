@@ -1,0 +1,184 @@
+<h2>Visualization Design: Propensity Score Matching</h2>
+<p class="subtitle">3 diagnostic charts + 1 result chart — tells the full story of "did matching fix the bias?"</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Chart 1 of 4: Propensity Score Distribution (Overlap Check)</div>
+    <div class="mockup-body" style="padding:24px;">
+      <div style="font-size:13px;color:#94a3b8;margin-bottom:16px;">
+        <strong style="color:#c4b5fd;">Purpose:</strong> Shows whether test & control overlap enough to match. If distributions don't overlap, matching is impossible — the lab warns the user.
+      </div>
+      <div style="position:relative;height:200px;background:#0f0f23;border-radius:8px;padding:16px;overflow:hidden;">
+        <!-- Y axis -->
+        <div style="position:absolute;left:8px;top:50%;transform:rotate(-90deg) translateX(50%);color:#64748b;font-size:11px;">Density</div>
+        <!-- X axis -->
+        <div style="position:absolute;bottom:4px;left:50%;transform:translateX(-50%);color:#64748b;font-size:11px;">Propensity Score (0 → 1)</div>
+
+        <!-- Control distribution (blue) -->
+        <svg viewBox="0 0 400 160" style="width:100%;height:100%;" preserveAspectRatio="none">
+          <!-- Control group - blue bell curve, shifted left -->
+          <path d="M40,150 Q80,145 120,100 Q150,60 180,40 Q200,30 220,40 Q250,70 280,120 Q300,145 320,150"
+                fill="rgba(59,130,246,0.2)" stroke="#3b82f6" stroke-width="2"/>
+          <!-- Test group - purple bell curve, shifted right -->
+          <path d="M100,150 Q140,140 170,100 Q200,55 230,35 Q260,30 280,45 Q310,80 340,130 Q360,148 380,150"
+                fill="rgba(139,92,246,0.2)" stroke="#8b5cf6" stroke-width="2"/>
+          <!-- Overlap region highlight -->
+          <rect x="120" y="30" width="200" height="120" fill="rgba(167,139,250,0.05)" rx="4"/>
+          <text x="220" y="90" text-anchor="middle" fill="#a78bfa" font-size="11" opacity="0.7">overlap region</text>
+        </svg>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;">
+        <span style="color:#3b82f6;">━━ Control (n=4,230)</span>
+        <span style="color:#8b5cf6;">━━ Test (n=3,890)</span>
+        <span style="color:#a78bfa;opacity:0.7;">░ Overlap region</span>
+      </div>
+      <div style="margin-top:12px;padding:10px;background:#052e16;border-radius:6px;border-left:3px solid #10b981;">
+        <span style="color:#6ee7b7;font-size:12px;">✓ Good overlap (87%). Matching is feasible.</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">Chart 2 of 4: Love Plot (Covariate Balance Before vs After Matching)</div>
+    <div class="mockup-body" style="padding:24px;">
+      <div style="font-size:13px;color:#94a3b8;margin-bottom:16px;">
+        <strong style="color:#c4b5fd;">Purpose:</strong> The "money chart" — shows standardized mean difference for each covariate before and after matching. All dots should move toward zero after matching.
+      </div>
+      <div style="position:relative;background:#0f0f23;border-radius:8px;padding:20px 20px 20px 160px;min-height:280px;">
+        <!-- Threshold lines -->
+        <div style="position:absolute;left:160px;right:20px;top:20px;bottom:20px;">
+          <!-- Center line (0) -->
+          <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:#334155;"></div>
+          <!-- ±0.1 threshold -->
+          <div style="position:absolute;left:40%;top:0;bottom:0;width:1px;background:#374151;border-left:1px dashed #4b5563;"></div>
+          <div style="position:absolute;left:60%;top:0;bottom:0;width:1px;background:#374151;border-left:1px dashed #4b5563;"></div>
+          <div style="position:absolute;left:38%;top:4px;color:#64748b;font-size:10px;">-0.1</div>
+          <div style="position:absolute;left:49%;top:4px;color:#64748b;font-size:10px;">0</div>
+          <div style="position:absolute;left:59%;top:4px;color:#64748b;font-size:10px;">+0.1</div>
+        </div>
+
+        <!-- Covariates (rows) -->
+        <div style="font-size:12px;line-height:2.8;">
+          <!-- Row 1 -->
+          <div style="position:relative;height:28px;">
+            <span style="position:absolute;left:-140px;color:#e2e8f0;">pre_net_rides</span>
+            <span style="position:absolute;left:calc(50% + 60px);top:8px;width:10px;height:10px;background:#ef4444;border-radius:50%;transform:translate(-50%,-50%);" title="Before: 0.32"></span>
+            <span style="position:absolute;left:calc(50% + 5px);top:8px;width:10px;height:10px;background:#10b981;border-radius:50%;transform:translate(-50%,-50%);" title="After: 0.02"></span>
+            <span style="position:absolute;left:calc(50% + 60px);top:8px;width:calc(50% - 55px);height:1px;background:rgba(239,68,68,0.3);transform:translateY(-50%);"></span>
+          </div>
+          <!-- Row 2 -->
+          <div style="position:relative;height:28px;">
+            <span style="position:absolute;left:-140px;color:#e2e8f0;">pre_online_hours</span>
+            <span style="position:absolute;left:calc(50% + 80px);top:8px;width:10px;height:10px;background:#ef4444;border-radius:50%;transform:translate(-50%,-50%);"></span>
+            <span style="position:absolute;left:calc(50% - 8px);top:8px;width:10px;height:10px;background:#10b981;border-radius:50%;transform:translate(-50%,-50%);"></span>
+          </div>
+          <!-- Row 3 -->
+          <div style="position:relative;height:28px;">
+            <span style="position:absolute;left:-140px;color:#e2e8f0;">pre_dapr_score</span>
+            <span style="position:absolute;left:calc(50% - 45px);top:8px;width:10px;height:10px;background:#ef4444;border-radius:50%;transform:translate(-50%,-50%);"></span>
+            <span style="position:absolute;left:calc(50% - 5px);top:8px;width:10px;height:10px;background:#10b981;border-radius:50%;transform:translate(-50%,-50%);"></span>
+          </div>
+          <!-- Row 4 -->
+          <div style="position:relative;height:28px;">
+            <span style="position:absolute;left:-140px;color:#e2e8f0;">pre_acceptance_rate</span>
+            <span style="position:absolute;left:calc(50% + 95px);top:8px;width:10px;height:10px;background:#ef4444;border-radius:50%;transform:translate(-50%,-50%);"></span>
+            <span style="position:absolute;left:calc(50% + 3px);top:8px;width:10px;height:10px;background:#10b981;border-radius:50%;transform:translate(-50%,-50%);"></span>
+          </div>
+          <!-- Row 5 -->
+          <div style="position:relative;height:28px;">
+            <span style="position:absolute;left:-140px;color:#e2e8f0;">pre_active_days</span>
+            <span style="position:absolute;left:calc(50% - 70px);top:8px;width:10px;height:10px;background:#ef4444;border-radius:50%;transform:translate(-50%,-50%);"></span>
+            <span style="position:absolute;left:calc(50% + 7px);top:8px;width:10px;height:10px;background:#10b981;border-radius:50%;transform:translate(-50%,-50%);"></span>
+          </div>
+          <!-- Row 6 -->
+          <div style="position:relative;height:28px;">
+            <span style="position:absolute;left:-140px;color:#e2e8f0;">pre_earnings_avg</span>
+            <span style="position:absolute;left:calc(50% + 40px);top:8px;width:10px;height:10px;background:#ef4444;border-radius:50%;transform:translate(-50%,-50%);"></span>
+            <span style="position:absolute;left:calc(50% - 3px);top:8px;width:10px;height:10px;background:#10b981;border-radius:50%;transform:translate(-50%,-50%);"></span>
+          </div>
+          <!-- Row 7 -->
+          <div style="position:relative;height:28px;">
+            <span style="position:absolute;left:-140px;color:#e2e8f0;">pre_peak_ratio</span>
+            <span style="position:absolute;left:calc(50% + 25px);top:8px;width:10px;height:10px;background:#ef4444;border-radius:50%;transform:translate(-50%,-50%);"></span>
+            <span style="position:absolute;left:calc(50% + 2px);top:8px;width:10px;height:10px;background:#10b981;border-radius:50%;transform:translate(-50%,-50%);"></span>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;">
+        <span style="color:#ef4444;">● Before matching (imbalanced)</span>
+        <span style="color:#10b981;">● After matching (balanced)</span>
+        <span style="color:#64748b;">┊ ±0.1 threshold</span>
+      </div>
+      <div style="margin-top:8px;color:#94a3b8;font-size:12px;font-style:italic;">
+        "All covariates moved within the ±0.1 threshold after matching — groups are now comparable."
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">Chart 3: ATT Estimate</div>
+      <div class="mockup-body" style="padding:20px;">
+        <div style="font-size:13px;color:#94a3b8;margin-bottom:12px;">
+          <strong style="color:#c4b5fd;">Average Treatment Effect on the Treated</strong>
+        </div>
+        <div style="background:#0f0f23;border-radius:8px;padding:20px;text-align:center;">
+          <div style="font-size:36px;font-weight:bold;color:#10b981;">+12.3%</div>
+          <div style="color:#94a3b8;font-size:13px;margin-top:4px;">net rides per captain</div>
+          <div style="margin-top:12px;display:flex;justify-content:center;gap:20px;font-size:12px;">
+            <div>
+              <div style="color:#64748b;">95% CI</div>
+              <div style="color:#e2e8f0;">[+8.1%, +16.5%]</div>
+            </div>
+            <div>
+              <div style="color:#64748b;">p-value</div>
+              <div style="color:#10b981;">0.0003</div>
+            </div>
+            <div>
+              <div style="color:#64748b;">Matched pairs</div>
+              <div style="color:#e2e8f0;">3,412</div>
+            </div>
+          </div>
+          <div style="margin-top:12px;padding:8px;background:#052e16;border-radius:6px;">
+            <span style="color:#6ee7b7;font-size:12px;">After correcting for selection bias, the treatment effect is +12.3% (vs +18.7% naive estimate). The naive estimate was inflated by pre-existing differences.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mockup">
+      <div class="mockup-header">Chart 4: Naive vs Matched Comparison</div>
+      <div class="mockup-body" style="padding:20px;">
+        <div style="font-size:13px;color:#94a3b8;margin-bottom:12px;">
+          <strong style="color:#c4b5fd;">How much did matching change the result?</strong>
+        </div>
+        <div style="background:#0f0f23;border-radius:8px;padding:20px;">
+          <!-- Bar chart comparing naive vs matched -->
+          <div style="display:flex;align-items:flex-end;justify-content:center;gap:32px;height:120px;margin-bottom:12px;">
+            <div style="text-align:center;">
+              <div style="width:60px;height:94px;background:linear-gradient(to top,rgba(239,68,68,0.3),rgba(239,68,68,0.6));border-radius:4px 4px 0 0;border-top:2px solid #ef4444;"></div>
+              <div style="color:#fca5a5;font-size:20px;font-weight:bold;margin-top:4px;">+18.7%</div>
+              <div style="color:#64748b;font-size:11px;">Naive DiD</div>
+            </div>
+            <div style="text-align:center;">
+              <div style="width:60px;height:62px;background:linear-gradient(to top,rgba(16,185,129,0.3),rgba(16,185,129,0.6));border-radius:4px 4px 0 0;border-top:2px solid #10b981;"></div>
+              <div style="color:#6ee7b7;font-size:20px;font-weight:bold;margin-top:4px;">+12.3%</div>
+              <div style="color:#64748b;font-size:11px;">PSM-adjusted</div>
+            </div>
+          </div>
+          <div style="padding:8px;background:#451a03;border-radius:6px;margin-top:8px;">
+            <span style="color:#fcd34d;font-size:12px;">⚠ Naive estimate was 52% higher than the true effect. Selection bias inflated the result.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:20px;padding:16px;background:rgba(167,139,250,0.08);border-radius:12px;border:1px solid rgba(167,139,250,0.2);">
+  <p style="color:#c4b5fd;font-size:14px;margin:0;"><strong>PSM Narrative (auto-generated):</strong> "The experiment showed a naive lift of +18.7% in net rides. However, PSM analysis revealed that test captains were already 6.4% more active pre-treatment. After matching on 7 covariates, the true treatment effect is <strong>+12.3%</strong> (95% CI: [8.1%, 16.5%], p=0.0003). 3,412 matched pairs were used; 478 test captains had no suitable match and were excluded."</p>
+</div>
