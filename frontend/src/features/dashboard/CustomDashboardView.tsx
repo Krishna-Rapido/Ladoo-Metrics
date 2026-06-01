@@ -19,6 +19,7 @@ import {
     type CustomDashboard,
     type DashboardParameter,
     type GlobalParameterOption,
+    type ChartConfig,
 } from '@/lib/supabase';
 import {
     executeCustomDashboardQuery,
@@ -274,7 +275,9 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [data, setData] = useState<CustomDashboardQueryResponse | null>(null);
-    const [showChart, setShowChart] = useState(false);
+
+    // Visualization template state — multiple chart configs per dashboard
+    const [chartConfigs, setChartConfigs] = useState<ChartConfig[]>([]);
 
     // Save state
     const [saving, setSaving] = useState(false);
@@ -328,6 +331,10 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                     setSqlQuery(db.sql_query || '');
                     if (db.parameters.length > 0) {
                         setParameters(db.parameters);
+                    }
+                    // Load saved chart configs
+                    if (db.chart_configs?.length > 0) {
+                        setChartConfigs(db.chart_configs);
                     }
                     // Initialize param values from defaults
                     const defaults: Record<string, string | string[] | null> = {};
@@ -471,6 +478,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
             await updateCustomDashboard(dashboard.id, {
                 sql_query: sqlQuery,
                 parameters,
+                chart_configs: chartConfigs,
             });
             setSaveSuccess(true);
             setDirty(false);
@@ -481,7 +489,31 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
         } finally {
             setSaving(false);
         }
-    }, [dashboard, isOwner, sqlQuery, parameters]);
+    }, [dashboard, isOwner, sqlQuery, parameters, chartConfigs]);
+
+    const handleConfigChange = useCallback((config: ChartConfig) => {
+        setChartConfigs(prev => prev.map(c => c.id === config.id ? config : c));
+        setDirty(true);
+    }, []);
+
+    const addVisualization = useCallback(() => {
+        const newConfig: ChartConfig = {
+            id: crypto.randomUUID(),
+            title: `Visualization ${chartConfigs.length + 1}`,
+            chartType: 'line',
+            xAxis: '',
+            yAxes: [],
+            seriesColumns: [],
+            aggregation: 'sum',
+        };
+        setChartConfigs(prev => [...prev, newConfig]);
+        setDirty(true);
+    }, [chartConfigs.length]);
+
+    const removeVisualization = useCallback((id: string) => {
+        setChartConfigs(prev => prev.filter(c => c.id !== id));
+        setDirty(true);
+    }, []);
 
     const handleColumnApplied = useCallback(async (columnName: string) => {
         if (!sessionId) return;
@@ -1088,23 +1120,45 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                         </div>
                     </div>
 
-                    {/* Chart Builder */}
-                    {showChart && (
+                    {/* Visualizations — one ChartBuilder per saved config */}
+                    {chartConfigs.map((config, index) => (
                         <motion.div
-                            initial={{ opacity: 0, height: 0 }}
-                            animate={{ opacity: 1, height: 'auto' }}
-                            exit={{ opacity: 0, height: 0 }}
+                            key={config.id}
+                            initial={{ opacity: 0, y: 16 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -8 }}
+                            className="relative"
                         >
+                            {/* Remove button */}
+                            <button
+                                onClick={() => removeVisualization(config.id)}
+                                title="Remove this visualization"
+                                className="absolute top-4 right-4 z-10 p-1.5 rounded-md hover:bg-destructive/10 transition-colors"
+                            >
+                                <X className="h-4 w-4 text-muted-foreground hover:text-destructive" />
+                            </button>
                             <ChartBuilder
                                 data={data.data}
-                                title={dashboard?.name || 'Custom Dashboard'}
+                                title={config.title || `Visualization ${index + 1}`}
                                 calculatedColumns={appliedCalcColumns}
                                 sessionId={sessionId}
                                 onColumnApplied={handleColumnApplied}
                                 onColumnRemoved={handleColumnRemoved}
+                                configId={config.id}
+                                initialConfig={config}
+                                onConfigChange={handleConfigChange}
                             />
                         </motion.div>
-                    )}
+                    ))}
+
+                    {/* Add Visualization button */}
+                    <button
+                        onClick={addVisualization}
+                        className="w-full py-4 border-2 border-dashed border-slate-300 rounded-xl text-sm font-medium text-teal-700 hover:border-teal-400 hover:bg-teal-50/30 transition-colors flex items-center justify-center gap-2"
+                    >
+                        <Plus className="h-4 w-4" />
+                        Add Visualization
+                    </button>
                 </motion.div>
             )}
 
