@@ -453,6 +453,16 @@ export async function getGlobalParameterOptions(): Promise<GlobalParameterOption
   return data || []
 }
 
+export type ChartConfig = {
+  id: string
+  title: string
+  chartType: 'line' | 'bar' | 'area' | 'scatter'
+  xAxis: string
+  yAxes: string[]
+  seriesColumns: string[]
+  aggregation: 'sum' | 'mean' | 'count' | 'unique_count' | 'median' | 'p25' | 'p75' | 'p90'
+}
+
 export type CustomDashboard = {
   id: string
   user_id: string
@@ -462,6 +472,7 @@ export type CustomDashboard = {
   description: string | null
   sql_query: string
   parameters: DashboardParameter[]
+  chart_configs?: ChartConfig[]
   created_at: string
   updated_at: string
 }
@@ -529,7 +540,7 @@ export async function createCustomDashboard(
 
 export async function updateCustomDashboard(
   dashboardId: string,
-  updates: Partial<Pick<CustomDashboard, 'name' | 'description' | 'sql_query' | 'parameters'>>
+  updates: Partial<Pick<CustomDashboard, 'name' | 'description' | 'sql_query' | 'parameters' | 'chart_configs'>>
 ): Promise<void> {
   const { error } = await supabase
     .from('custom_dashboards')

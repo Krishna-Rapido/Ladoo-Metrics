@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     LineChart,
@@ -19,9 +19,10 @@ import {
 import { useReport } from '../contexts/ReportContext';
 import { toPng } from 'html-to-image';
 import { CalculatedColumnPanel } from './CalculatedColumnPanel';
+import type { ChartConfig } from '@/lib/supabase';
 
-type ChartType = 'line' | 'bar' | 'area' | 'scatter';
-type AggregationType = 'sum' | 'mean' | 'count' | 'unique_count' | 'median' | 'p25' | 'p75' | 'p90';
+type ChartType = ChartConfig['chartType'];
+type AggregationType = ChartConfig['aggregation'];
 
 const AGG_OPTIONS: { value: AggregationType; label: string }[] = [
     { value: 'sum', label: 'Sum' },
@@ -72,6 +73,10 @@ interface ChartBuilderProps {
     sessionId?: string | null;
     onColumnApplied?: (columnName: string) => void;
     onColumnRemoved?: (columnName: string) => void;
+    // Template feature props
+    configId?: string;
+    initialConfig?: ChartConfig;
+    onConfigChange?: (config: ChartConfig) => void;
 }
 
 const COLORS = [
@@ -86,16 +91,44 @@ export function ChartBuilder({
     sessionId,
     onColumnApplied,
     onColumnRemoved,
+    configId,
+    initialConfig,
+    onConfigChange,
 }: ChartBuilderProps) {
-    const [chartType, setChartType] = useState<ChartType>('line');
-    const [xAxis, setXAxis] = useState<string>('');
-    const [yAxes, setYAxes] = useState<string[]>([]);
-    const [series, setSeries] = useState<string>('');
-    const [aggregation, setAggregation] = useState<AggregationType>('sum');
+    const [chartType, setChartType] = useState<ChartType>(initialConfig?.chartType ?? 'line');
+    const [xAxis, setXAxis] = useState<string>(initialConfig?.xAxis ?? '');
+    const [yAxes, setYAxes] = useState<string[]>(initialConfig?.yAxes ?? []);
+    const [seriesColumns, setSeriesColumns] = useState<string[]>(initialConfig?.seriesColumns ?? []);
+    const [aggregation, setAggregation] = useState<AggregationType>(initialConfig?.aggregation ?? 'sum');
     const { addItem } = useReport();
     const [showSuccess, setShowSuccess] = useState(false);
     const chartRef = useRef<HTMLDivElement>(null);
     const [showCalcBuilder, setShowCalcBuilder] = useState(false);
+
+    // Keep onConfigChange ref stable to avoid stale closures in effects
+    const onConfigChangeRef = useRef(onConfigChange);
+    useEffect(() => { onConfigChangeRef.current = onConfigChange; });
+
+    // Skip first render so loading from a saved config doesn't mark the dashboard dirty
+    const isFirstRender = useRef(true);
+
+    // Report config changes upward whenever relevant state changes
+    useEffect(() => {
+        if (isFirstRender.current) {
+            isFirstRender.current = false;
+            return;
+        }
+        if (!onConfigChangeRef.current || !configId) return;
+        onConfigChangeRef.current({
+            id: configId,
+            title: title || 'Visualization',
+            chartType,
+            xAxis,
+            yAxes,
+            seriesColumns,
+            aggregation,
+        });
+    }, [chartType, xAxis, yAxes, seriesColumns, aggregation, configId, title]);
 
     // Add chart to report
     const handleAddToReport = async () => {
@@ -110,7 +143,6 @@ export function ChartBuilder({
         }
 
         try {
-            // Capture the chart as an image
             const dataUrl = await toPng(chartRef.current, {
                 backgroundColor: '#ffffff',
                 quality: 1.0,
@@ -124,7 +156,7 @@ export function ChartBuilder({
                     chartType,
                     xAxis,
                     yAxes,
-                    seriesBy: series || null,
+                    seriesBy: seriesColumns.length > 0 ? seriesColumns.join(' | ') : null,
                     data: chartData,
                     imageDataUrl: dataUrl,
                 },
@@ -143,14 +175,12 @@ export function ChartBuilder({
     const handleExportCsv = () => {
         if (!data || data.length === 0) return;
 
-        // Convert to CSV
         const headers = Object.keys(data[0]);
         const csvContent = [
             headers.join(','),
             ...data.map(row =>
                 headers.map(header => {
                     const value = row[header];
-                    // Escape values with commas or quotes
                     if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
                         return `"${value.replace(/"/g, '""')}"`;
                     }
@@ -159,7 +189,6 @@ export function ChartBuilder({
             )
         ].join('\n');
 
-        // Download file
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -197,11 +226,11 @@ export function ChartBuilder({
         return { numericColumns: numeric, categoricalColumns: categorical };
     }, [data, columns]);
 
-    // Transform data based on series selection and multiple Y-axes
+    // Transform data based on seriesColumns and multiple Y-axes
     const chartData = useMemo(() => {
         if (!xAxis || yAxes.length === 0 || !data) return [];
 
-        if (!series) {
+        if (seriesColumns.length === 0) {
             // No series grouping - collect values per X-axis group, then aggregate
             const collected: Record<string, Record<string, number[]>> = {};
 
@@ -225,19 +254,19 @@ export function ChartBuilder({
             });
         }
 
-        // Group by series - collect values per X-axis × series combination
+        // Multi-column group by: combine series column values into a single key
         const collected: Record<string, Record<string, number[]>> = {};
 
         data.forEach(row => {
             const xValue = String(row[xAxis]);
-            const seriesValue = String(row[series]);
+            const seriesKey = seriesColumns.map(col => String(row[col] ?? '')).join(' | ');
 
             if (!collected[xValue]) {
                 collected[xValue] = {};
             }
 
             yAxes.forEach(yAxis => {
-                const key = `${yAxis}_${seriesValue}`;
+                const key = `${yAxis}_${seriesKey}`;
                 if (!collected[xValue][key]) collected[xValue][key] = [];
                 collected[xValue][key].push(Number(row[yAxis]) || 0);
             });
@@ -250,21 +279,21 @@ export function ChartBuilder({
             });
             return point;
         });
-    }, [data, xAxis, yAxes, series, aggregation]);
+    }, [data, xAxis, yAxes, seriesColumns, aggregation]);
 
-    // Get unique series values for legend
+    // Get unique combined series values for legend
     const seriesValues = useMemo(() => {
-        if (!series || !data) return [];
-        return Array.from(new Set(data.map(row => String(row[series])))).filter(Boolean);
-    }, [data, series]);
+        if (seriesColumns.length === 0 || !data) return [];
+        return Array.from(new Set(
+            data.map(row => seriesColumns.map(col => String(row[col] ?? '')).join(' | '))
+        )).filter(Boolean);
+    }, [data, seriesColumns]);
 
     // Get all line keys for rendering
     const lineKeys = useMemo(() => {
-        if (!series) {
-            // No series - just the Y-axis metrics
+        if (seriesColumns.length === 0) {
             return yAxes;
         }
-        // With series - create combinations of metric_seriesValue
         const keys: string[] = [];
         yAxes.forEach(yAxis => {
             seriesValues.forEach(seriesValue => {
@@ -272,7 +301,7 @@ export function ChartBuilder({
             });
         });
         return keys;
-    }, [yAxes, series, seriesValues]);
+    }, [yAxes, seriesColumns, seriesValues]);
 
     const renderChart = () => {
         if (!xAxis || yAxes.length === 0) {
@@ -596,26 +625,57 @@ export function ChartBuilder({
                         )}
                     </div>
 
-                    {/* Series (Group By) */}
-                    <div>
+                    {/* Group By (Multi-column Series) */}
+                    <div className="col-span-2">
                         <label className="block text-sm font-medium text-slate-700 mb-2">
-                            Series (Group By)
+                            Group By (Series)
+                            {seriesColumns.length > 0 && (
+                                <span className="text-xs text-teal-600 ml-2">
+                                    ({seriesColumns.length} column{seriesColumns.length > 1 ? 's' : ''} · {seriesValues.length} groups)
+                                </span>
+                            )}
                         </label>
-                        <select
-                            value={series}
-                            onChange={(e) => setSeries(e.target.value)}
-                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                        >
-                            <option value="">None</option>
-                            {categoricalColumns.map((col) => (
-                                <option key={col} value={col}>
-                                    {col.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                                </option>
-                            ))}
-                        </select>
-                        {series && (
-                            <p className="mt-1 text-xs text-purple-600">
-                                📊 {seriesValues.length} series
+                        <div className="border border-slate-300 rounded-lg p-3 min-h-[60px] max-h-40 overflow-y-auto bg-white">
+                            {categoricalColumns.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                    {categoricalColumns.map((col) => {
+                                        const isSelected = seriesColumns.includes(col);
+                                        return (
+                                            <motion.button
+                                                key={col}
+                                                onClick={() => {
+                                                    if (isSelected) {
+                                                        setSeriesColumns(seriesColumns.filter(s => s !== col));
+                                                    } else {
+                                                        setSeriesColumns([...seriesColumns, col]);
+                                                    }
+                                                }}
+                                                whileHover={{ scale: 1.05 }}
+                                                whileTap={{ scale: 0.95 }}
+                                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-full border transition-all ${
+                                                    isSelected
+                                                        ? 'bg-teal-50 text-teal-800 border-teal-400 shadow-sm'
+                                                        : 'bg-white text-slate-700 border-slate-200 hover:border-teal-300 hover:bg-teal-50/40'
+                                                }`}
+                                            >
+                                                {isSelected && <span className="text-teal-600">✓</span>}
+                                                <span>{col.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</span>
+                                            </motion.button>
+                                        );
+                                    })}
+                                </div>
+                            ) : (
+                                <p className="text-xs text-muted-foreground py-1">No categorical columns available</p>
+                            )}
+                        </div>
+                        {seriesColumns.length > 1 && (
+                            <p className="mt-1 text-xs text-teal-600">
+                                Groups combined as: {seriesColumns.join(' × ')}
+                            </p>
+                        )}
+                        {seriesColumns.length === 0 && categoricalColumns.length > 0 && (
+                            <p className="mt-1 text-xs text-slate-400">
+                                Click columns to group data into series
                             </p>
                         )}
                     </div>
@@ -655,9 +715,9 @@ export function ChartBuilder({
                             <span>
                                 <strong>Agg:</strong> {AGG_OPTIONS.find(o => o.value === aggregation)?.label}
                             </span>
-                            {series && (
+                            {seriesColumns.length > 0 && (
                                 <span>
-                                    <strong>Series:</strong> {series.replace(/_/g, ' ')} ({seriesValues.length} groups)
+                                    <strong>Group By:</strong> {seriesColumns.join(' × ')} ({seriesValues.length} groups)
                                 </span>
                             )}
                         </div>
