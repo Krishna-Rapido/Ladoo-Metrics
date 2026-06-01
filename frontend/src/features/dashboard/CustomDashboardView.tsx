@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Save, Play, Plus, X, ChevronDown, ChevronUp, Loader2, ChevronsUpDown, Trash2, Sparkles } from 'lucide-react';
+import { Save, Play, Plus, X, ChevronDown, ChevronUp, Loader2, ChevronsUpDown, Trash2, Sparkles, Download, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -22,6 +22,7 @@ import {
 } from '@/lib/supabase';
 import {
     executeCustomDashboardQuery,
+    downloadCustomQueryCsv,
     getSessionRows,
     type CustomDashboardQueryResponse,
 } from '@/lib/api';
@@ -1044,18 +1045,39 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                             <div className="flex-1">
                                 <h3 className="card-title">Query Results</h3>
                                 <p className="card-subtitle">
-                                    {data.num_rows.toLocaleString()} rows × {data.columns.length}{' '}
+                                    {(data.total_rows ?? data.num_rows).toLocaleString()} rows × {data.columns.length}{' '}
                                     columns
                                 </p>
                             </div>
-                            <button
-                                onClick={() => setShowChart(!showChart)}
-                                className={`btn ${showChart ? 'btn-primary' : 'btn-secondary'}`}
-                            >
-                                <span>{showChart ? '📊' : '📈'}</span>
-                                <span>{showChart ? 'Hide Chart' : 'Visualize Data'}</span>
-                            </button>
+                            <div className="flex items-center gap-2">
+                                {sessionId && (
+                                    <button
+                                        onClick={() => downloadCustomQueryCsv(sessionId, `${dashboard?.name || 'query'}_results.csv`)}
+                                        className="btn btn-secondary"
+                                    >
+                                        <Download className="h-4 w-4" />
+                                        <span>Download CSV</span>
+                                    </button>
+                                )}
+                                <button
+                                    onClick={() => setShowChart(!showChart)}
+                                    className={`btn ${showChart ? 'btn-primary' : 'btn-secondary'}`}
+                                >
+                                    <span>{showChart ? '📊' : '📈'}</span>
+                                    <span>{showChart ? 'Hide Chart' : 'Visualize Data'}</span>
+                                </button>
+                            </div>
                         </div>
+
+                        {data.is_truncated && (
+                            <div className="flex items-center gap-2 mt-3 px-3 py-2 bg-amber-500/10 text-amber-700 rounded-md text-sm">
+                                <Info className="h-4 w-4 shrink-0" />
+                                <span>
+                                    Showing first {data.num_rows.toLocaleString()} of {(data.total_rows ?? data.num_rows).toLocaleString()} total rows.
+                                    Use Download CSV for the full dataset.
+                                </span>
+                            </div>
+                        )}
 
                         <div className="mt-6">
                             <FunnelDataGrid

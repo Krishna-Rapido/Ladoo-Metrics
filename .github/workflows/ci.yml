@@ -22,7 +22,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m pytest tests/ -v --tb=short
         env:
-          PRESTO_HOST: ""
+          TRINO_HOST: ""
 
   frontend-build:
     runs-on: ubuntu-latest

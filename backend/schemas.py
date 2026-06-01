@@ -394,6 +394,8 @@ class CustomDashboardQueryResponse(BaseModel):
     columns: List[str]
     data: List[Dict[str, Any]]
     session_id: Optional[str] = None
+    total_rows: int = 0
+    is_truncated: bool = False
 
 
 class ReportItem(BaseModel):
@@ -551,7 +553,6 @@ class ExperimentPerformanceResponse(BaseModel):
     total_unique_captains: Optional[int] = None
     cohort_breakdown: List[CohortBreakdown] = []
     preview: List[Dict[str, Any]] = []
-    csv: Optional[str] = None
     error: Optional[str] = None
 
 

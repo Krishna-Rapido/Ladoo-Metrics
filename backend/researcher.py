@@ -28,10 +28,9 @@ from datetime import datetime, timedelta
 # ---------------------------------------------------------------------------
 
 def _get_presto_connection(username: str):
-    from pyhive import presto
-    host = os.environ.get("PRESTO_HOST", "bi-trino-4.serving.data.production.internal")
-    port = int(os.environ.get("PRESTO_PORT", "80"))
-    return presto.connect(host, port, username=username)
+    # Centralized Trino/Presto connection (OAuth2). `username` = signed-in email.
+    from presto_connection import get_trino_connection
+    return get_trino_connection(username)
 
 
 def _query_presto(username: str, sql: str) -> pd.DataFrame:

@@ -1,0 +1,305 @@
+<h2>Visualization Design: Synthetic Control + RDD</h2>
+<p class="subtitle">City-level experiments and threshold-based treatments</p>
+
+<!-- ======================== SYNTHETIC CONTROL ======================== -->
+<div class="section">
+  <h3 style="color:#fcd34d;">Synthetic Control Method</h3>
+
+  <div class="mockup">
+    <div class="mockup-header">Chart 1 of 3: Actual vs Synthetic Time Series</div>
+    <div class="mockup-body" style="padding:24px;">
+      <div style="font-size:13px;color:#94a3b8;margin-bottom:12px;">
+        <strong style="color:#fcd34d;">Purpose:</strong> The synthetic city (weighted average of untreated cities) serves as the counterfactual. If the lines diverge post-treatment, the intervention had an effect.
+      </div>
+      <div style="position:relative;height:220px;background:#0f0f23;border-radius:8px;padding:16px;overflow:hidden;">
+        <!-- Intervention line -->
+        <div style="position:absolute;left:45%;top:16px;bottom:30px;width:2px;background:#f59e0b;z-index:5;"></div>
+        <div style="position:absolute;left:calc(45% + 6px);top:20px;color:#fcd34d;font-size:10px;">Surge pricing<br>launched</div>
+
+        <svg viewBox="0 0 500 180" style="width:100%;height:100%;" preserveAspectRatio="none">
+          <!-- Pre-period: lines track closely -->
+          <!-- Actual Hyderabad -->
+          <path d="M20,100 Q50,95 80,92 Q110,88 140,85 Q170,82 200,80 Q215,78 225,77
+                   Q250,70 280,60 Q310,50 340,42 Q370,38 400,35 Q430,32 460,28"
+                fill="none" stroke="#f59e0b" stroke-width="2.5"/>
+          <!-- Synthetic Hyderabad -->
+          <path d="M20,102 Q50,97 80,94 Q110,90 140,87 Q170,84 200,82 Q215,80 225,79
+                   Q250,78 280,76 Q310,74 340,72 Q370,71 400,70 Q430,69 460,68"
+                fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="6,4"/>
+
+          <!-- Gap annotation -->
+          <line x1="380" y1="36" x2="380" y2="71" stroke="#10b981" stroke-width="1.5"/>
+          <text x="395" y="55" fill="#10b981" font-size="12" font-weight="bold">Gap</text>
+        </svg>
+
+        <div style="position:absolute;bottom:4px;left:15%;color:#64748b;font-size:10px;">Week -8</div>
+        <div style="position:absolute;bottom:4px;left:30%;color:#64748b;font-size:10px;">Week -4</div>
+        <div style="position:absolute;bottom:4px;left:45%;color:#fcd34d;font-size:10px;">Week 0</div>
+        <div style="position:absolute;bottom:4px;left:65%;color:#64748b;font-size:10px;">Week 4</div>
+        <div style="position:absolute;bottom:4px;left:82%;color:#64748b;font-size:10px;">Week 8</div>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;">
+        <span style="color:#f59e0b;">━━ Hyderabad (treated)</span>
+        <span style="color:#94a3b8;">╌╌ Synthetic Hyderabad</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">Chart 2: Donor City Weights</div>
+      <div class="mockup-body" style="padding:20px;">
+        <div style="font-size:13px;color:#94a3b8;margin-bottom:12px;">
+          <strong style="color:#fcd34d;">What makes "Synthetic Hyderabad"?</strong>
+        </div>
+        <div style="background:#0f0f23;padding:16px;border-radius:8px;">
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="color:#e2e8f0;font-size:12px;width:80px;text-align:right;">Bangalore</span>
+              <div style="height:20px;width:45%;background:#f59e0b;border-radius:3px;display:flex;align-items:center;padding-left:8px;">
+                <span style="color:#1a1a2e;font-size:11px;font-weight:bold;">0.42</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="color:#e2e8f0;font-size:12px;width:80px;text-align:right;">Chennai</span>
+              <div style="height:20px;width:28%;background:#d97706;border-radius:3px;display:flex;align-items:center;padding-left:8px;">
+                <span style="color:#1a1a2e;font-size:11px;font-weight:bold;">0.27</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="color:#e2e8f0;font-size:12px;width:80px;text-align:right;">Pune</span>
+              <div style="height:20px;width:20%;background:#b45309;border-radius:3px;display:flex;align-items:center;padding-left:8px;">
+                <span style="color:white;font-size:11px;font-weight:bold;">0.19</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="color:#e2e8f0;font-size:12px;width:80px;text-align:right;">Delhi</span>
+              <div style="height:20px;width:12%;background:#92400e;border-radius:3px;display:flex;align-items:center;padding-left:8px;">
+                <span style="color:white;font-size:11px;font-weight:bold;">0.12</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="color:#e2e8f0;font-size:12px;width:80px;text-align:right;">Others</span>
+              <div style="height:20px;width:3%;background:#78350f;border-radius:3px;"></div>
+              <span style="color:#64748b;font-size:11px;">0.00</span>
+            </div>
+          </div>
+          <div style="margin-top:12px;color:#94a3b8;font-size:12px;font-style:italic;">
+            "Synthetic Hyderabad = 42% Bangalore + 27% Chennai + 19% Pune + 12% Delhi"
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mockup">
+      <div class="mockup-header">Chart 3: Placebo Tests (Validation)</div>
+      <div class="mockup-body" style="padding:20px;">
+        <div style="font-size:13px;color:#94a3b8;margin-bottom:12px;">
+          <strong style="color:#fcd34d;">Is the effect real?</strong> Run the same analysis pretending each donor city was treated. Hyderabad's gap should be an outlier.
+        </div>
+        <div style="position:relative;height:180px;background:#0f0f23;border-radius:8px;padding:16px;overflow:hidden;">
+          <div style="position:absolute;left:45%;top:16px;bottom:20px;width:2px;background:#f59e0b;"></div>
+
+          <svg viewBox="0 0 400 150" style="width:100%;height:100%;" preserveAspectRatio="none">
+            <!-- Placebo gaps (gray, close to 0) -->
+            <path d="M10,75 Q50,74 100,76 Q150,73 180,75 Q200,76 220,72 Q260,70 300,73 Q340,76 380,74" fill="none" stroke="#374151" stroke-width="1"/>
+            <path d="M10,75 Q50,77 100,73 Q150,76 180,74 Q200,72 220,77 Q260,80 300,78 Q340,75 380,77" fill="none" stroke="#374151" stroke-width="1"/>
+            <path d="M10,75 Q50,73 100,77 Q150,74 180,76 Q200,78 220,74 Q260,71 300,74 Q340,77 380,73" fill="none" stroke="#374151" stroke-width="1"/>
+            <path d="M10,75 Q50,76 100,74 Q150,77 180,73 Q200,75 220,76 Q260,78 300,76 Q340,73 380,75" fill="none" stroke="#374151" stroke-width="1"/>
+            <!-- Hyderabad (big divergence) -->
+            <path d="M10,75 Q50,74 100,76 Q150,74 180,75 Q200,68 220,55 Q260,40 300,30 Q340,22 380,18" fill="none" stroke="#f59e0b" stroke-width="2.5"/>
+          </svg>
+        </div>
+        <div style="display:flex;gap:16px;margin-top:4px;font-size:12px;">
+          <span style="color:#f59e0b;">━━ Hyderabad (treated)</span>
+          <span style="color:#374151;">━━ Placebo cities</span>
+        </div>
+        <div style="margin-top:8px;padding:8px;background:#052e16;border-radius:6px;">
+          <span style="color:#6ee7b7;font-size:12px;">p-value = 0.04 (Hyderabad ranks 1st out of 24 placebo permutations)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== RDD ======================== -->
+<div class="section" style="margin-top:32px;">
+  <h3 style="color:#fca5a5;">Regression Discontinuity Design</h3>
+
+  <div class="mockup">
+    <div class="mockup-header">Chart 1 of 3: RD Plot (The Core Visualization)</div>
+    <div class="mockup-body" style="padding:24px;">
+      <div style="font-size:13px;color:#94a3b8;margin-bottom:12px;">
+        <strong style="color:#fca5a5;">Purpose:</strong> Captains just above and just below the cutoff are nearly identical — so any jump in the outcome at the cutoff is the causal effect of treatment.
+      </div>
+      <div style="position:relative;height:240px;background:#0f0f23;border-radius:8px;padding:16px;overflow:hidden;">
+        <!-- Cutoff line -->
+        <div style="position:absolute;left:50%;top:16px;bottom:30px;width:2px;background:#ef4444;z-index:5;"></div>
+        <div style="position:absolute;left:calc(50% + 6px);bottom:34px;color:#fca5a5;font-size:11px;">Cutoff<br>DAPR = 0.5</div>
+
+        <!-- Axes -->
+        <div style="position:absolute;bottom:6px;left:50%;transform:translateX(-50%);color:#64748b;font-size:11px;">Running Variable: DAPR Score →</div>
+        <div style="position:absolute;left:6px;top:50%;transform:rotate(-90deg) translateX(50%);color:#64748b;font-size:11px;">Outcome: Net Rides →</div>
+
+        <svg viewBox="0 0 500 200" style="width:100%;height:100%;" preserveAspectRatio="none">
+          <!-- Scatter dots - left of cutoff (treated) -->
+          <circle cx="40" cy="130" r="3" fill="#ef4444" opacity="0.3"/>
+          <circle cx="55" cy="125" r="3" fill="#ef4444" opacity="0.3"/>
+          <circle cx="70" cy="135" r="3" fill="#ef4444" opacity="0.3"/>
+          <circle cx="85" cy="120" r="3" fill="#ef4444" opacity="0.3"/>
+          <circle cx="100" cy="115" r="3" fill="#ef4444" opacity="0.3"/>
+          <circle cx="115" cy="125" r="3" fill="#ef4444" opacity="0.3"/>
+          <circle cx="130" cy="110" r="3" fill="#ef4444" opacity="0.3"/>
+          <circle cx="145" cy="105" r="3" fill="#ef4444" opacity="0.3"/>
+          <circle cx="160" cy="100" r="3" fill="#ef4444" opacity="0.3"/>
+          <circle cx="175" cy="95" r="3" fill="#ef4444" opacity="0.3"/>
+          <circle cx="190" cy="90" r="3" fill="#ef4444" opacity="0.3"/>
+          <circle cx="205" cy="88" r="3" fill="#ef4444" opacity="0.3"/>
+          <circle cx="220" cy="82" r="3" fill="#ef4444" opacity="0.3"/>
+          <circle cx="235" cy="78" r="3" fill="#ef4444" opacity="0.3"/>
+
+          <!-- Scatter dots - right of cutoff (control) -->
+          <circle cx="265" cy="110" r="3" fill="#3b82f6" opacity="0.3"/>
+          <circle cx="280" cy="105" r="3" fill="#3b82f6" opacity="0.3"/>
+          <circle cx="295" cy="115" r="3" fill="#3b82f6" opacity="0.3"/>
+          <circle cx="310" cy="100" r="3" fill="#3b82f6" opacity="0.3"/>
+          <circle cx="325" cy="95" r="3" fill="#3b82f6" opacity="0.3"/>
+          <circle cx="340" cy="105" r="3" fill="#3b82f6" opacity="0.3"/>
+          <circle cx="355" cy="90" r="3" fill="#3b82f6" opacity="0.3"/>
+          <circle cx="370" cy="85" r="3" fill="#3b82f6" opacity="0.3"/>
+          <circle cx="385" cy="80" r="3" fill="#3b82f6" opacity="0.3"/>
+          <circle cx="400" cy="75" r="3" fill="#3b82f6" opacity="0.3"/>
+          <circle cx="415" cy="70" r="3" fill="#3b82f6" opacity="0.3"/>
+          <circle cx="430" cy="68" r="3" fill="#3b82f6" opacity="0.3"/>
+          <circle cx="445" cy="62" r="3" fill="#3b82f6" opacity="0.3"/>
+          <circle cx="460" cy="58" r="3" fill="#3b82f6" opacity="0.3"/>
+
+          <!-- Regression line LEFT (treated) -->
+          <path d="M30,135 Q130,110 240,75" fill="none" stroke="#ef4444" stroke-width="2.5"/>
+
+          <!-- Regression line RIGHT (control) -->
+          <path d="M260,108 Q350,90 470,55" fill="none" stroke="#3b82f6" stroke-width="2.5"/>
+
+          <!-- Jump annotation -->
+          <line x1="250" y1="76" x2="250" y2="108" stroke="#10b981" stroke-width="2"/>
+          <rect x="252" y="84" width="55" height="18" fill="#0f0f23" rx="3"/>
+          <text x="280" y="97" text-anchor="middle" fill="#10b981" font-size="13" font-weight="bold">+4.2 rides</text>
+        </svg>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;">
+        <span style="color:#ef4444;">● Treated (DAPR < 0.5) + local polynomial</span>
+        <span style="color:#3b82f6;">● Control (DAPR >= 0.5) + local polynomial</span>
+        <span style="color:#10b981;">↕ Discontinuity = causal effect</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">Chart 2: McCrary Density Test</div>
+      <div class="mockup-body" style="padding:20px;">
+        <div style="font-size:13px;color:#94a3b8;margin-bottom:12px;">
+          <strong style="color:#fca5a5;">Manipulation check:</strong> Is there a suspicious pile-up of captains just above/below the cutoff? If so, captains may be gaming the threshold.
+        </div>
+        <div style="position:relative;height:140px;background:#0f0f23;border-radius:8px;padding:16px;overflow:hidden;">
+          <div style="position:absolute;left:50%;top:16px;bottom:20px;width:2px;background:#ef4444;"></div>
+          <svg viewBox="0 0 400 110" style="width:100%;height:100%;" preserveAspectRatio="none">
+            <path d="M20,100 Q60,95 100,70 Q140,40 180,25 Q200,20 210,22 Q220,25 240,28 Q280,50 320,70 Q360,90 400,100"
+                  fill="rgba(139,92,246,0.2)" stroke="#8b5cf6" stroke-width="2"/>
+          </svg>
+        </div>
+        <div style="padding:8px;background:#052e16;border-radius:6px;margin-top:8px;">
+          <span style="color:#6ee7b7;font-size:12px;">No manipulation detected (p=0.42). Density is smooth through cutoff.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="mockup">
+      <div class="mockup-header">Chart 3: Bandwidth Sensitivity</div>
+      <div class="mockup-body" style="padding:20px;">
+        <div style="font-size:13px;color:#94a3b8;margin-bottom:12px;">
+          <strong style="color:#fca5a5;">Robustness:</strong> Does the effect hold across different bandwidths around the cutoff? Stable estimates = credible result.
+        </div>
+        <div style="background:#0f0f23;padding:16px;border-radius:8px;">
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px;">
+              <span style="color:#94a3b8;width:60px;">h = 0.05</span>
+              <div style="position:relative;width:200px;height:16px;">
+                <div style="position:absolute;left:60px;width:80px;height:100%;background:rgba(139,92,246,0.2);border-radius:2px;"></div>
+                <div style="position:absolute;left:95px;top:4px;width:8px;height:8px;background:#8b5cf6;border-radius:50%;"></div>
+              </div>
+              <span style="color:#e2e8f0;">3.8 [2.1, 5.5]</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px;">
+              <span style="color:#f59e0b;width:60px;">h = 0.10*</span>
+              <div style="position:relative;width:200px;height:16px;">
+                <div style="position:absolute;left:55px;width:90px;height:100%;background:rgba(245,158,11,0.2);border-radius:2px;"></div>
+                <div style="position:absolute;left:96px;top:4px;width:8px;height:8px;background:#f59e0b;border-radius:50%;"></div>
+              </div>
+              <span style="color:#e2e8f0;font-weight:bold;">4.2 [2.5, 5.9]</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px;">
+              <span style="color:#94a3b8;width:60px;">h = 0.15</span>
+              <div style="position:relative;width:200px;height:16px;">
+                <div style="position:absolute;left:50px;width:100px;height:100%;background:rgba(139,92,246,0.2);border-radius:2px;"></div>
+                <div style="position:absolute;left:93px;top:4px;width:8px;height:8px;background:#8b5cf6;border-radius:50%;"></div>
+              </div>
+              <span style="color:#e2e8f0;">4.0 [2.3, 5.7]</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px;">
+              <span style="color:#94a3b8;width:60px;">h = 0.20</span>
+              <div style="position:relative;width:200px;height:16px;">
+                <div style="position:absolute;left:48px;width:102px;height:100%;background:rgba(139,92,246,0.2);border-radius:2px;"></div>
+                <div style="position:absolute;left:91px;top:4px;width:8px;height:8px;background:#8b5cf6;border-radius:50%;"></div>
+              </div>
+              <span style="color:#e2e8f0;">3.9 [2.4, 5.4]</span>
+            </div>
+          </div>
+          <div style="margin-top:8px;color:#64748b;font-size:11px;">* MSE-optimal bandwidth</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== SUMMARY: THE FULL LAB ======================== -->
+<div class="section" style="margin-top:32px;">
+  <h3>The Complete Causal Lab: All Methods at a Glance</h3>
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;">
+    <div style="background:#1e1b4b;padding:12px;border-radius:8px;border-top:3px solid #8b5cf6;text-align:center;">
+      <div style="color:#c4b5fd;font-weight:bold;font-size:13px;">PSM</div>
+      <div style="color:#64748b;font-size:11px;margin-top:4px;">4 charts</div>
+      <div style="color:#94a3b8;font-size:10px;margin-top:2px;">Overlap, Love Plot, ATT, Naive vs Matched</div>
+    </div>
+    <div style="background:#172554;padding:12px;border-radius:8px;border-top:3px solid #3b82f6;text-align:center;">
+      <div style="color:#93c5fd;font-weight:bold;font-size:13px;">CausalImpact</div>
+      <div style="color:#64748b;font-size:11px;margin-top:4px;">3 panels + summary</div>
+      <div style="color:#94a3b8;font-size:10px;margin-top:2px;">Counterfactual, Pointwise, Cumulative</div>
+    </div>
+    <div style="background:#052e16;padding:12px;border-radius:8px;border-top:3px solid #10b981;text-align:center;">
+      <div style="color:#6ee7b7;font-weight:bold;font-size:13px;">HTE</div>
+      <div style="color:#64748b;font-size:11px;margin-top:4px;">4 charts</div>
+      <div style="color:#94a3b8;font-size:10px;margin-top:2px;">Waterfall, Importance, Distribution, Scatter</div>
+    </div>
+    <div style="background:#451a03;padding:12px;border-radius:8px;border-top:3px solid #f59e0b;text-align:center;">
+      <div style="color:#fcd34d;font-weight:bold;font-size:13px;">Synth Control</div>
+      <div style="color:#64748b;font-size:11px;margin-top:4px;">3 charts</div>
+      <div style="color:#94a3b8;font-size:10px;margin-top:2px;">Actual vs Synth, Weights, Placebo</div>
+    </div>
+    <div style="background:#4a1d1d;padding:12px;border-radius:8px;border-top:3px solid #ef4444;text-align:center;">
+      <div style="color:#fca5a5;font-weight:bold;font-size:13px;">RDD</div>
+      <div style="color:#64748b;font-size:11px;margin-top:4px;">3 charts</div>
+      <div style="color:#94a3b8;font-size:10px;margin-top:2px;">RD Plot, McCrary, Bandwidth</div>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:16px;padding:16px;background:rgba(167,139,250,0.08);border-radius:12px;border:1px solid rgba(167,139,250,0.2);">
+  <p style="color:#c4b5fd;font-size:14px;margin:0;">
+    <strong>Total: 17 distinct visualizations across 5 methods</strong> — each with auto-generated narratives explaining what the chart means and what action to take. Every chart is designed to be self-explanatory even without statistical training.
+  </p>
+</div>

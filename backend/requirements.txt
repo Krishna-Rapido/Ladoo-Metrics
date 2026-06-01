@@ -7,10 +7,9 @@ numpy>=2.0.0
 scipy>=1.14.0
 statsmodels>=0.14.5
 pingouin>=0.5.5
-pyhive[presto]
-thrift
-thrift-sasl
-pure-sasl
+trino>=0.330.0
+keyring>=24.0.0
+keyrings.alt>=5.0.0
 requests
 reportlab>=4.0.0
 python-docx>=1.1.0

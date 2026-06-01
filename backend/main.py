@@ -6140,19 +6140,23 @@ _PRESTO_TEST_TABLES = [
 
 @app.post("/researcher/test-connection", response_model=PrestoTestResponse)
 def test_presto_connection(payload: PrestoTestRequest):
-    """Test Presto connectivity and table-level access for a given username."""
+    """Test Trino connectivity and table-level access for a given username."""
     import time as _time
-    from pyhive import presto as _presto
+    from presto_connection import (
+        get_trino_connection,
+        DEFAULT_TRINO_HOST,
+        DEFAULT_TRINO_PORT,
+    )
 
-    presto_host = os.environ.get("PRESTO_HOST", "bi-trino-4.serving.data.production.internal")
-    presto_port = int(os.environ.get("PRESTO_PORT", "80"))
+    presto_host = os.environ.get("TRINO_HOST", DEFAULT_TRINO_HOST)
+    presto_port = int(os.environ.get("TRINO_PORT", DEFAULT_TRINO_PORT))
     username = payload.username.strip()
 
-    # 1. Test basic connectivity
+    # 1. Test basic connectivity (as the signed-in analyst, via OAuth2)
     basic_ok = False
     basic_error = None
     try:
-        conn = _presto.connect(presto_host, presto_port, username='krishna.poddar@rapido.bike')
+        conn = get_trino_connection(username)
         cursor = conn.cursor()
         cursor.execute("SELECT 1")
         cursor.fetchone()
@@ -6181,7 +6185,7 @@ def test_presto_connection(payload: PrestoTestRequest):
         conn = None
         try:
             start = _time.time()
-            conn = _presto.connect(presto_host, presto_port, username=username)
+            conn = get_trino_connection(username)
             df = pd.read_sql(t["query"], conn)
             elapsed = int((_time.time() - start) * 1000)
             table_results.append(TableTestResult(
