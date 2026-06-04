@@ -5,15 +5,18 @@ import { FunnelDataGrid } from './FunnelDataGrid';
 import { ChartBuilder } from './ChartBuilder';
 import { ScheduleJobDialog } from '@/features/dashboard/ScheduleJobDialog';
 import { JobHistoryPanel } from '@/features/dashboard/JobHistoryPanel';
+import { useAuth } from '@/contexts/AuthContext';
 
 export function Fe2NetAnalysis() {
+    const { user } = useAuth();
+    const username = user?.email ?? '';
+
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [data, setData] = useState<Fe2NetResponse | null>(null);
     const [showChart, setShowChart] = useState(false);
 
     // Parameters
-    const [username, setUsername] = useState('krishna.poddar@rapido.bike');
     const [startDate, setStartDate] = useState('20250801');
     const [endDate, setEndDate] = useState('20251031');
     const [city, setCity] = useState('delhi');
@@ -132,18 +135,7 @@ export function Fe2NetAnalysis() {
                             <option value="monthly">Monthly</option>
                         </select>
                     </div>
-                    <div className="col-span-3">
-                        <label className="block text-sm font-medium text-slate-700 mb-2">
-                            Presto Username
-                        </label>
-                        <input
-                            type="text"
-                            value={username}
-                            onChange={(e) => setUsername(e.target.value)}
-                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                            placeholder="your.name@rapido.bike"
-                        />
-                    </div>
+                    
                 </div>
 
                 <div className="mt-6 flex gap-3">

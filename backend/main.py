@@ -2098,7 +2098,7 @@ async def get_captain_ids(
         from funnel import get_captain_id
         result_df = get_captain_id(mobile_number_df, payload.username)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch captain IDs from Presto: {exc}")
+        raise _dashboard_http_error(exc, "Failed to fetch captain IDs from Presto")
     
     # Update session with new dataframe including captain_id
     FUNNEL_SESSION_STORE[x_funnel_session_id] = result_df
@@ -2148,7 +2148,7 @@ async def get_ao_funnel_data(
             payload.tod_level
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch AO funnel data from Presto: {exc}")
+        raise _dashboard_http_error(exc, "Failed to fetch AO funnel data from Presto")
     
     # Format the dataframe for cohort analysis
     # Ensure we have a proper date column
@@ -2264,6 +2264,60 @@ def export_funnel_csv(x_funnel_session_id: Optional[str] = Header(default=None))
     )
 
 
+# =============================================================================
+# TRINO OAUTH2 LOGIN (interactive popup flow for headless deployments)
+# =============================================================================
+
+def _dashboard_http_error(exc: Exception, fallback_message: str) -> HTTPException:
+    """Convert a Trino auth error to a 401, others to 500."""
+    from presto_connection import is_trino_auth_error
+
+    if is_trino_auth_error(exc):
+        return HTTPException(
+            status_code=401,
+            detail={
+                "code": "trino_auth_required",
+                "message": "Trino login required. Please complete the login popup and retry.",
+            },
+        )
+    return HTTPException(status_code=500, detail=f"{fallback_message}: {exc}")
+
+
+def _raise_if_trino_auth_required(result: dict) -> None:
+    """For funnel functions that catch auth errors internally and return them in a dict."""
+    if isinstance(result, dict) and result.get("error_code") == "trino_auth_required":
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "trino_auth_required",
+                "message": "Trino login required. Please complete the login popup and retry.",
+            },
+        )
+
+
+from pydantic import BaseModel as _BaseModel
+
+
+class TrinoLoginRequest(_BaseModel):
+    username: str
+
+
+@app.post("/auth/trino/login")
+async def trino_login(payload: TrinoLoginRequest):
+    """Start an interactive Trino login (returns login URL or authenticated status)."""
+    from presto_connection import start_login
+
+    return await asyncio.to_thread(start_login, payload.username)
+
+
+@app.get("/auth/trino/status")
+async def trino_status(username: str):
+    """Check the status of an ongoing Trino login."""
+    from presto_connection import login_status
+
+    return login_status(username)
+
+
 @app.post("/funnel-analysis/dapr-bucket", response_model=DaprBucketResponse, responses={400: {"model": ErrorResponse}})
 async def get_dapr_bucket(payload: DaprBucketRequest) -> DaprBucketResponse:
     """
@@ -2281,7 +2335,7 @@ async def get_dapr_bucket(payload: DaprBucketRequest) -> DaprBucketResponse:
             payload.high_dapr
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch DAPR bucket data: {exc}")
+        raise _dashboard_http_error(exc, "Failed to fetch DAPR bucket data")
     
     # Convert all data to records
     data = result_df.to_dict('records')
@@ -2310,7 +2364,7 @@ async def get_fe2net(payload: Fe2NetRequest) -> Fe2NetResponse:
             payload.time_level
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch FE2Net data: {exc}")
+        raise _dashboard_http_error(exc, "Failed to fetch FE2Net data")
     
     # Convert all data to records
     data = result_df.to_dict('records')
@@ -2342,7 +2396,7 @@ async def get_rtu_performance(payload: RtuPerformanceRequest) -> RtuPerformanceR
             payload.service_category
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch RTU Performance data: {exc}")
+        raise _dashboard_http_error(exc, "Failed to fetch RTU Performance data")
     
     # Convert all data to records
     data = result_df.to_dict('records')
@@ -2371,7 +2425,7 @@ async def get_r2a(payload: R2ARequest) -> R2AResponse:
             payload.time_level
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch R2A data: {exc}")
+        raise _dashboard_http_error(exc, "Failed to fetch R2A data")
     
     # Convert all data to records
     data = result_df.to_dict('records')
@@ -2400,7 +2454,7 @@ async def get_r2a_percentage(payload: R2APercentageRequest) -> R2APercentageResp
             payload.time_level
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch R2A% data: {exc}")
+        raise _dashboard_http_error(exc, "Failed to fetch R2A% data")
     
     # Convert all data to records
     data = result_df.to_dict('records')
@@ -2429,7 +2483,7 @@ async def get_a2phh_summary(payload: A2PhhSummaryRequest) -> A2PhhSummaryRespons
             payload.time_level
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch A2PHH Summary data: {exc}")
+        raise _dashboard_http_error(exc, "Failed to fetch A2PHH Summary data")
     
     # Convert all data to records
     data = result_df.to_dict('records')
@@ -2551,7 +2605,7 @@ async def execute_custom_dashboard_query(payload: schemas.CustomDashboardQueryRe
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Query execution failed: {exc}")
+        raise _dashboard_http_error(exc, "Query execution failed")
     finally:
         if conn is not None:
             try:
@@ -4712,7 +4766,9 @@ async def get_experiment_performance_data(payload: ExperimentPerformanceRequest)
             city=payload.city,
             service_value=payload.service_value,
         )
-        
+
+        _raise_if_trino_auth_required(result)
+
         if result.get("error"):
             return ExperimentPerformanceResponse(
                 row_count=0,
@@ -4779,7 +4835,7 @@ async def download_experiment_performance(payload: ExperimentPerformanceRequest)
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to download experiment data: {exc}")
+        raise _dashboard_http_error(exc, "Failed to download experiment data")
 
 
 @app.post("/discover/segment-transitions", response_model=SegmentTransitionResponse, responses={400: {"model": ErrorResponse}})
@@ -4821,7 +4877,9 @@ async def get_segment_transitions_data(payload: SegmentTransitionRequest) -> Seg
             period=payload.period,
             raw_df=raw_df,
         )
-        
+
+        _raise_if_trino_auth_required(result)
+
         if result.get("error"):
             return SegmentTransitionResponse(
                 row_count=0,
@@ -4843,7 +4901,7 @@ async def get_segment_transitions_data(payload: SegmentTransitionRequest) -> Seg
             sankey_data=result.get("sankey_data"),
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch segment transitions data: {exc}")
+        raise _dashboard_http_error(exc, "Failed to fetch segment transitions data")
 
 
 @app.post("/discover/segment-transitions/download")
@@ -4909,7 +4967,7 @@ async def download_segment_transitions(payload: SegmentTransitionRequest):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to download segment transitions data: {exc}")
+        raise _dashboard_http_error(exc, "Failed to download segment transitions data")
 
 
 @app.post("/discover/segment-transitions/captains", response_model=SegmentTransitionCaptainsResponse)
@@ -4956,7 +5014,7 @@ async def get_segment_transition_captains(payload: SegmentTransitionCaptainsRequ
         )
         return SegmentTransitionCaptainsResponse(captain_ids=captain_ids, count=len(captain_ids))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise _dashboard_http_error(exc, "Failed to fetch segment transition captains")
 
 
 # =============================================================================

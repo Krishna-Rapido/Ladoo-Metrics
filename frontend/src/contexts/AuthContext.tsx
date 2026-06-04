@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { User, Session, AuthError } from '@supabase/supabase-js'
 import { supabase, isRapidoEmail } from '@/lib/supabase'
+import { setTrinoUser } from '@/lib/trinoAuth'
 
 interface AuthContextType {
   user: User | null
@@ -24,6 +25,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
       setUser(session?.user ?? null)
+      setTrinoUser(session?.user?.email)
       setIsLoading(false)
     })
 
@@ -33,6 +35,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session)
       setUser(session?.user ?? null)
+      setTrinoUser(session?.user?.email)
       setIsLoading(false)
     })
 

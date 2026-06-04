@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useAuth } from '@/contexts/AuthContext';
 import {
     uploadMobileNumbers,
     getCaptainIds,
@@ -20,6 +21,9 @@ interface FunnelAnalysisProps {
 }
 
 export function FunnelAnalysis({ onDataReady }: FunnelAnalysisProps) {
+    const { user } = useAuth();
+    const username = user?.email ?? '';
+
     const [currentStep, setCurrentStep] = useState<Step>('upload');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -29,9 +33,7 @@ export function FunnelAnalysis({ onDataReady }: FunnelAnalysisProps) {
     const [captainIdData, setCaptainIdData] = useState<CaptainIdResponse | null>(null);
     const [funnelData, setFunnelData] = useState<AOFunnelResponse | null>(null);
 
-
     // Form inputs
-    const [username, setUsername] = useState('krishna.poddar@rapido.bike');
     const [startDate, setStartDate] = useState('20250801');
     const [endDate, setEndDate] = useState('20251031');
     const [timeLevel, setTimeLevel] = useState<'daily' | 'weekly' | 'monthly'>('daily');
@@ -111,7 +113,7 @@ export function FunnelAnalysis({ onDataReady }: FunnelAnalysisProps) {
     // Step 2: Get captain IDs
     const handleGetCaptainIds = async () => {
         if (!username.trim()) {
-            setError('Please enter a Presto username');
+            setError('You must be signed in to query Trino.');
             return;
         }
         setLoading(true);
@@ -130,7 +132,7 @@ export function FunnelAnalysis({ onDataReady }: FunnelAnalysisProps) {
     // Step 3: Get AO funnel
     const handleGetAOFunnel = async () => {
         if (!username.trim()) {
-            setError('Please enter a Presto username');
+            setError('You must be signed in to query Trino.');
             return;
         }
         setLoading(true);
@@ -387,20 +389,6 @@ export function FunnelAnalysis({ onDataReady }: FunnelAnalysisProps) {
                                         fileName="mobile_numbers"
                                     />
                                 )}
-
-                                {/* Username Input */}
-                                <div className="p-4 bg-white rounded-lg border border-slate-200 shadow-sm">
-                                    <label className="block text-sm font-semibold text-slate-700 mb-2">
-                                        🔐 Presto Username
-                                    </label>
-                                    <input
-                                        type="text"
-                                        value={username}
-                                        onChange={(e) => setUsername(e.target.value)}
-                                        className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                                        placeholder="your.name@rapido.bike"
-                                    />
-                                </div>
 
                                 {/* Captain ID Summary if available */}
                                 {captainIdSummary && (

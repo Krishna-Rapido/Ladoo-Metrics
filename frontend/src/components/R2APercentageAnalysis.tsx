@@ -5,15 +5,18 @@ import { FunnelDataGrid } from './FunnelDataGrid';
 import { ChartBuilder } from './ChartBuilder';
 import { ScheduleJobDialog } from '@/features/dashboard/ScheduleJobDialog';
 import { JobHistoryPanel } from '@/features/dashboard/JobHistoryPanel';
+import { useAuth } from '@/contexts/AuthContext';
 
 export function R2APercentageAnalysis() {
+    const { user } = useAuth();
+    const username = user?.email ?? '';
+
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [data, setData] = useState<R2APercentageResponse | null>(null);
     const [showChart, setShowChart] = useState(false);
 
     // Parameters
-    const [username, setUsername] = useState('krishna.poddar@rapido.bike');
     const [startDate, setStartDate] = useState('20251001');
     const [endDate, setEndDate] = useState('20251130');
     const [city, setCity] = useState('hyderabad');
@@ -123,7 +126,6 @@ export function R2APercentageAnalysis() {
                         <input
                             type="text"
                             value={username}
-                            onChange={(e) => setUsername(e.target.value)}
                             className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
                             placeholder="your.name@rapido.bike"
                         />

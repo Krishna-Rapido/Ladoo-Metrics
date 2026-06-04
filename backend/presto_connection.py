@@ -53,23 +53,36 @@ _auth_lock = threading.Lock()
 _oauth2_auth = None          # singleton trino.auth.OAuth2Authentication
 _keyring_configured = False  # one-shot guard for token-cache-file setup
 
+# Interactive login coordination. Per-thread state for capturing OAuth URLs.
+_current = threading.local()    # per-thread: .user (email), .interactive (bool)
+_coordinators = {}              # user email -> login coordinator entry (guarded by _auth_lock)
+
 
 def _redirect_to_login(url: str) -> None:
-    """Open the Trino OAuth2 login page in a browser, logging the URL as fallback.
+    """During interactive login, capture the URL for the frontend popup.
 
-    Locally (backend and browser on the same machine) this pops the login window
-    automatically. On the headless VM ``webbrowser`` is a no-op, so the WARNING log
-    is how an operator grabs the one-time link (``journalctl -u ladoo-metrics``).
+    When start_login() runs in a background thread with interactive=True, this handler
+    is invoked during the OAuth challenge. It captures the login URL and returns
+    immediately, letting trino continue its token long-poll while the frontend opens
+    the URL in a popup. If not interactive, raise immediately so the request fails fast
+    with an auth error instead of hanging on the token poll.
     """
-    logger.warning(
-        "Trino OAuth2 login required — opening a browser. If it does not open, visit:\n%s",
-        url,
-    )
-    try:
-        import webbrowser
-        webbrowser.open_new(url)
-    except Exception:
-        logger.exception("Could not open a browser automatically; use the URL above to log in.")
+    user = getattr(_current, "user", None)
+    interactive = getattr(_current, "interactive", False)
+
+    logger.warning("Trino OAuth2 login required (user=%s, interactive=%s). Login URL:\n%s",
+                   user, interactive, url)
+
+    if interactive and user is not None:
+        with _auth_lock:
+            entry = _coordinators.get(user)
+        if entry is not None:
+            entry["login_url"] = url
+            entry["event"].set()
+        return  # let trino keep polling while the user logs in
+
+    from trino.exceptions import TrinoAuthError
+    raise TrinoAuthError("Trino authentication required")
 
 
 def _configure_token_cache_file() -> None:
@@ -169,3 +182,124 @@ def get_trino_connection(username: str):
         user=user,
         auth=_get_oauth2_auth(),
     )
+
+
+def _run_login_probe(user: str, entry: dict) -> None:
+    """Background worker for interactive login.
+
+    Opens a connection and runs SELECT 1. If a cached token exists, succeeds
+    instantly (status=authenticated, no popup). Otherwise, the OAuth flow invokes
+    _redirect_to_login (which captures the URL, wakes start_login, and this thread
+    keeps polling the token server) until the user completes login in the popup.
+    """
+    _current.user = user
+    _current.interactive = True
+    try:
+        conn = get_trino_connection(user)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchall()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        entry["status"] = "authenticated"
+        entry["error"] = None
+    except Exception as exc:
+        logger.warning("Trino interactive login probe failed for %s: %s", user, exc)
+        entry["status"] = "error"
+        entry["error"] = str(exc)
+    finally:
+        entry["event"].set()
+
+
+def start_login(user: str, wait_seconds: float = 15.0) -> dict:
+    """Begin or rejoin an interactive login attempt.
+
+    Returns a dict with 'status' (one of 'authenticated', 'login_required',
+    'error', 'pending') and optional 'login_url' or 'error' keys for the frontend.
+    """
+    user = (user or "").strip()
+    if not user:
+        return {
+            "status": "error",
+            "error": "A signed-in user email is required to log in to Trino.",
+        }
+
+    with _auth_lock:
+        entry = _coordinators.get(user)
+        thread = entry.get("thread") if entry else None
+        in_flight = (entry is not None and thread is not None and
+                     thread.is_alive() and entry["status"] == "pending")
+
+        if not in_flight:
+            entry = {
+                "event": threading.Event(),
+                "login_url": None,
+                "status": "pending",
+                "error": None,
+                "thread": None,
+            }
+            _coordinators[user] = entry
+            t = threading.Thread(target=_run_login_probe, args=(user, entry), daemon=True)
+            entry["thread"] = t
+            t.start()
+
+    entry["event"].wait(timeout=wait_seconds)
+
+    if entry["login_url"] and entry["status"] == "pending":
+        return {"status": "login_required", "login_url": entry["login_url"]}
+    if entry["status"] == "authenticated":
+        return {"status": "authenticated"}
+    if entry["status"] == "error":
+        return {"status": "error", "error": entry["error"]}
+    return {"status": "pending"}
+
+
+def login_status(user: str) -> dict:
+    """Check the status of an ongoing login for a user.
+
+    Returns {'status': 'unknown' | 'pending' | 'authenticated' | 'error', ...}.
+    """
+    user = (user or "").strip()
+    if not user:
+        return {"status": "error", "error": "missing user"}
+
+    with _auth_lock:
+        entry = _coordinators.get(user)
+
+    if entry is None:
+        return {"status": "unknown"}
+
+    return {"status": entry["status"], "error": entry.get("error")}
+
+
+def is_trino_auth_error(exc: BaseException) -> bool:
+    """True if the exception is a Trino auth/token failure.
+
+    Endpoints use this to return a 401 with code='trino_auth_required'.
+    """
+    try:
+        from trino.exceptions import TrinoAuthError
+        if isinstance(exc, TrinoAuthError):
+            return True
+    except Exception:
+        pass
+
+    msg = str(exc).lower()
+    markers = (
+        "trinoautherror",
+        "authentication required",
+        "unauthorized",
+        " 401",
+        "401 ",
+        "www-authenticate",
+        "access token",
+        "token expired",
+        "expired token",
+        "invalid_token",
+        "oauth2",
+    )
+    return any(m in msg for m in markers)

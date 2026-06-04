@@ -1389,11 +1389,13 @@ def get_experiment_performance(
         }
     except Exception as e:
         logger.exception("get_experiment_performance query failed. Query: %s", query)
+        from presto_connection import is_trino_auth_error
         return {
             "csv": "",
             "row_count": 0,
             "columns": [],
             "error": str(e),
+            "error_code": "trino_auth_required" if is_trino_auth_error(e) else None,
         }
 
 
@@ -1580,12 +1582,14 @@ def get_segment_transitions(
             "error": None,
         }
     except Exception as e:
+        from presto_connection import is_trino_auth_error
         return {
             "row_count": 0,
             "columns": [],
             "data": [],
             "sankey_data": None,
             "error": str(e),
+            "error_code": "trino_auth_required" if is_trino_auth_error(e) else None,
         }
 
 

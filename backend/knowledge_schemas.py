@@ -197,4 +197,4 @@ class GenerateDashboardQueryResponse(BaseModel):
     sql: str = ""
     explanation: str = ""
     detected_params: List[str] = []
-    error: str = 
+    error: str = ""

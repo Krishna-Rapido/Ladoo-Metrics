@@ -143,6 +143,60 @@ export type CohortAggregationResponse = {
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8001';
 
+// ============================================================================
+// Trino OAuth2 auth helpers
+// ============================================================================
+
+import { ensureTrinoLogin, getTrinoUser } from './trinoAuth';
+
+const TRINO_AUTH_CODE = 'trino_auth_required';
+
+async function isTrinoAuthRequired(res: Response): Promise<boolean> {
+  if (res.status !== 401) return false;
+  try {
+    const body = await res.clone().json();
+    return body?.detail?.code === TRINO_AUTH_CODE;
+  } catch {
+    return false;
+  }
+}
+
+function withTrinoUser<T extends { username?: string }>(req: T): T {
+  const email = getTrinoUser();
+  return email ? { ...req, username: email } : req;
+}
+
+async function fetchWithTrinoAuth(
+  input: string,
+  init: RequestInit
+): Promise<Response> {
+  let res = await fetch(input, init);
+  if (await isTrinoAuthRequired(res)) {
+    await ensureTrinoLogin(getTrinoUser());
+    res = await fetch(input, init);
+  }
+  return res;
+}
+
+async function postTrinoJson<T>(
+  path: string,
+  req: object,
+  fallbackMsg: string,
+  headers: Headers = new Headers()
+): Promise<T> {
+  headers.set('Content-Type', 'application/json');
+  const res = await fetchWithTrinoAuth(`${BASE_URL}${path}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(withTrinoUser(req as { username?: string })),
+  });
+  if (!res.ok) {
+    const error = await res.text();
+    throw new Error(error || fallbackMsg);
+  }
+  return await res.json();
+}
+
 // Configuration for chunked uploads
 const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
 const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 50MB - use chunked upload for files larger than this
@@ -610,33 +664,21 @@ export async function uploadMobileNumbers(file: File): Promise<MobileNumberUploa
 }
 
 export async function getCaptainIds(username: string): Promise<CaptainIdResponse> {
-    const headers = funnelSessionHeaders();
-    headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/funnel-analysis/get-captain-ids`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ username }),
-    });
-    if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || 'Failed to fetch captain IDs');
-    }
-    return await res.json();
+    return postTrinoJson(
+        '/funnel-analysis/get-captain-ids',
+        { username },
+        'Failed to fetch captain IDs',
+        funnelSessionHeaders()
+    );
 }
 
 export async function getAOFunnel(req: AOFunnelRequest): Promise<AOFunnelResponse> {
-    const headers = funnelSessionHeaders();
-    headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/funnel-analysis/get-ao-funnel`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(req),
-    });
-    if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || 'Failed to fetch AO funnel data');
-    }
-    return await res.json();
+    return postTrinoJson(
+        '/funnel-analysis/get-ao-funnel',
+        req,
+        'Failed to fetch AO funnel data',
+        funnelSessionHeaders()
+    );
 }
 
 export async function clearFunnelSession(): Promise<void> {
@@ -701,18 +743,7 @@ export type DaprBucketResponse = {
 };
 
 export async function getDaprBucket(req: DaprBucketRequest): Promise<DaprBucketResponse> {
-    const headers = new Headers();
-    headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/funnel-analysis/dapr-bucket`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(req),
-    });
-    if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || 'Failed to fetch DAPR bucket data');
-    }
-    return await res.json();
+    return postTrinoJson('/funnel-analysis/dapr-bucket', req, 'Failed to fetch DAPR bucket data');
 }
 
 export type Fe2NetRequest = {
@@ -732,18 +763,7 @@ export type Fe2NetResponse = {
 };
 
 export async function getFe2Net(req: Fe2NetRequest): Promise<Fe2NetResponse> {
-    const headers = new Headers();
-    headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/captain-dashboards/fe2net`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(req),
-    });
-    if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || 'Failed to fetch FE2Net data');
-    }
-    return await res.json();
+    return postTrinoJson('/captain-dashboards/fe2net', req, 'Failed to fetch FE2Net data');
 }
 
 export type RtuPerformanceRequest = {
@@ -765,18 +785,7 @@ export type RtuPerformanceResponse = {
 };
 
 export async function getRtuPerformance(req: RtuPerformanceRequest): Promise<RtuPerformanceResponse> {
-    const headers = new Headers();
-    headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/captain-dashboards/rtu-performance`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(req),
-    });
-    if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || 'Failed to fetch RTU Performance data');
-    }
-    return await res.json();
+    return postTrinoJson('/captain-dashboards/rtu-performance', req, 'Failed to fetch RTU Performance data');
 }
 
 export type R2ARequest = {
@@ -795,18 +804,7 @@ export type R2AResponse = {
 };
 
 export async function getR2A(req: R2ARequest): Promise<R2AResponse> {
-    const headers = new Headers();
-    headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/captain-dashboards/r2a`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(req),
-    });
-    if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || 'Failed to fetch R2A data');
-    }
-    return await res.json();
+    return postTrinoJson('/captain-dashboards/r2a', req, 'Failed to fetch R2A data');
 }
 
 export type R2APercentageRequest = {
@@ -825,18 +823,7 @@ export type R2APercentageResponse = {
 };
 
 export async function getR2APercentage(req: R2APercentageRequest): Promise<R2APercentageResponse> {
-    const headers = new Headers();
-    headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/captain-dashboards/r2a-percentage`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(req),
-    });
-    if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || 'Failed to fetch R2A% data');
-    }
-    return await res.json();
+    return postTrinoJson('/captain-dashboards/r2a-percentage', req, 'Failed to fetch R2A% data');
 }
 
 export type A2PhhSummaryRequest = {
@@ -855,18 +842,7 @@ export type A2PhhSummaryResponse = {
 };
 
 export async function getA2PhhSummary(req: A2PhhSummaryRequest): Promise<A2PhhSummaryResponse> {
-    const headers = new Headers();
-    headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/captain-dashboards/a2phh-summary`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(req),
-    });
-    if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || 'Failed to fetch A2PHH Summary data');
-    }
-    return await res.json();
+    return postTrinoJson('/captain-dashboards/a2phh-summary', req, 'Failed to fetch A2PHH Summary data');
 }
 
 // ============================================================================
@@ -892,18 +868,7 @@ export type CustomDashboardQueryResponse = {
 export async function executeCustomDashboardQuery(
     req: CustomDashboardQueryRequest
 ): Promise<CustomDashboardQueryResponse> {
-    const headers = new Headers();
-    headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/captain-dashboards/custom-query`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(req),
-    });
-    if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || 'Failed to execute custom dashboard query');
-    }
-    return await res.json();
+    return postTrinoJson('/captain-dashboards/custom-query', req, 'Failed to execute custom dashboard query');
 }
 
 export async function downloadCustomQueryCsv(sessionId: string, filename?: string): Promise<void> {
@@ -1481,18 +1446,7 @@ export type ExperimentPerformanceResponse = {
 export async function getExperimentPerformance(
     req: ExperimentPerformanceRequest
 ): Promise<ExperimentPerformanceResponse> {
-    const headers = new Headers();
-    headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/discover/experiment-performance`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(req),
-    });
-    if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || 'Failed to fetch experiment performance data');
-    }
-    return await res.json();
+    return postTrinoJson('/discover/experiment-performance', req, 'Failed to fetch experiment performance data');
 }
 
 export async function downloadExperimentPerformance(
@@ -1501,10 +1455,10 @@ export async function downloadExperimentPerformance(
 ): Promise<void> {
     const headers = new Headers();
     headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/discover/experiment-performance/download`, {
+    const res = await fetchWithTrinoAuth(`${BASE_URL}/discover/experiment-performance/download`, {
         method: 'POST',
         headers,
-        body: JSON.stringify(req),
+        body: JSON.stringify(withTrinoUser(req)),
     });
     if (!res.ok) {
         const error = await res.text();
@@ -1590,18 +1544,7 @@ export type SegmentTransitionResponse = {
 export async function getSegmentTransitions(
     req: SegmentTransitionRequest
 ): Promise<SegmentTransitionResponse> {
-    const headers = new Headers();
-    headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/discover/segment-transitions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(req),
-    });
-    if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || 'Failed to fetch segment transitions data');
-    }
-    return await res.json();
+    return postTrinoJson('/discover/segment-transitions', req, 'Failed to fetch segment transitions data');
 }
 
 export type SegmentTransitionCaptainsRequest = SegmentTransitionRequest & {
@@ -1619,18 +1562,7 @@ export type SegmentTransitionCaptainsResponse = {
 export async function getSegmentTransitionCaptains(
     req: SegmentTransitionCaptainsRequest
 ): Promise<SegmentTransitionCaptainsResponse> {
-    const headers = new Headers();
-    headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/discover/segment-transitions/captains`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(req),
-    });
-    if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || 'Failed to fetch captains for edge');
-    }
-    return await res.json();
+    return postTrinoJson('/discover/segment-transitions/captains', req, 'Failed to fetch captains for edge');
 }
 
 export async function downloadSegmentTransitions(
@@ -1639,10 +1571,10 @@ export async function downloadSegmentTransitions(
 ): Promise<void> {
     const headers = new Headers();
     headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${BASE_URL}/discover/segment-transitions/download`, {
+    const res = await fetchWithTrinoAuth(`${BASE_URL}/discover/segment-transitions/download`, {
         method: 'POST',
         headers,
-        body: JSON.stringify(req),
+        body: JSON.stringify(withTrinoUser(req)),
     });
     if (!res.ok) {
         const error = await res.text();
