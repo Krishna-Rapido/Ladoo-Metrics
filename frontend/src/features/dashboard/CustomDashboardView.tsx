@@ -291,6 +291,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
     // UI state
     const [showQueryEditor, setShowQueryEditor] = useState(true);
     const [showParamManager, setShowParamManager] = useState(false);
+    const [showChart, setShowChart] = useState(false);
 
     // AI query generator state
     const [showAiPanel, setShowAiPanel] = useState(false);
@@ -333,7 +334,7 @@ export function CustomDashboardView({ folder, slug }: CustomDashboardViewProps) 
                         setParameters(db.parameters);
                     }
                     // Load saved chart configs
-                    if (db.chart_configs?.length > 0) {
+                    if (db.chart_configs && db.chart_configs.length > 0) {
                         setChartConfigs(db.chart_configs);
                     }
                     // Initialize param values from defaults
